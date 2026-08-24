@@ -1,0 +1,9 @@
+*.iml
+.*.swp
+.*.ods#
+*.log
+/.idea/
+/target/
+/log/
+/.ssl/
+/.codex
