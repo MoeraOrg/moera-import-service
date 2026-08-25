@@ -1,12 +1,18 @@
 # Moera Import Service Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or
+> superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build the first production-capable Moera import service that mirrors Telegram channels into Moera according to the architecture specification, while preserving extension points for future source adapters.
+**Goal:** Build the first production-capable Moera import service that mirrors Telegram channels into Moera according
+to the architecture specification, while preserving extension points for future source adapters.
 
-**Architecture:** PostgreSQL stores all durable channel/message/publication state and doubles as the durable work queue. Source-specific behavior is behind `SourceAdapter`; Telegram is implemented through TDLight. Moera delivery is concrete through `MoeraService`. External work uses short lease claims plus virtual threads; pure database grouping uses short row-locking transactions.
+**Architecture:** PostgreSQL stores all durable channel/message/publication state and doubles as the durable work
+queue. Source-specific behavior is behind `SourceAdapter`; Telegram is implemented through TDLight. Moera delivery is
+concrete through `MoeraService`. External work uses short lease claims plus virtual threads; pure database grouping
+uses short row-locking transactions.
 
-**Tech Stack:** Java 25, Spring Boot/Spring Framework, Maven, PostgreSQL, Flyway, jOOQ, TDLight, Moera Java library, JUnit 5, Testcontainers, Micrometer/Actuator.
+**Tech Stack:** Java 25, Spring Boot/Spring Framework, Maven, PostgreSQL, Flyway, jOOQ, TDLight, Moera Java library,
+JUnit 5, Testcontainers, Micrometer/Actuator.
 
 **Spec:** `docs/architecture/import-service.md`
 
@@ -16,7 +22,8 @@
 - PostgreSQL is the only production database.
 - Flyway SQL migrations are the only schema source of truth.
 - jOOQ is generated from the Flyway-defined schema and stays inside persistence code.
-- Do not introduce Hibernate/JPA, repository interfaces, Reactor, a generic jobs table, or a generic destination abstraction.
+- Do not introduce Hibernate/JPA, repository interfaces, Reactor, a generic jobs table, or a generic destination
+  abstraction.
 - Database table names are plural; `media` remains `media`.
 - Telegram is the only initial `source_type` value.
 - Moera is the only destination; always use `downsize=true` for media upload.
@@ -75,18 +82,22 @@ src/test/java/org/moera/importer/
 - Create: `src/test/resources/application-test.yml`
 
 **Interfaces:**
-- Produces: Maven build for Java 25; Flyway-managed schema; generated jOOQ classes under `target/generated-sources/jooq`; reusable Testcontainers PostgreSQL integration-test configuration.
+- Produces: Maven build for Java 25; Flyway-managed schema; generated jOOQ classes under
+  `target/generated-sources/jooq`; reusable Testcontainers PostgreSQL integration-test configuration.
 - Consumes: `docs/architecture/import-service.md` and the agreed `V001__initial_schema.sql`.
 
 - [ ] **Step 1: Pin current compatible dependency versions**
 
-Verify current stable releases from official project/Maven metadata at implementation time. Use Spring Boot dependency management for Spring, Flyway, PostgreSQL driver, Micrometer, and Testcontainers where managed. Pin TDLight, Moera Java library, and jOOQ codegen additions explicitly only where the Spring BOM does not manage the required artifact.
+Verify current stable releases from official project/Maven metadata at implementation time. Use Spring Boot dependency
+management for Spring, Flyway, PostgreSQL driver, Micrometer, and Testcontainers where managed. Pin TDLight, Moera Java
+library, and jOOQ codegen additions explicitly only where the Spring BOM does not manage the required artifact.
 
 Record the chosen versions directly in `pom.xml`; do not leave version placeholders.
 
 - [ ] **Step 2: Write the failing schema integration test**
 
-Create `SchemaMigrationTest` using Testcontainers PostgreSQL and Flyway. The test must assert that migration succeeds and that at least these relations exist:
+Create `SchemaMigrationTest` using Testcontainers PostgreSQL and Flyway. The test must assert that migration succeeds
+and that at least these relations exist:
 
 ```java
 assertThat(tableNames).contains(
@@ -111,7 +122,8 @@ Run:
 ./mvnw -Dtest=SchemaMigrationTest test
 ```
 
-Expected result: failure because the Maven project/schema/test harness does not yet exist or the migration has not been installed.
+Expected result: failure because the Maven project/schema/test harness does not yet exist or the migration has not been
+installed.
 
 - [ ] **Step 4: Create the Maven project and application entry point**
 
@@ -151,17 +163,20 @@ public class MoeraImportApplication {
 
 - [ ] **Step 5: Install the agreed Flyway migration**
 
-Copy the reviewed `V001__initial_schema.sql` from the design artifacts unchanged except for fixes that are explicitly approved against the spec. Do not generate schema from Java.
+Copy the reviewed `V001__initial_schema.sql` from the design artifacts unchanged except for fixes that are explicitly
+approved against the spec. Do not generate schema from Java.
 
 - [ ] **Step 6: Configure jOOQ code generation from Flyway SQL**
 
-Configure jOOQ Maven code generation to read the migration SQL as the schema source, using jOOQ's DDL metadata support with PostgreSQL dialect semantics. Generate classes into package:
+Configure jOOQ Maven code generation to read the migration SQL as the schema source, using jOOQ's DDL metadata support
+with PostgreSQL dialect semantics. Generate classes into package:
 
 ```text
 org.moera.importer.persistence.jooq
 ```
 
-Generated sources must be under `target/generated-sources/jooq` and must not be committed unless the repository later adopts that policy explicitly.
+Generated sources must be under `target/generated-sources/jooq` and must not be committed unless the repository later
+adopts that policy explicitly.
 
 - [ ] **Step 7: Run schema and code-generation verification**
 
@@ -234,7 +249,8 @@ void stop();
 
 - [ ] **Step 1: Write failing RetryPolicy tests**
 
-Test exponential delay, maximum cap, deterministic no-jitter mode for tests, and external `retryAfter` precedence. Include assertions equivalent to:
+Test exponential delay, maximum cap, deterministic no-jitter mode for tests, and external `retryAfter` precedence.
+Include assertions equivalent to:
 
 ```java
 assertThat(policy.delay(1, null)).isEqualTo(Duration.ofSeconds(5));
@@ -253,11 +269,13 @@ Expected: compile/test failure because `RetryPolicy` does not exist.
 
 - [ ] **Step 3: Implement RetryPolicy minimally**
 
-Use constructor parameters `Duration baseDelay`, `Duration maxDelay`, and `double jitterFraction`. Provide a package-visible deterministic jitter supplier or constructor overload so tests do not depend on randomness.
+Use constructor parameters `Duration baseDelay`, `Duration maxDelay`, and `double jitterFraction`. Provide a
+package-visible deterministic jitter supplier or constructor overload so tests do not depend on randomness.
 
 - [ ] **Step 4: Write failing SHA-256 tests**
 
-Require `Sha256.digest(byte[])` to always return 32 bytes and `Sha256.hex(byte[])` to return 64 lower-case hex characters.
+Require `Sha256.digest(byte[])` to always return 32 bytes and `Sha256.hex(byte[])` to return 64 lower-case hex
+characters.
 
 - [ ] **Step 5: Implement SHA-256 utility**
 
@@ -274,11 +292,13 @@ AccessLost(SourceType sourceType, String channelSourceId, JsonNode data)
 SubscriptionLost(SourceType sourceType, String channelSourceId, JsonNode data)
 ```
 
-`ChannelResolution.sourceId()` and `AccessResult.resolvedSourceId()` are nullable because Telegram private invites may not reveal identity until access is granted.
+`ChannelResolution.sourceId()` and `AccessResult.resolvedSourceId()` are nullable because Telegram private invites may
+not reveal identity until access is granted.
 
 - [ ] **Step 7: Add SourceAdapterRegistry**
 
-Construct it from `List<SourceAdapter>` and reject duplicate `SourceType` registrations during startup. `get(SourceType)` throws a clear configuration exception for an unregistered type.
+Construct it from `List<SourceAdapter>` and reject duplicate `SourceType` registrations during startup.
+`get(SourceType)` throws a clear configuration exception for an unregistered type.
 
 - [ ] **Step 8: Run unit tests**
 
@@ -291,7 +311,11 @@ Expected: PASS.
 - [ ] **Step 9: Commit**
 
 ```bash
-git add src/main/java/org/moera/importer/model src/main/java/org/moera/importer/source src/main/java/org/moera/importer/application src/test/java/org/moera/importer/application
+git add \
+  src/main/java/org/moera/importer/model \
+  src/main/java/org/moera/importer/source \
+  src/main/java/org/moera/importer/application \
+  src/test/java/org/moera/importer/application
 git commit -m "feat: define source and domain contracts"
 ```
 
@@ -342,11 +366,13 @@ Expected: FAIL because repository methods do not exist.
 
 - [ ] **Step 3: Implement insert path with jOOQ**
 
-Keep all generated table references inside `MessageRepository`. Map database enum/string/json values through `JooqMappings` into normal records.
+Keep all generated table references inside `MessageRepository`. Map database enum/string/json values through
+`JooqMappings` into normal records.
 
 - [ ] **Step 4: Add idempotent re-ingest test**
 
-Ingest the identical `SourceMessage` twice. Assert there is still one message row, unchanged media rows, and revision remains 0 with `changed=false` on the second call.
+Ingest the identical `SourceMessage` twice. Assert there is still one message row, unchanged media rows, and revision
+remains 0 with `changed=false` on the second call.
 
 - [ ] **Step 5: Add body/media/deletion revision tests**
 
@@ -363,7 +389,8 @@ same deleted state       -> no increment
 
 - [ ] **Step 6: Implement update/media synchronization path**
 
-Within one transaction compare normalized source state, update `messages`, replace/update only changed `media`, and increment `revision` once per ingest regardless of how many individual fields changed.
+Within one transaction compare normalized source state, update `messages`, replace/update only changed `media`, and
+increment `revision` once per ingest regardless of how many individual fields changed.
 
 - [ ] **Step 7: Write failing atomic poll test**
 
@@ -383,7 +410,8 @@ Use a stale token in a second test and assert that neither messages nor waterlin
 
 - [ ] **Step 8: Implement `ingestPoll` as one transaction**
 
-Verify token first, apply all message ingest changes, then update waterline/poll scheduling and clear lease. A stale token returns `false` without persisting any part of the poll result.
+Verify token first, apply all message ingest changes, then update waterline/poll scheduling and clear lease. A stale
+token returns `false` without persisting any part of the poll result.
 
 - [ ] **Step 9: Run repository tests**
 
@@ -450,11 +478,14 @@ Expected: FAIL because builder/repository operations do not exist.
 
 - [ ] **Step 3: Implement mirror lock and unassigned-message query**
 
-`PublicationBuilder.build(mirrorId)` is `@Transactional`. Lock the mirror row using `FOR UPDATE SKIP LOCKED`, load messages in `(published_at, id)` order, and return without work when the mirror is already locked by another builder.
+`PublicationBuilder.build(mirrorId)` is `@Transactional`. Lock the mirror row using `FOR UPDATE SKIP LOCKED`, load
+messages in `(published_at, id)` order, and return without work when the mirror is already locked by another builder.
 
 - [ ] **Step 4: Implement grouping and atomic publication creation**
 
-Create `publications` at revision 0 with `published_revision=NULL` and `next_attempt_at=now()`. Insert fixed-order `publication_messages`. Insert one `publication_media` row for each current source media item with `status=PENDING` and `next_attempt_at=now()`.
+Create `publications` at revision 0 with `published_revision=NULL` and `next_attempt_at=now()`. Insert fixed-order
+`publication_messages`. Insert one `publication_media` row for each current source media item with `status=PENDING` and
+`next_attempt_at=now()`.
 
 - [ ] **Step 5: Write failing propagation tests**
 
@@ -472,7 +503,8 @@ active media lease is invalidated for changed source_hash
 
 - [ ] **Step 6: Implement propagation inside MessageRepository transaction**
 
-Use `publication_messages(message_id)` and `publication_media(media_id)` reverse lookups. Keep membership unchanged; only mark existing publications dirty and synchronize current media delivery rows.
+Use `publication_messages(message_id)` and `publication_media(media_id)` reverse lookups. Keep membership unchanged;
+only mark existing publications dirty and synchronize current media delivery rows.
 
 - [ ] **Step 7: Run grouping and propagation tests**
 
@@ -485,7 +517,10 @@ Expected: PASS.
 - [ ] **Step 8: Commit**
 
 ```bash
-git add src/main/java/org/moera/importer/persistence src/main/java/org/moera/importer/application/PublicationBuilder.java src/test/java/org/moera/importer
+git add \
+  src/main/java/org/moera/importer/persistence \
+  src/main/java/org/moera/importer/application/PublicationBuilder.java \
+  src/test/java/org/moera/importer
 git commit -m "feat: build and revise publications"
 ```
 
@@ -522,7 +557,8 @@ boolean ChannelRepository.failPoll(long channelId, UUID token, Instant nextAttem
 
 - [ ] **Step 1: Write failing two-worker claim test**
 
-Using two independent transactions/threads, insert one due channel and concurrently call `claimPolls(1, lease)`. Assert exactly one caller receives the row.
+Using two independent transactions/threads, insert one due channel and concurrently call `claimPolls(1, lease)`. Assert
+exactly one caller receives the row.
 
 - [ ] **Step 2: Run concurrency test and verify failure**
 
@@ -534,23 +570,29 @@ Expected: FAIL until claim SQL exists.
 
 - [ ] **Step 3: Implement claims with `FOR UPDATE SKIP LOCKED`**
 
-Claims must assign a random UUID token, set `processing_operation`, set `processing_until`, and for work with attempt counters increment attempts at claim time. Treat `processing_until IS NULL OR processing_until < now()` as available.
+Claims must assign a random UUID token, set `processing_operation`, set `processing_until`, and for work with attempt
+counters increment attempts at claim time. Treat `processing_until IS NULL OR processing_until < now()` as available.
 
 - [ ] **Step 4: Add expired-lease and stale-token tests**
 
-Assert an expired lease can be reclaimed with a new token, and completion with the old token updates zero rows and cannot overwrite newer state.
+Assert an expired lease can be reclaimed with a new token, and completion with the old token updates zero rows and
+cannot overwrite newer state.
 
 - [ ] **Step 5: Write ChannelProcessor tests with FakeSourceAdapter**
 
-Cover successful access, subscription, poll, temporary exception scheduling, permanent exception stop, and stale completion. A successful poll must call `MessageRepository.ingestPoll` rather than advance waterline separately.
+Cover successful access, subscription, poll, temporary exception scheduling, permanent exception stop, and stale
+completion. A successful poll must call `MessageRepository.ingestPoll` rather than advance waterline separately.
 
 - [ ] **Step 6: Implement ChannelProcessor and SourceEventProcessor**
 
-Use `SourceAdapterRegistry`. `SourceEventProcessor` immediately maps live events to `MessageRepository.ingest/markDeleted` or channel state updates. It does not dispatch Telegram events onto unconstrained parallel threads.
+Use `SourceAdapterRegistry`. `SourceEventProcessor` immediately maps live events to
+`MessageRepository.ingest/markDeleted` or channel state updates. It does not dispatch Telegram events onto
+unconstrained parallel threads.
 
 - [ ] **Step 7: Implement thin schedulers with virtual threads**
 
-Create one Spring-managed virtual-thread executor. `ChannelScheduler` claims access first, then subscription, then poll up to batch size. `PublicationBuilderScheduler` only finds mirror IDs and invokes builder work.
+Create one Spring-managed virtual-thread executor. `ChannelScheduler` claims access first, then subscription, then poll
+up to batch size. `PublicationBuilderScheduler` only finds mirror IDs and invokes builder work.
 
 - [ ] **Step 8: Run concurrency/workflow tests**
 
@@ -563,7 +605,12 @@ Expected: PASS.
 - [ ] **Step 9: Commit**
 
 ```bash
-git add src/main/java/org/moera/importer/application src/main/java/org/moera/importer/scheduling src/main/java/org/moera/importer/persistence src/main/java/org/moera/importer/config src/test/java/org/moera/importer
+git add \
+  src/main/java/org/moera/importer/application \
+  src/main/java/org/moera/importer/scheduling \
+  src/main/java/org/moera/importer/persistence \
+  src/main/java/org/moera/importer/config \
+  src/test/java/org/moera/importer
 git commit -m "feat: add leased channel processing"
 ```
 
@@ -590,7 +637,9 @@ byte[] TelegramCanonicalHash.media(Telegram media metadata input);
 
 - [ ] **Step 1: Add TDLight dependency and write failing formatted-text tests**
 
-Create TDLib `FormattedText` fixtures for plain text, bold, italic, link, code/pre, and overlapping/nested entities supported by Telegram. Include a surrogate-pair/emoji case proving offsets are handled with TDLib/Java UTF-16 semantics.
+Create TDLib `FormattedText` fixtures for plain text, bold, italic, link, code/pre, and overlapping/nested entities
+supported by Telegram. Include a surrogate-pair/emoji case proving offsets are handled with TDLib/Java UTF-16
+semantics.
 
 - [ ] **Step 2: Run formatter tests and verify failure**
 
@@ -602,23 +651,28 @@ Expected: FAIL because formatter does not exist.
 
 - [ ] **Step 3: Implement sanitized HTML formatter**
 
-Escape raw text and attribute values. Convert supported entities to safe HTML tags/links. Do not pass arbitrary source HTML through unsanitized.
+Escape raw text and attribute values. Convert supported entities to safe HTML tags/links. Do not pass arbitrary source
+HTML through unsanitized.
 
 - [ ] **Step 4: Write canonical body-hash tests**
 
-Assert identical text/entities produce identical SHA-256, while formatting-only changes produce a different hash even when visible text is the same.
+Assert identical text/entities produce identical SHA-256, while formatting-only changes produce a different hash even
+when visible text is the same.
 
 - [ ] **Step 5: Implement canonical hashing**
 
-Serialize text plus ordered entity `(offset,length,type,semantic data)` into an unambiguous byte representation, then SHA-256 it. Do not hash generated HTML.
+Serialize text plus ordered entity `(offset,length,type,semantic data)` into an unambiguous byte representation, then
+SHA-256 it. Do not hash generated HTML.
 
 - [ ] **Step 6: Write message/media mapping tests**
 
-Cover text, photo caption, video/document metadata, media album ID in `source_data`, exact file size, MIME type, filename, remote stable ID, remote reacquisition ID, and source media hash.
+Cover text, photo caption, video/document metadata, media album ID in `source_data`, exact file size, MIME type,
+filename, remote stable ID, remote reacquisition ID, and source media hash.
 
 - [ ] **Step 7: Implement TelegramMessageMapper**
 
-Use decimal `message.id` as `SourceMessage.sourceId`, `message.date` as `publishedAt`, HTML body format, and universal `SourceMedia` metadata without downloading files.
+Use decimal `message.id` as `SourceMessage.sourceId`, `message.date` as `publishedAt`, HTML body format, and universal
+`SourceMedia` metadata without downloading files.
 
 - [ ] **Step 8: Run mapper tests**
 
@@ -655,7 +709,9 @@ git commit -m "feat: map Telegram messages into source model"
 
 - [ ] **Step 1: Write adapter tests against a fake TelegramClient boundary**
 
-Test public channel resolution, unresolved private invite, access request result, access granted with `resolvedSourceId`, active/inactive subscription, and `LOST` only for meaningful membership loss rather than transient connectivity.
+Test public channel resolution, unresolved private invite, access request result, access granted with
+`resolvedSourceId`, active/inactive subscription, and `LOST` only for meaningful membership loss rather than transient
+connectivity.
 
 - [ ] **Step 2: Run adapter tests and verify failure**
 
@@ -667,11 +723,15 @@ Expected: FAIL because client/adapter do not exist.
 
 - [ ] **Step 3: Implement TelegramClient wrapper and typed configuration**
 
-Configuration includes API ID/hash, persistent TDLight database directory, disposable TDLight download cache directory, grouping threshold, settling delay, polling intervals, and look-behind count. Do not persist login codes or 2FA passwords.
+Configuration includes API ID/hash, persistent TDLight database directory, disposable TDLight download cache directory,
+grouping threshold, settling delay, polling intervals, and look-behind count. Do not persist login codes or 2FA
+passwords.
 
 - [ ] **Step 4: Implement channel resolution/access/subscription**
 
-Public username/link resolution stores stable decimal chat ID. Private invite may leave `sourceId=null`; join approval maps to `REQUESTED`. Conflicting non-null resolved IDs are treated as permanent consistency errors by core completion logic.
+Public username/link resolution stores stable decimal chat ID. Private invite may leave `sourceId=null`; join approval
+maps to `REQUESTED`. Conflicting non-null resolved IDs are treated as permanent consistency errors by core completion
+logic.
 
 - [ ] **Step 5: Write failing polling/waterline tests**
 
@@ -687,19 +747,25 @@ never changes persistent waterline itself
 
 - [ ] **Step 6: Implement Telegram polling**
 
-Represent waterline as JSON `{ "messageId": <long> }`. The adapter only returns `PollResult`; `MessageRepository.ingestPoll` owns the durable advance.
+Represent waterline as JSON `{ "messageId": <long> }`. The adapter only returns `PollResult`;
+`MessageRepository.ingestPoll` owns the durable advance.
 
 - [ ] **Step 7: Implement ordered live update delivery**
 
-TDLight callbacks enqueue relevant updates. A sequential consumer maps/forwards events per the spec. Handle new message, content change/re-read, permanent deletion, and membership state changes. Do not advance waterline on live events.
+TDLight callbacks enqueue relevant updates. A sequential consumer maps/forwards events per the spec. Handle new
+message, content change/re-read, permanent deletion, and membership state changes. Do not advance waterline on live
+events.
 
 - [ ] **Step 8: Implement media download**
 
-Use stored remote file ID/type to reacquire a TDLib file, synchronously download it on the caller's virtual thread, copy from TDLib cache to the core-supplied path, then ask TDLib to delete its cache copy.
+Use stored remote file ID/type to reacquire a TDLib file, synchronously download it on the caller's virtual thread,
+copy from TDLib cache to the core-supplied path, then ask TDLib to delete its cache copy.
 
 - [ ] **Step 9: Implement dedicated Telegram login/bootstrap command**
 
-Normal daemon startup must fail readiness clearly if no usable saved session exists; it must not prompt interactively. The bootstrap command performs phone/code/2FA interaction and writes TDLight session state to the configured persistent directory.
+Normal daemon startup must fail readiness clearly if no usable saved session exists; it must not prompt interactively.
+The bootstrap command performs phone/code/2FA interaction and writes TDLight session state to the configured persistent
+directory.
 
 - [ ] **Step 10: Run Telegram unit/integration-boundary tests**
 
@@ -712,7 +778,11 @@ Expected: PASS without requiring a real Telegram account.
 - [ ] **Step 11: Commit**
 
 ```bash
-git add src/main/java/org/moera/importer/source/telegram src/main/java/org/moera/importer/config src/main/resources/application.yml src/test/java/org/moera/importer/source/telegram
+git add \
+  src/main/java/org/moera/importer/source/telegram \
+  src/main/java/org/moera/importer/config \
+  src/main/resources/application.yml \
+  src/test/java/org/moera/importer/source/telegram
 git commit -m "feat: implement Telegram source adapter"
 ```
 
@@ -747,7 +817,8 @@ PublicationPayload PublicationPayloadBuilder.build(PublicationContext context, D
 
 - [ ] **Step 1: Add Moera Java library and write failing payload-builder tests**
 
-Cover same-format preservation, mixed-format conversion to HTML, fallback to plain text when HTML is unsupported, paragraph boundaries between source messages, media-only payload, earliest `publishedAt`, and configured feed names.
+Cover same-format preservation, mixed-format conversion to HTML, fallback to plain text when HTML is unsupported,
+paragraph boundaries between source messages, media-only payload, earliest `publishedAt`, and configured feed names.
 
 - [ ] **Step 2: Run payload tests and verify failure**
 
@@ -759,7 +830,8 @@ Expected: FAIL because builder/types do not exist.
 
 - [ ] **Step 3: Implement payload builder**
 
-Do not implement HTML-to-Markdown conversion. Preserve one common supported format, otherwise prefer HTML, otherwise plain text. Join non-empty source bodies by one paragraph boundary in fixed publication order.
+Do not implement HTML-to-Markdown conversion. Preserve one common supported format, otherwise prefer HTML, otherwise
+plain text. Join non-empty source bodies by one paragraph boundary in fixed publication order.
 
 - [ ] **Step 4: Write MoeraService boundary tests**
 
@@ -776,11 +848,14 @@ media wrong-size maps to terminal TOO_LARGE semantics
 
 - [ ] **Step 5: Implement credential resolution and client factory**
 
-`destinations.config` stores a credential reference. Resolve the secret from configured environment/file-backed deployment secret storage. Never log credential contents. Resolve current node URL by `node_name`; do not cache node URL permanently.
+`destinations.config` stores a credential reference. Resolve the secret from configured environment/file-backed
+deployment secret storage. Never log credential contents. Resolve current node URL by `node_name`; do not cache node
+URL permanently.
 
 - [ ] **Step 6: Implement MoeraService**
 
-Cache `/features` capabilities in memory with a bounded TTL. Keep Moera-specific error mapping inside this package. Represent ambiguous mutating outcomes with a dedicated outcome-unknown exception used by processors.
+Cache `/features` capabilities in memory with a bounded TTL. Keep Moera-specific error mapping inside this package.
+Represent ambiguous mutating outcomes with a dedicated outcome-unknown exception used by processors.
 
 - [ ] **Step 7: Run Moera/payload tests**
 
@@ -793,7 +868,12 @@ Expected: PASS without a real Moera node.
 - [ ] **Step 8: Commit**
 
 ```bash
-git add pom.xml src/main/java/org/moera/importer/moera src/main/java/org/moera/importer/application src/test/java/org/moera/importer/application src/test/java/org/moera/importer/moera
+git add \
+  pom.xml \
+  src/main/java/org/moera/importer/moera \
+  src/main/java/org/moera/importer/application \
+  src/test/java/org/moera/importer/application \
+  src/test/java/org/moera/importer/moera
 git commit -m "feat: implement Moera delivery boundary"
 ```
 
@@ -816,15 +896,20 @@ git commit -m "feat: implement Moera delivery boundary"
 Path StagingFileManager.path(long publicationId, long mediaId, byte[] sourceHash);
 List<PublicationMediaClaim> PublicationMediaRepository.claimPending(int limit, Duration lease);
 PublicationMediaContext PublicationMediaRepository.loadContext(long publicationId, long mediaId);
-boolean PublicationMediaRepository.uploaded(long publicationId, long mediaId, UUID token, byte[] expectedSourceHash, String destinationMediaId, JsonNode destinationData);
-boolean PublicationMediaRepository.skipped(long publicationId, long mediaId, UUID token, byte[] expectedSourceHash, MediaSkipReason reason);
-boolean PublicationMediaRepository.retry(long publicationId, long mediaId, UUID token, Instant nextAttemptAt, String error);
+boolean PublicationMediaRepository.uploaded(
+    long publicationId, long mediaId, UUID token, byte[] expectedSourceHash,
+    String destinationMediaId, JsonNode destinationData);
+boolean PublicationMediaRepository.skipped(
+    long publicationId, long mediaId, UUID token, byte[] expectedSourceHash, MediaSkipReason reason);
+boolean PublicationMediaRepository.retry(
+    long publicationId, long mediaId, UUID token, Instant nextAttemptAt, String error);
 boolean PublicationMediaRepository.fail(long publicationId, long mediaId, UUID token, String error);
 ```
 
 - [ ] **Step 1: Write deterministic staging-path tests**
 
-Assert same `(publicationId, mediaId, sourceHash)` produces the same path, a changed hash produces a different path, and generated paths cannot escape the configured staging root.
+Assert same `(publicationId, mediaId, sourceHash)` produces the same path, a changed hash produces a different path,
+and generated paths cannot escape the configured staging root.
 
 - [ ] **Step 2: Implement StagingFileManager**
 
@@ -846,11 +931,13 @@ source_hash changes    -> stale completion rejected
 
 - [ ] **Step 4: Implement media claim/completion repository operations**
 
-Claim only due `PENDING` rows with available/expired lease, increment attempts at claim time, and complete conditionally by token. `uploaded/skipped` additionally verify current `Media.source_hash` equals the expected hash.
+Claim only due `PENDING` rows with available/expired lease, increment attempts at claim time, and complete
+conditionally by token. `uploaded/skipped` additionally verify current `Media.source_hash` equals the expected hash.
 
 - [ ] **Step 5: Implement PublicationMediaProcessor**
 
-Load source adapter by channel source type, load Moera capabilities, perform pre/post-download size checks, download only when staging is absent, upload with `MoeraService`, and map failures through shared retry policy.
+Load source adapter by channel source type, load Moera capabilities, perform pre/post-download size checks, download
+only when staging is absent, upload with `MoeraService`, and map failures through shared retry policy.
 
 - [ ] **Step 6: Implement thin scheduler**
 
@@ -867,7 +954,12 @@ Expected: PASS.
 - [ ] **Step 8: Commit**
 
 ```bash
-git add src/main/java/org/moera/importer/staging src/main/java/org/moera/importer/application/PublicationMediaProcessor.java src/main/java/org/moera/importer/scheduling/PublicationMediaScheduler.java src/main/java/org/moera/importer/persistence/PublicationMediaRepository.java src/test/java/org/moera/importer
+git add \
+  src/main/java/org/moera/importer/staging \
+  src/main/java/org/moera/importer/application/PublicationMediaProcessor.java \
+  src/main/java/org/moera/importer/scheduling/PublicationMediaScheduler.java \
+  src/main/java/org/moera/importer/persistence/PublicationMediaRepository.java \
+  src/test/java/org/moera/importer
 git commit -m "feat: deliver publication media"
 ```
 
@@ -889,7 +981,8 @@ git commit -m "feat: deliver publication media"
 ```java
 List<PublicationClaim> PublicationRepository.claimReady(int limit, Duration lease);
 PublicationContext PublicationRepository.loadContext(long publicationId, int targetRevision);
-boolean PublicationRepository.created(long publicationId, UUID token, int targetRevision, String postingId, JsonNode destinationData);
+boolean PublicationRepository.created(
+    long publicationId, UUID token, int targetRevision, String postingId, JsonNode destinationData);
 boolean PublicationRepository.updated(long publicationId, UUID token, int targetRevision, JsonNode destinationData);
 boolean PublicationRepository.deleted(long publicationId, UUID token, int targetRevision, JsonNode destinationData);
 boolean PublicationRepository.retry(long publicationId, UUID token, Instant nextAttemptAt, String error);
@@ -909,11 +1002,13 @@ lease is absent or expired
 
 - [ ] **Step 2: Implement publication claim**
 
-Claim using `FOR UPDATE SKIP LOCKED`, set token/expiry, increment attempts, and capture `targetRevision` in returned `PublicationClaim`.
+Claim using `FOR UPDATE SKIP LOCKED`, set token/expiry, increment attempts, and capture `targetRevision` in returned
+`PublicationClaim`.
 
 - [ ] **Step 3: Write revision-snapshot race test**
 
-Arrange revision 5, claim target 5, load context, then ingest a source edit that advances stored publication revision to 6. Complete target 5 and assert:
+Arrange revision 5, claim target 5, load context, then ingest a source edit that advances stored publication revision
+to 6. Complete target 5 and assert:
 
 ```text
 revision = 6
@@ -923,7 +1018,8 @@ next_attempt_at is armed for revision 6
 
 - [ ] **Step 4: Implement `loadContext` consistent snapshot**
 
-Use a short transaction and a row lock sufficient to read one coherent target revision into memory. Release transaction before calling Moera.
+Use a short transaction and a row lock sufficient to read one coherent target revision into memory. Release transaction
+before calling Moera.
 
 - [ ] **Step 5: Write PublicationProcessor decision tests**
 
@@ -939,7 +1035,8 @@ outcome unknown on create                    -> retry + distinct metric/log path
 
 - [ ] **Step 6: Implement PublicationProcessor and scheduler**
 
-Build payload from the in-memory context and Moera capabilities, perform the selected Moera operation, and complete only the captured target revision using the claim token.
+Build payload from the in-memory context and Moera capabilities, perform the selected Moera operation, and complete
+only the captured target revision using the claim token.
 
 - [ ] **Step 7: Run publication tests**
 
@@ -952,7 +1049,11 @@ Expected: PASS.
 - [ ] **Step 8: Commit**
 
 ```bash
-git add src/main/java/org/moera/importer/application/PublicationProcessor.java src/main/java/org/moera/importer/scheduling/PublicationScheduler.java src/main/java/org/moera/importer/persistence src/test/java/org/moera/importer
+git add \
+  src/main/java/org/moera/importer/application/PublicationProcessor.java \
+  src/main/java/org/moera/importer/scheduling/PublicationScheduler.java \
+  src/main/java/org/moera/importer/persistence \
+  src/test/java/org/moera/importer
 git commit -m "feat: deliver publication revisions"
 ```
 
@@ -973,26 +1074,33 @@ git commit -m "feat: deliver publication revisions"
 - Modify: `src/main/resources/application.yml`
 
 **Interfaces:**
-- Produces: startup sequence and readiness contract from spec; periodic cleanup; low-cardinality metrics; bounded graceful shutdown.
+- Produces: startup sequence and readiness contract from spec; periodic cleanup; low-cardinality metrics; bounded
+  graceful shutdown.
 
 - [ ] **Step 1: Write failing staging cleanup tests**
 
-Create staging files representing current pending media, uploaded/skipped media, deleted DB rows, changed source hashes, and old orphans. Assert cleanup retains only current pending files plus files inside the configured grace period.
+Create staging files representing current pending media, uploaded/skipped media, deleted DB rows, changed source
+hashes, and old orphans. Assert cleanup retains only current pending files plus files inside the configured grace
+period.
 
 - [ ] **Step 2: Implement StagingCleanup**
 
-Run once during startup before schedulers become active and periodically afterwards. Database checks must be batched enough to avoid one query per filesystem file for large directories.
+Run once during startup before schedulers become active and periodically afterwards. Database checks must be batched
+enough to avoid one query per filesystem file for large directories.
 
 - [ ] **Step 3: Write health/readiness tests**
 
-Assert liveness is independent of temporary Telegram/Moera outages. Readiness is down until PostgreSQL/Flyway are ready and TDLight initialization reports usable daemon state.
+Assert liveness is independent of temporary Telegram/Moera outages. Readiness is down until PostgreSQL/Flyway are ready
+and TDLight initialization reports usable daemon state.
 
 - [ ] **Step 4: Implement startup coordinator**
 
 Enforce sequence:
 
 ```text
-configuration -> database/Flyway -> repositories -> TDLight init -> SourceAdapter.start -> staging cleanup -> scheduler enablement -> readiness UP
+configuration -> database/Flyway -> repositories -> TDLight init
+  -> SourceAdapter.start -> staging cleanup -> scheduler enablement
+  -> readiness UP
 ```
 
 Schedulers must have an enable gate rather than racing application startup.
@@ -1010,11 +1118,13 @@ Never log forbidden sensitive values from `AGENTS.md`.
 
 - [ ] **Step 6: Add Micrometer counters/timers/gauges**
 
-Implement the metrics named in the architecture spec, using only low-cardinality labels. Include `publication_unknown_outcomes_total` and overdue-work age gauges.
+Implement the metrics named in the architecture spec, using only low-cardinality labels. Include
+`publication_unknown_outcomes_total` and overdue-work age gauges.
 
 - [ ] **Step 7: Implement graceful shutdown**
 
-Stop new claims first, stop source adapters/live intake, wait a configured bounded grace period for workers, then allow process exit. Do not mass-clear or roll back leases.
+Stop new claims first, stop source adapters/live intake, wait a configured bounded grace period for workers, then allow
+process exit. Do not mass-clear or roll back leases.
 
 - [ ] **Step 8: Run focused tests**
 
@@ -1030,7 +1140,8 @@ Expected: PASS.
 ./mvnw clean verify
 ```
 
-Expected: all unit and Testcontainers integration tests pass; real Telegram/Moera smoke tests remain excluded by default.
+Expected: all unit and Testcontainers integration tests pass; real Telegram/Moera smoke tests remain excluded by
+default.
 
 - [ ] **Step 10: Commit**
 
@@ -1050,7 +1161,8 @@ git commit -m "feat: add recovery and observability"
 
 **Interfaces:**
 - Consumes: complete application from Tasks 1-11.
-- Produces: deterministic proof of the core pipeline and operator instructions for initial Telegram login, filesystem permissions, PostgreSQL, secrets, health, and smoke tests.
+- Produces: deterministic proof of the core pipeline and operator instructions for initial Telegram login, filesystem
+  permissions, PostgreSQL, secrets, health, and smoke tests.
 
 - [ ] **Step 1: Write end-to-end pipeline test**
 
@@ -1080,7 +1192,8 @@ Expected before final wiring fixes: FAIL at the first missing Spring/application
 
 - [ ] **Step 3: Add the minimal wiring required for the test to pass**
 
-Do not introduce new architecture. Fix only dependency injection, scheduler gates, test fakes, or configuration wiring required to connect already-designed components.
+Do not introduce new architecture. Fix only dependency injection, scheduler gates, test fakes, or configuration wiring
+required to connect already-designed components.
 
 - [ ] **Step 4: Run full verification**
 
@@ -1108,7 +1221,9 @@ opt-in Telegram/Moera smoke tests
 
 - [ ] **Step 6: Cross-check architecture and implementation**
 
-Read `docs/architecture/import-service.md` from start to finish. For every normative section, point to the implementation/test that satisfies it. If implementation intentionally differs, update the architecture first and obtain approval rather than silently changing semantics.
+Read `docs/architecture/import-service.md` from start to finish. For every normative section, point to the
+implementation/test that satisfies it. If implementation intentionally differs, update the architecture first and
+obtain approval rather than silently changing semantics.
 
 - [ ] **Step 7: Commit**
 

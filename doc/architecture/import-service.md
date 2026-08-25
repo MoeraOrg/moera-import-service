@@ -5,9 +5,12 @@
 
 ## 1. Purpose
 
-The service imports channels/feeds from external networks and mirrors their content to Moera. Telegram is the first source integration. RSS is intended to be the next source integration, with Mastodon and other sources possible later.
+The service imports channels/feeds from external networks and mirrors their content to Moera. Telegram is the first
+source integration. RSS is intended to be the next source integration, with Mastodon and other sources possible later.
 
-The architecture keeps source-specific behavior behind adapters and uses a universal core model. This document is the canonical source of truth for agreed architectural decisions. Chat discussions are design history; once a decision is recorded here, this document is authoritative.
+The architecture keeps source-specific behavior behind adapters and uses a universal core model. This document is the
+canonical source of truth for agreed architectural decisions. Chat discussions are design history; once a decision is
+recorded here, this document is authoritative.
 
 ## 2. Technology stack
 
@@ -21,7 +24,8 @@ The architecture keeps source-specific behavior behind adapters and uses a unive
 
 jOOQ is confined to the persistence layer. SQL/jOOQ DSL is not scattered through application code.
 
-Repositories are concrete low-level database classes such as `MirrorRepository`. There is no repository interface plus a separate jOOQ implementation because alternative persistence implementations are not expected.
+Repositories are concrete low-level database classes such as `MirrorRepository`. There is no repository interface plus
+a separate jOOQ implementation because alternative persistence implementations are not expected.
 
 ## 3. Architectural overview
 
@@ -45,7 +49,9 @@ MoeraService
  Destination (Moera node/account)
 ```
 
-A `Channel` is a channel/feed in an external source. A `Message` is one item observed in that channel. One or more consecutive messages may form one `Publication`. A `Mirror` connects a channel to a Moera destination. A `Publication` is the delivery object for one immutable group of source messages through one mirror.
+A `Channel` is a channel/feed in an external source. A `Message` is one item observed in that channel. One or more
+consecutive messages may form one `Publication`. A `Mirror` connects a channel to a Moera destination. A `Publication`
+is the delivery object for one immutable group of source messages through one mirror.
 
 Source-specific properties that do not belong to the universal model are stored in JSONB fields.
 
@@ -84,7 +90,8 @@ String fields use `varchar(n)` where a meaningful upper bound exists; unbounded 
 TELEGRAM
 ```
 
-Future values such as `RSS` are added only when the corresponding adapter is actually implemented, via a Flyway migration.
+Future values such as `RSS` are added only when the corresponding adapter is actually implemented, via a Flyway
+migration.
 
 ## 6. Channel
 
@@ -126,9 +133,13 @@ created_at
 updated_at
 ```
 
-`source_id` is an opaque stable identifier understood by the corresponding `SourceAdapter`. It may be `NULL` temporarily when the external source cannot reveal stable identity before access is granted. Once resolved, it is immutable. `source_uri` is a usable/reference link to the source and is always available. For Telegram the stable ID is the chat ID while the URI may be a public username link or private invite link.
+`source_id` is an opaque stable identifier understood by the corresponding `SourceAdapter`. It may be `NULL`
+temporarily when the external source cannot reveal stable identity before access is granted. Once resolved, it is
+immutable. `source_uri` is a usable/reference link to the source and is always available. For Telegram the stable ID is
+the chat ID while the URI may be a public username link or private invite link.
 
-A `(source_type, source_id)` pair is unique for non-null IDs. PostgreSQL naturally allows multiple unresolved rows with `source_id = NULL`.
+A `(source_type, source_id)` pair is unique for non-null IDs. PostgreSQL naturally allows multiple unresolved rows with
+`source_id = NULL`.
 
 A channel owns many messages and may have many mirrors.
 
@@ -180,13 +191,15 @@ Meaning:
 - `FAILED`: activation failed and will be retried later.
 - `LOST`: a previously active live-update state was lost unexpectedly.
 
-`LOST` is universal even when a source does not expose a literal server-side subscription object. For Telegram it can represent loss of membership/access assumptions or another condition requiring live state to be established again.
+`LOST` is universal even when a source does not expose a literal server-side subscription object. For Telegram it can
+represent loss of membership/access assumptions or another condition requiring live state to be established again.
 
 Source-specific details stay in `subscription_data`.
 
 ## 9. Polling
 
-Polling exists even when live events are active. It provides bounded backfill/checking and is used more frequently when event subscription is unavailable.
+Polling exists even when live events are active. It provides bounded backfill/checking and is used more frequently when
+event subscription is unavailable.
 
 The polling interval is selected by `SourceAdapter`, not by the core or `Mirror`.
 
@@ -220,7 +233,8 @@ A successful poll calculates the next regular poll using the source adapter's po
 
 Its semantic meaning is:
 
-> the position up to which the adapter has successfully completed a forward scan and the service has persisted all messages discovered in that scan.
+> the position up to which the adapter has successfully completed a forward scan and the service has persisted all
+> messages discovered in that scan.
 
 It is not defined as the newest known message ID or as a timestamp.
 
@@ -233,25 +247,31 @@ public record PollResult(
 ) {}
 ```
 
-The core persists the batch first. Only after successful persistence does it advance the channel waterline. If processing fails, the previous waterline remains and a later poll may repeat data safely.
+The core persists the batch first. Only after successful persistence does it advance the channel waterline. If
+processing fails, the previous waterline remains and a later poll may repeat data safely.
 
 ### 10.1 Look-behind
 
-Polling also reads a source-specific overlap before the current waterline to detect recent edits/deletions. The overlap may be expressed by count, time, or another source-specific mechanism.
+Polling also reads a source-specific overlap before the current waterline to detect recent edits/deletions. The overlap
+may be expressed by count, time, or another source-specific mechanism.
 
-Look-behind does not move the waterline backwards. No full historical reconciliation is performed, so sufficiently old edits may be missed; this is accepted.
+Look-behind does not move the waterline backwards. No full historical reconciliation is performed, so sufficiently old
+edits may be missed; this is accepted.
 
-Absence from a poll result is not automatically interpreted as deletion. Deletion is recorded only when the source adapter can establish it reliably.
+Absence from a poll result is not automatically interpreted as deletion. Deletion is recorded only when the source
+adapter can establish it reliably.
 
 ### 10.2 Initial scan
 
-`waterline = NULL` means that no successful initial forward scan has completed. The source adapter chooses the initial import scope.
+`waterline = NULL` means that no successful initial forward scan has completed. The source adapter chooses the initial
+import scope.
 
 ## 11. Message
 
 A `Message` belongs to exactly one `Channel`.
 
-A repost/forward is still a separate message in each channel where it appears. Forward/origin metadata may be stored in `source_data`; it does not create identity links between messages.
+A repost/forward is still a separate message in each channel where it appears. Forward/origin metadata may be stored in
+`source_data`; it does not create identity links between messages.
 
 External identity is unique inside the channel:
 
@@ -278,9 +298,11 @@ updated_at
 
 Only the latest revision is stored. Revision history is not archived.
 
-`revision` is a service-owned `integer` starting at `0`. It increases whenever the normalized source state changes, including text/formatting, media set/content, or deletion state.
+`revision` is a service-owned `integer` starting at `0`. It increases whenever the normalized source state changes,
+including text/formatting, media set/content, or deletion state.
 
-`created_at` is the time the service first stored the message. `published_at` is the source publication time used for grouping. A separate `observed_at` is unnecessary.
+`created_at` is the time the service first stored the message. `published_at` is the source publication time used for
+grouping. A separate `observed_at` is unnecessary.
 
 ## 12. Message body
 
@@ -306,15 +328,18 @@ body = ''
 body_format = PLAIN_TEXT
 ```
 
-`source_body_hash` is SHA-256 (32 bytes) over a canonical source representation that includes formatting semantics, not only visible characters. Thus a formatting-only edit is detected.
+`source_body_hash` is SHA-256 (32 bytes) over a canonical source representation that includes formatting semantics, not
+only visible characters. Thus a formatting-only edit is detected.
 
 The source adapter defines the canonical source representation; the project standardizes the hash algorithm/size.
 
-When messages with different body formats are combined into a publication, the publication-building/destination path converts them to a common representation acceptable to Moera.
+When messages with different body formats are combined into a publication, the publication-building/destination path
+converts them to a common representation acceptable to Moera.
 
 ## 13. Media
 
-`Media` rows are created during source ingest together with their owning `Message`. They describe source files; they do not mean the file has already been downloaded.
+`Media` rows are created during source ingest together with their owning `Message`. They describe source files; they do
+not mean the file has already been downloaded.
 
 Persistent data:
 
@@ -332,13 +357,16 @@ created_at
 updated_at
 ```
 
-No universal `media_type`, dimensions, or duration are stored because the core does not need them. Moera determines media properties itself.
+No universal `media_type`, dimensions, or duration are stored because the core does not need them. Moera determines
+media properties itself.
 
 `mime_type` defaults to `application/octet-stream` when the source cannot provide a better value.
 
 `position` preserves source attachment order within the message.
 
-`source_hash` is a non-null SHA-256 fingerprint of the canonical source media representation. If `(source_id, source_hash)` is unchanged, the media is unchanged. A changed hash, addition, or removal of media increments the owning message revision.
+`source_hash` is a non-null SHA-256 fingerprint of the canonical source media representation. If `(source_id,
+source_hash)` is unchanged, the media is unchanged. A changed hash, addition, or removal of media increments the owning
+message revision.
 
 The original media file is not stored permanently.
 
@@ -346,7 +374,8 @@ The original media file is not stored permanently.
 
 `SourceAdapter` is the boundary between the universal core and an external source.
 
-The core decides **when** an operation should run and persists durable state. The adapter knows **how** to perform that operation for its source.
+The core decides **when** an operation should run and persists durable state. The adapter knows **how** to perform that
+operation for its source.
 
 A source adapter:
 
@@ -385,11 +414,16 @@ public interface SourceAdapter {
 }
 ```
 
-Network operations may be synchronous at the core boundary and run on Java virtual threads. TDLight callbacks stay inside the Telegram adapter.
+Network operations may be synchronous at the core boundary and run on Java virtual threads. TDLight callbacks stay
+inside the Telegram adapter.
 
-The core owns temporary-file creation and cleanup. `downloadMedia(...)` only materializes the requested source file at the supplied path; the adapter does not own staging lifecycle.
+The core owns temporary-file creation and cleanup. `downloadMedia(...)` only materializes the requested source file at
+the supplied path; the adapter does not own staging lifecycle.
 
-`resolveChannel(...)` turns a user-supplied source URI into the best available external identity and initial source state. The result may contain a null `sourceId` when an external service deliberately withholds stable identity until access is granted. `AccessResult` may later return a `resolvedSourceId`; the core persists it only if the channel has no source ID yet, and treats a conflicting later ID as a permanent consistency error.
+`resolveChannel(...)` turns a user-supplied source URI into the best available external identity and initial source
+state. The result may contain a null `sourceId` when an external service deliberately withholds stable identity until
+access is granted. `AccessResult` may later return a `resolvedSourceId`; the core persists it only if the channel has
+no source ID yet, and treats a conflicting later ID as a permanent consistency error.
 
 ## 15. Live source events
 
@@ -448,7 +482,8 @@ updated_at
 
 `node_name` is unique.
 
-`config` is service-owned configuration. `data` is persistent Moera-adapter state. Secrets should preferably be referenced rather than embedded directly in JSONB.
+`config` is service-owned configuration. `data` is persistent Moera-adapter state. Secrets should preferably be
+referenced rather than embedded directly in JSONB.
 
 ## 18. Mirror
 
@@ -470,7 +505,8 @@ Grouping rules do not belong to `Mirror`; they are source semantics and belong t
 
 ## 19. Grouping messages into publications
 
-A `Publication` is not created immediately after ingest. The service waits so that consecutive source messages can be grouped.
+A `Publication` is not created immediately after ingest. The service waits so that consecutive source messages can be
+grouped.
 
 `SourceAdapter` owns:
 
@@ -498,7 +534,8 @@ Publication 2 = D
 
 This also handles Telegram albums and long Telegram texts split into several messages.
 
-For historical/polled batches, a visible later time gap may prove that a group has ended without waiting for live settling delay.
+For historical/polled batches, a visible later time gap may prove that a group has ended without waiting for live
+settling delay.
 
 ### 19.1 Source-specific grouping hints
 
@@ -510,11 +547,13 @@ MUST_SEPARATE
 UNKNOWN
 ```
 
-For example, equal Telegram media-group IDs can yield `MUST_GROUP`. Such source metadata stays source-specific and is not promoted to universal database columns.
+For example, equal Telegram media-group IDs can yield `MUST_GROUP`. Such source metadata stays source-specific and is
+not promoted to universal database columns.
 
 ### 19.2 Immutable membership
 
-Once a `Publication` is created, its `Message` membership and order are immutable. There is no late regrouping/reconciliation.
+Once a `Publication` is created, its `Message` membership and order are immutable. There is no late
+regrouping/reconciliation.
 
 A late message forms part of a new publication even if hindsight suggests it could have belonged to an old one.
 
@@ -557,7 +596,8 @@ revision = 0, published_revision = NULL
     no revision has yet been delivered
 ```
 
-A worker captures the target revision before external work. If the publication changes while the worker is running, a successful worker records only its captured target revision; the newer revision remains pending.
+A worker captures the target revision before external work. If the publication changes while the worker is running, a
+successful worker records only its captured target revision; the newer revision remains pending.
 
 ## 21. PublicationMessage
 
@@ -569,7 +609,8 @@ message_id
 position
 ```
 
-The database enforces only direct referential integrity and ordering uniqueness. More complex domain invariants are enforced in Java rather than by denormalized composite foreign keys.
+The database enforces only direct referential integrity and ordering uniqueness. More complex domain invariants are
+enforced in Java rather than by denormalized composite foreign keys.
 
 `position` fixes message order within the publication.
 
@@ -611,9 +652,11 @@ SOURCE_UNAVAILABLE
 
 A skipped item is a normal terminal result and does not block the rest of the publication.
 
-There is no extra global media position here. Ordering is derived from `publication_messages.position` followed by `media.position`.
+There is no extra global media position here. Ordering is derived from `publication_messages.position` followed by
+`media.position`.
 
-The database does not attempt to prove that a referenced `Media` belongs to one of the publication's messages; application code constructs these rows correctly.
+The database does not attempt to prove that a referenced `Media` belongs to one of the publication's messages;
+application code constructs these rows correctly.
 
 ## 23. Media staging and upload
 
@@ -644,13 +687,15 @@ upload to Moera
 success -> UPLOADED -> delete staging immediately
 ```
 
-The first implementation does not share staging files across mirrors. Duplicate downloads are acceptable in exchange for a simple local lifecycle.
+The first implementation does not share staging files across mirrors. Duplicate downloads are acceptable in exchange
+for a simple local lifecycle.
 
 Startup/periodic cleanup removes orphan staging files.
 
 ### 23.1 Moera-specific behavior
 
-`MoeraService` obtains destination capabilities from the concrete Moera node's `/features` endpoint. The capabilities relevant to importing are primarily:
+`MoeraService` obtains destination capabilities from the concrete Moera node's `/features` endpoint. The capabilities
+relevant to importing are primarily:
 
 ```text
 posting.mediaMaxSize
@@ -661,7 +706,8 @@ Capabilities may be cached in memory for a short TTL, but PostgreSQL is not thei
 
 For each source media item:
 
-1. If an exact source size is already known and exceeds `mediaMaxSize`, mark it `SKIPPED / TOO_LARGE` without downloading it.
+1. If an exact source size is already known and exceeds `mediaMaxSize`, mark it `SKIPPED / TOO_LARGE` without
+   downloading it.
 2. Otherwise download it to core-owned staging.
 3. Check the actual file size before upload.
 4. If it is too large, mark it `SKIPPED / TOO_LARGE` and delete the staging file.
@@ -670,15 +716,20 @@ For each source media item:
 7. Store the returned Moera media ID in `publication_media.destination_media_id`.
 8. Delete staging immediately after successful upload or terminal skip.
 
-A Moera `media.wrong-size` response is a terminal `TOO_LARGE` outcome. A storage/service failure is retryable when the Moera error semantics indicate a temporary condition.
+A Moera `media.wrong-size` response is a terminal `TOO_LARGE` outcome. A storage/service failure is retryable when the
+Moera error semantics indicate a temporary condition.
 
 `downsize=true` is an internal `MoeraService` rule, not a universal media property.
 
-If a source media fingerprint changes while an old upload is running, the corresponding `publication_media` state is reset to `PENDING` and its lease token is invalidated. The old worker's eventual result is discarded because its token no longer matches.
+If a source media fingerprint changes while an old upload is running, the corresponding `publication_media` state is
+reset to `PENDING` and its lease token is invalidated. The old worker's eventual result is discarded because its token
+no longer matches.
 
 ## 24. MoeraService boundary
 
-No destination other than Moera is planned, so there is no destination abstraction/interface. A concrete `MoeraService` owns Moera-specific capabilities, node resolution, authentication, media upload, and posting CRUD. It knows nothing about channel polling, waterlines, or grouping.
+No destination other than Moera is planned, so there is no destination abstraction/interface. A concrete `MoeraService`
+owns Moera-specific capabilities, node resolution, authentication, media upload, and posting CRUD. It knows nothing
+about channel polling, waterlines, or grouping.
 
 Conceptually:
 
@@ -710,15 +761,20 @@ public class MoeraService {
 }
 ```
 
-`MoeraClientFactory` resolves the current node URL from `destination.node_name`, obtains the credential referenced by `destinations.config`, and creates an authenticated Moera client. Node URL resolution must not be treated as permanently stable.
+`MoeraClientFactory` resolves the current node URL from `destination.node_name`, obtains the credential referenced by
+`destinations.config`, and creates an authenticated Moera client. Node URL resolution must not be treated as
+permanently stable.
 
-Authentication, Moera IDs, `downsize=true`, API flags, and future idempotency state remain inside `MoeraService` and destination/publication JSONB state.
+Authentication, Moera IDs, `downsize=true`, API flags, and future idempotency state remain inside `MoeraService` and
+destination/publication JSONB state.
 
 ### 24.1 Publication text format
 
-Messages keep whichever normalized source representation was easiest to produce safely: `PLAIN_TEXT`, `MARKDOWN`, or sanitized `HTML`.
+Messages keep whichever normalized source representation was easiest to produce safely: `PLAIN_TEXT`, `MARKDOWN`, or
+sanitized `HTML`.
 
-When a `Publication` is materialized for Moera, the processor chooses one source format supported by the destination node:
+When a `Publication` is materialized for Moera, the processor chooses one source format supported by the destination
+node:
 
 ```text
 all non-empty messages have the same format
@@ -732,31 +788,38 @@ otherwise
     -> fall back to PLAIN_TEXT
 ```
 
-The design does not require HTML-to-Markdown conversion. Telegram normally produces HTML, and RSS is also expected to commonly produce HTML.
+The design does not require HTML-to-Markdown conversion. Telegram normally produces HTML, and RSS is also expected to
+commonly produce HTML.
 
-The payload supplies Moera source text (`bodySrc` / `bodySrcFormat`) and lets the Moera node build its processed representation.
+The payload supplies Moera source text (`bodySrc` / `bodySrcFormat`) and lets the Moera node build its processed
+representation.
 
 A publication consisting only of media may have an empty source body.
 
 ### 24.2 Joining multiple message bodies
 
-A `Publication` can contain several source messages. Their non-empty bodies are joined in `publication_messages.position` order using a paragraph boundary between source messages.
+A `Publication` can contain several source messages. Their non-empty bodies are joined in
+`publication_messages.position` order using a paragraph boundary between source messages.
 
-For plain text or Markdown this is conceptually a blank line. For HTML it is an appropriate HTML-level boundary rather than raw `\n\n` inserted into markup.
+For plain text or Markdown this is conceptually a blank line. For HTML it is an appropriate HTML-level boundary rather
+than raw `\n\n` inserted into markup.
 
 This rule is intentionally simple. Source-specific joining behavior is not added until a real source requires it.
 
 ### 24.3 Publication time and feeds
 
-The Moera posting object's creation timestamp is not used to reproduce the original source timestamp. The physical posting is created at the current time.
+The Moera posting object's creation timestamp is not used to reproduce the original source timestamp. The physical
+posting is created at the current time.
 
-Instead, when the post is initially published to Moera feeds, its feed publication time is derived from the earliest member message:
+Instead, when the post is initially published to Moera feeds, its feed publication time is derived from the earliest
+member message:
 
 ```text
 publication source time = min(member Message.published_at)
 ```
 
-This value is used as the publication/story `publishAt` value so imported history appears in source chronological order even when imported later.
+This value is used as the publication/story `publishAt` value so imported history appears in source chronological order
+even when imported later.
 
 The target feed set belongs to `mirrors.config`, for example conceptually:
 
@@ -766,7 +829,8 @@ The target feed set belongs to `mirrors.config`, for example conceptually:
 }
 ```
 
-Feed publication attributes are set when the Moera posting is first created. They are not rebuilt on ordinary content updates.
+Feed publication attributes are set when the Moera posting is first created. They are not rebuilt on ordinary content
+updates.
 
 ## 25. Publication delivery
 
@@ -776,10 +840,12 @@ Delivery flow:
 
 1. Resolve current Moera destination capabilities.
 2. Process `PENDING` publication media.
-3. Wait until all current media are `UPLOADED` or `SKIPPED`. A `PENDING` item with `next_attempt_at = NULL` blocks publication until an input/configuration change re-arms it.
+3. Wait until all current media are `UPLOADED` or `SKIPPED`. A `PENDING` item with `next_attempt_at = NULL` blocks
+   publication until an input/configuration change re-arms it.
 4. Build the current payload from member messages in fixed publication order and from uploaded media.
 5. Select a source body format supported by the Moera node.
-6. On first creation, include the configured feed publications and use the earliest member `published_at` as feed `publishAt`.
+6. On first creation, include the configured feed publications and use the earliest member `published_at` as feed
+   `publishAt`.
 7. Create a Moera posting if no destination post exists.
 8. Update an existing posting if the current payload is non-empty.
 9. Delete an existing posting if all text and media content disappeared.
@@ -789,7 +855,8 @@ Deleted member messages contribute no content. Skipped media is omitted.
 
 For create, the returned Moera posting ID is stored in `publications.destination_post_id`.
 
-For update, only posting content/media are updated; feed publication membership/time established at create time are left unchanged.
+For update, only posting content/media are updated; feed publication membership/time established at create time are
+left unchanged.
 
 For delete, a Moera "posting not found" result is treated as the desired final state and therefore as success.
 
@@ -805,11 +872,13 @@ Moera creates the post
 response is lost / client times out
 ```
 
-The service cannot know whether creation happened. The initial behavior is to retry, accepting a small risk of duplicate posts because silent loss is worse.
+The service cannot know whether creation happened. The initial behavior is to retry, accepting a small risk of
+duplicate posts because silent loss is worse.
 
 An unknown create outcome is logged/diagnosed distinctly.
 
-Future Moera idempotency is an internal `MoeraService` concern. The core does not expose an idempotency capability/key abstraction. Persistent Moera-specific tokens can be stored in `publication.destination_data`.
+Future Moera idempotency is an internal `MoeraService` concern. The core does not expose an idempotency capability/key
+abstraction. Persistent Moera-specific tokens can be stored in `publication.destination_data`.
 
 ## 27. Leasing and concurrency
 
@@ -848,9 +917,11 @@ processing_token UUID
 processing_until timestamptz
 ```
 
-A completion update succeeds only if the token still matches. If a worker is delayed beyond its lease and another worker claims the row, the old worker cannot overwrite the newer result.
+A completion update succeeds only if the token still matches. If a worker is delayed beyond its lease and another
+worker claims the row, the old worker cannot overwrite the newer result.
 
-The first implementation does not use heartbeat/lease renewal. External operations have hard timeouts and leases are configured with sufficient margin. Renewal can be added later if long uploads require it.
+The first implementation does not use heartbeat/lease renewal. External operations have hard timeouts and leases are
+configured with sufficient margin. Renewal can be added later if long uploads require it.
 
 No `processing_owner` is stored; worker/instance identity belongs in structured logs together with the token.
 
@@ -874,7 +945,8 @@ subject to which operation is currently due/valid.
 
 ## 28. Retry semantics
 
-`attempts` means the number of attempts **started** for the current work since the last success or input change. It is incremented at claim time, not after failure. Thus a worker crash is still counted.
+`attempts` means the number of attempts **started** for the current work since the last success or input change. It is
+incremented at claim time, not after failure. Thus a worker crash is still counted.
 
 On success:
 
@@ -884,7 +956,8 @@ next_attempt_at = NULL
 last_error = NULL
 ```
 
-For regularly recurring polling, success instead schedules the next normal poll through `SourceAdapter.pollingInterval(...)` while resetting the failure count/error.
+For regularly recurring polling, success instead schedules the next normal poll through
+`SourceAdapter.pollingInterval(...)` while resetting the failure count/error.
 
 ### 28.1 Error categories
 
@@ -900,7 +973,8 @@ OutcomeUnknownException
 - `PermanentException`: repeating the same operation with unchanged input is pointless.
 - `OutcomeUnknownException`: a mutating request may or may not have succeeded; currently important for Moera create.
 
-Expected external states such as access denial, pending access request, subscription loss, or media too large are domain results, not generic exceptions.
+Expected external states such as access denial, pending access request, subscription loss, or media too large are
+domain results, not generic exceptions.
 
 ### 28.2 Retry scheduling
 
@@ -940,7 +1014,8 @@ last_error = NULL
 next_attempt_at = now()
 ```
 
-Examples include a new publication revision, changed source media fingerprint, or relevant destination configuration change.
+Examples include a new publication revision, changed source media fingerprint, or relevant destination configuration
+change.
 
 For changed source media, the active media lease is invalidated so an obsolete upload result cannot be accepted.
 
@@ -995,7 +1070,8 @@ concrete repository classes
 domain/application code
 ```
 
-Generated jOOQ tables/records and `DSLContext` stay inside persistence code. Repositories return normal Java domain values/records rather than jOOQ records.
+Generated jOOQ tables/records and `DSLContext` stay inside persistence code. Repositories return normal Java domain
+values/records rather than jOOQ records.
 
 Schema changes are made in Flyway first and jOOQ is regenerated afterwards.
 
@@ -1078,13 +1154,19 @@ A proposed package layout is:
 └── config/
 ```
 
-Domain/database-facing values are simple immutable Java records where practical. They are not jOOQ records and are not active-record entities.
+Domain/database-facing values are simple immutable Java records where practical. They are not jOOQ records and are not
+active-record entities.
 
-Repositories are concrete classes and may implement atomic persistence operations rather than only primitive CRUD. For example, `MessageRepository.ingest(...)` may, in one transaction, compare hashes/media, insert or update the message, synchronize its media rows, and increment the message revision when necessary.
+Repositories are concrete classes and may implement atomic persistence operations rather than only primitive CRUD. For
+example, `MessageRepository.ingest(...)` may, in one transaction, compare hashes/media, insert or update the message,
+synchronize its media rows, and increment the message revision when necessary.
 
-Schedulers are deliberately thin. They ask repositories to claim due work and hand claimed items to processors, normally running network/file work on Java virtual threads. `FOR UPDATE SKIP LOCKED`, lease creation, and conditional lease completion remain encapsulated in repositories.
+Schedulers are deliberately thin. They ask repositories to claim due work and hand claimed items to processors,
+normally running network/file work on Java virtual threads. `FOR UPDATE SKIP LOCKED`, lease creation, and conditional
+lease completion remain encapsulated in repositories.
 
-`SourceAdapterRegistry` maps `SourceType` to the corresponding Spring-managed `SourceAdapter`, so application code does not switch on Telegram/RSS/Mastodon explicitly.
+`SourceAdapterRegistry` maps `SourceType` to the corresponding Spring-managed `SourceAdapter`, so application code does
+not switch on Telegram/RSS/Mastodon explicitly.
 
 ## 32. Configuration, secrets, and local state
 
@@ -1097,13 +1179,15 @@ durable application state           -> PostgreSQL
 Telegram TDLight authorization state -> persistent filesystem volume
 ```
 
-Operational tuning such as worker batch sizes, lease durations, retry backoff, Telegram polling intervals, grouping threshold, settling delay, and look-behind size belongs in typed Spring `@ConfigurationProperties`, not in PostgreSQL.
+Operational tuning such as worker batch sizes, lease durations, retry backoff, Telegram polling intervals, grouping
+threshold, settling delay, and look-behind size belongs in typed Spring `@ConfigurationProperties`, not in PostgreSQL.
 
 ### 32.1 TDLight session storage
 
 The first implementation uses one Telegram user account and one TDLight client for all Telegram channels.
 
-TDLight's database/session directory is persistent and survives service restarts/redeployments. A conceptual filesystem layout is:
+TDLight's database/session directory is persistent and survives service restarts/redeployments. A conceptual filesystem
+layout is:
 
 ```text
 /var/lib/moera-import/telegram/data/   persistent TDLight database/session
@@ -1111,17 +1195,24 @@ TDLight's database/session directory is persistent and survives service restarts
 /var/tmp/moera-import/staging/         core-owned temporary publication media
 ```
 
-The TDLight state directory is sensitive credential-equivalent data and should have restrictive filesystem permissions. The download cache is disposable.
+The TDLight state directory is sensitive credential-equivalent data and should have restrictive filesystem permissions.
+The download cache is disposable.
 
-Initial Telegram authentication is performed in a dedicated bootstrap/login mode rather than interactively during normal daemon startup. Verification codes and 2FA passwords are not stored in PostgreSQL or ordinary configuration.
+Initial Telegram authentication is performed in a dedicated bootstrap/login mode rather than interactively during
+normal daemon startup. Verification codes and 2FA passwords are not stored in PostgreSQL or ordinary configuration.
 
-The first implementation officially supports one active service instance owning the Telegram session. PostgreSQL leasing remains safe for multiple workers/instances, but multiple JVMs do not concurrently open the same TDLight state directory. Horizontal scaling/leader election is deferred until needed.
+The first implementation officially supports one active service instance owning the Telegram session. PostgreSQL
+leasing remains safe for multiple workers/instances, but multiple JVMs do not concurrently open the same TDLight state
+directory. Horizontal scaling/leader election is deferred until needed.
 
 ### 32.2 Moera credentials
 
-`destinations.config` stores a credential reference rather than the credential value itself. The credential is resolved from a mounted secret/file or equivalent deployment secret mechanism. Database dumps therefore do not contain Moera authentication secrets.
+`destinations.config` stores a credential reference rather than the credential value itself. The credential is resolved
+from a mounted secret/file or equivalent deployment secret mechanism. Database dumps therefore do not contain Moera
+authentication secrets.
 
-A dedicated abstraction with multiple credential-store implementations is not required initially; a concrete file/environment-backed implementation is sufficient.
+A dedicated abstraction with multiple credential-store implementations is not required initially; a concrete
+file/environment-backed implementation is sufficient.
 
 ## 33. TelegramSourceAdapter design
 
@@ -1140,14 +1231,16 @@ access_state = GRANTED
 subscription_state = INACTIVE unless membership is already active
 ```
 
-For some private invite links Telegram does not reveal the chat ID before membership/access is granted. Such a channel is persisted with:
+For some private invite links Telegram does not reveal the chat ID before membership/access is granted. Such a channel
+is persisted with:
 
 ```text
 source_id = NULL
 source_uri = invite link
 ```
 
-`refreshAccess(...)` may later return a `resolvedSourceId`. Once a non-null `source_id` has been persisted, it is immutable.
+`refreshAccess(...)` may later return a `resolvedSourceId`. Once a non-null `source_id` has been persisted, it is
+immutable.
 
 ### 33.2 Telegram access
 
@@ -1165,11 +1258,14 @@ UNKNOWN
    +-- invalid/expired/banned -----> DENIED
 ```
 
-`REQUESTED` is checked again according to adapter policy. `DENIED` is used only when denial/loss of access is known with sufficient confidence; uncertain pending cases are not converted to denial merely because approval has not yet arrived.
+`REQUESTED` is checked again according to adapter policy. `DENIED` is used only when denial/loss of access is known
+with sufficient confidence; uncertain pending cases are not converted to denial merely because approval has not yet
+arrived.
 
 ### 33.3 Telegram subscription
 
-For Telegram, event subscription corresponds to being in the state where the TDLib user account is a member/subscriber and live channel updates are expected.
+For Telegram, event subscription corresponds to being in the state where the TDLib user account is a member/subscriber
+and live channel updates are expected.
 
 A public channel can therefore be readable while subscription is inactive:
 
@@ -1178,9 +1274,12 @@ access = GRANTED
 subscription = INACTIVE
 ```
 
-`refreshSubscription(...)` attempts to join/subscribe. If membership requires approval while the public history remains readable, subscription may be `ACTIVATING` while access remains `GRANTED`.
+`refreshSubscription(...)` attempts to join/subscribe. If membership requires approval while the public history remains
+readable, subscription may be `ACTIVATING` while access remains `GRANTED`.
 
-Ordinary transient network disconnects do not turn `ACTIVE` into `LOST`; TDLib reconnects and maintains its own local state. `LOST` represents a meaningful external state change such as loss of membership. If a private channel also becomes unreadable, access transitions to `DENIED` as appropriate.
+Ordinary transient network disconnects do not turn `ACTIVE` into `LOST`; TDLib reconnects and maintains its own local
+state. `LOST` represents a meaningful external state change such as loss of membership. If a private channel also
+becomes unreadable, access transitions to `DENIED` as appropriate.
 
 ### 33.4 Telegram waterline and polling
 
@@ -1192,15 +1291,20 @@ Telegram waterline is source-specific JSON, conceptually:
 }
 ```
 
-`getChatHistory` is paginated backwards until the scan reaches the prior waterline, then continues through the configured look-behind window. Results are normalized into chronological order before core ingest.
+`getChatHistory` is paginated backwards until the scan reaches the prior waterline, then continues through the
+configured look-behind window. Results are normalized into chronological order before core ingest.
 
 The new waterline is the newest message ID reached by the successfully persisted forward scan.
 
-**Live updates never advance the waterline.** A message received live is persisted immediately but will intentionally be observed again by the next poll; idempotent ingest makes this harmless. Only successful polling advances the durable waterline.
+**Live updates never advance the waterline.** A message received live is persisted immediately but will intentionally
+be observed again by the next poll; idempotent ingest makes this harmless. Only successful polling advances the durable
+waterline.
 
-A short/partial TDLib history page is not by itself treated as proof that history has ended; pagination continues according to the adapter's scan rules.
+A short/partial TDLib history page is not by itself treated as proof that history has ended; pagination continues
+according to the adapter's scan rules.
 
-Polling absence is not considered proof of deletion. In the first version, look-behind primarily detects edits and fills gaps/new messages.
+Polling absence is not considered proof of deletion. In the first version, look-behind primarily detects edits and
+fills gaps/new messages.
 
 ### 33.5 Telegram live events
 
@@ -1215,13 +1319,16 @@ permanent deletion   -> SourceEvent.MessageDeleted
 membership changes   -> access/subscription state updates
 ```
 
-Deletion is propagated only when TDLib indicates a permanent server-side deletion, not when an item merely disappears from local cache.
+Deletion is propagated only when TDLib indicates a permanent server-side deletion, not when an item merely disappears
+from local cache.
 
-Telegram metadata such as chats/supergroups may be cached in memory as recommended by TDLib. Such caches are not durable application state.
+Telegram metadata such as chats/supergroups may be cached in memory as recommended by TDLib. Such caches are not
+durable application state.
 
 ### 33.6 Telegram message mapping
 
-Telegram message IDs become textual `SourceMessage.sourceId` values. Telegram publication timestamps become `published_at`.
+Telegram message IDs become textual `SourceMessage.sourceId` values. Telegram publication timestamps become
+`published_at`.
 
 Telegram formatted text and captions are normalized to sanitized HTML, so Telegram messages normally use:
 
@@ -1229,15 +1336,18 @@ Telegram formatted text and captions are normalized to sanitized HTML, so Telegr
 body_format = HTML
 ```
 
-Plain text is HTML-escaped. The `source_body_hash` is calculated from a canonical representation of the original Telegram text plus ordered formatting entities and their semantic data, not from generated HTML.
+Plain text is HTML-escaped. The `source_body_hash` is calculated from a canonical representation of the original
+Telegram text plus ordered formatting entities and their semantic data, not from generated HTML.
 
 Formatting-only edits therefore increment `Message.revision`.
 
-Telegram entity offsets are interpreted according to TDLib semantics inside the Telegram mapper and do not leak into the universal model.
+Telegram entity offsets are interpreted according to TDLib semantics inside the Telegram mapper and do not leak into
+the universal model.
 
 ### 33.7 Telegram media mapping
 
-Telegram file-bearing message content is mapped to universal `Media` metadata during ingest without downloading the source file.
+Telegram file-bearing message content is mapped to universal `Media` metadata during ingest without downloading the
+source file.
 
 Where available:
 
@@ -1247,15 +1357,19 @@ media.size        = exact TDLib file size only when known
 media.source_data = remote file ID and Telegram file-type information needed to reacquire/download the file later
 ```
 
-If the stable remote unique ID is unavailable, the adapter may fall back to another stable-enough Telegram remote identifier.
+If the stable remote unique ID is unavailable, the adapter may fall back to another stable-enough Telegram remote
+identifier.
 
 Estimated/expected file sizes are not treated as exact values for the Moera maximum-size precheck.
 
-`source_hash` includes the source file identity and the source metadata that affects publication semantics, such as MIME type and filename.
+`source_hash` includes the source file identity and the source metadata that affects publication semantics, such as
+MIME type and filename.
 
 ### 33.8 Telegram media download
 
-At publication time, `downloadMedia(...)` uses the stored Telegram remote identifier to reacquire the current TDLib file object, asks TDLib to download it, copies the resulting TDLib cache file into the core-owned staging path, and then asks TDLib to delete its cached copy.
+At publication time, `downloadMedia(...)` uses the stored Telegram remote identifier to reacquire the current TDLib
+file object, asks TDLib to download it, copies the resulting TDLib cache file into the core-owned staging path, and
+then asks TDLib to delete its cached copy.
 
 The core owns staging cleanup and retry lifecycle. The Telegram adapter owns only the TDLib cache lifecycle.
 
@@ -1269,9 +1383,11 @@ different non-zero album IDs      -> MUST_SEPARATE
 otherwise                         -> UNKNOWN
 ```
 
-`UNKNOWN` falls back to the Telegram adapter's temporal `groupingThreshold`, which also supports long texts split by Telegram clients into several consecutive messages.
+`UNKNOWN` falls back to the Telegram adapter's temporal `groupingThreshold`, which also supports long texts split by
+Telegram clients into several consecutive messages.
 
-The Telegram adapter also owns Telegram-specific `settlingDelay`, polling intervals, look-behind size, and initial-history policy.
+The Telegram adapter also owns Telegram-specific `settlingDelay`, polling intervals, look-behind size, and
+initial-history policy.
 
 ## 34. Accepted limitations / non-goals
 
@@ -1283,7 +1399,8 @@ The initial architecture intentionally accepts:
 - publication membership is immutable after creation;
 - absence from a polling/feed result alone is not evidence of deletion;
 - source media is not stored permanently;
-- Moera create-post idempotency is currently unavailable, so a rare ambiguous failure can create a duplicate after retry;
+- Moera create-post idempotency is currently unavailable, so a rare ambiguous failure can create a duplicate after
+  retry;
 - staging files are not shared across mirrors;
 - no lease heartbeat/renewal in the first implementation.
 
@@ -1291,7 +1408,8 @@ The initial architecture intentionally accepts:
 
 ### 35.1 Telegram — first
 
-Implemented with TDLight. Telegram provides live events, source-specific message/media data, private-channel access workflows, and strong grouping hints such as media-group IDs.
+Implemented with TDLight. Telegram provides live events, source-specific message/media data, private-channel access
+workflows, and strong grouping hints such as media-group IDs.
 
 The database `source_type` enum contains only `TELEGRAM` initially.
 
@@ -1303,11 +1421,13 @@ RSS primarily exercises polling, bounded feed history, weak deletion information
 
 ### 35.3 Mastodon — later
 
-Mastodon should fit the same universal `Channel` / `Message` / `Media` / `SourceAdapter` model with source-specific IDs/cursors/data kept behind the adapter.
+Mastodon should fit the same universal `Channel` / `Message` / `Media` / `SourceAdapter` model with source-specific
+IDs/cursors/data kept behind the adapter.
 
 ## 36. Design principles
 
-1. The core models channels, messages, media, mirrors, Moera destinations, and publications; it does not model Telegram concepts directly.
+1. The core models channels, messages, media, mirrors, Moera destinations, and publications; it does not model Telegram
+   concepts directly.
 2. Source-specific behavior/data stay in `SourceAdapter` plus JSONB source state.
 3. Moera-specific delivery behavior/data stay in concrete `MoeraService` plus destination/publication JSONB state.
 4. Ingest and delivery are decoupled.
@@ -1316,20 +1436,26 @@ Mastodon should fit the same universal `Channel` / `Message` / `Media` / `Source
 7. Grouping is source semantics, not mirror configuration.
 8. Publication membership is immutable after creation.
 9. No network call holds a database transaction open.
-10. Claim/lease operations are safe across multiple service instances through `SKIP LOCKED`, lease tokens, and conditional completion.
-11. Blocking external/database/file work is handled with Java virtual threads rather than Reactor-style reactive plumbing.
+10. Claim/lease operations are safe across multiple service instances through `SKIP LOCKED`, lease tokens, and
+    conditional completion.
+11. Blocking external/database/file work is handled with Java virtual threads rather than Reactor-style reactive
+    plumbing.
 12. Flyway is the only database-schema source of truth; jOOQ reflects that schema.
 13. New source types are added only together with real adapter implementations.
 
 ## 37. Repository APIs and application workflows
 
-Repositories are concrete classes implemented with jOOQ. They expose atomic persistence operations rather than generic CRUD. jOOQ-generated classes and `DSLContext` remain confined to the persistence layer.
+Repositories are concrete classes implemented with jOOQ. They expose atomic persistence operations rather than generic
+CRUD. jOOQ-generated classes and `DSLContext` remain confined to the persistence layer.
 
 ### Channel claims
 
-Scheduled channel work is represented by a `ChannelClaim` containing a `ChannelSnapshot`, a `ChannelOperation` (`ACCESS`, `SUBSCRIPTION`, or `POLL`), and a lease token. `processing_until` remains an internal persistence detail.
+Scheduled channel work is represented by a `ChannelClaim` containing a `ChannelSnapshot`, a `ChannelOperation`
+(`ACCESS`, `SUBSCRIPTION`, or `POLL`), and a lease token. `processing_until` remains an internal persistence detail.
 
-`ChannelRepository` exposes separate claim operations for access, subscription, and polling so that the scheduler can preserve the priority order ACCESS → SUBSCRIPTION → POLL. Completion methods return whether the lease token was still current; stale completions are discarded.
+`ChannelRepository` exposes separate claim operations for access, subscription, and polling so that the scheduler can
+preserve the priority order ACCESS → SUBSCRIPTION → POLL. Completion methods return whether the lease token was
+still current; stale completions are discarded.
 
 ### Poll ingest
 
@@ -1344,19 +1470,27 @@ Scheduled channel work is represented by a `ChannelClaim` containing a `ChannelS
 - clear the lease;
 - commit.
 
-If the token is stale, none of the poll result is persisted. Live updates use `MessageRepository.ingest(...)` and do not advance the waterline.
+If the token is stale, none of the poll result is persisted. Live updates use `MessageRepository.ingest(...)` and do
+not advance the waterline.
 
 ### Message ingest
 
-Message ingest compares `source_body_hash`, the media set, media `source_hash` values, and deletion state. A real change increments `messages.revision`. The repository synchronizes the current media set and marks affected publications dirty in the same transaction. Application code does not calculate revisions itself.
+Message ingest compares `source_body_hash`, the media set, media `source_hash` values, and deletion state. A real
+change increments `messages.revision`. The repository synchronizes the current media set and marks affected
+publications dirty in the same transaction. Application code does not calculate revisions itself.
 
 ### Publication repositories
 
-`PublicationRepository` claims only publications whose `revision` differs from `published_revision`, whose `next_attempt_at` is due, whose lease is available, and whose current publication media are all terminal (`UPLOADED` or `SKIPPED`). A claim records the `targetRevision` and lease token.
+`PublicationRepository` claims only publications whose `revision` differs from `published_revision`, whose
+`next_attempt_at` is due, whose lease is available, and whose current publication media are all terminal (`UPLOADED` or
+`SKIPPED`). A claim records the `targetRevision` and lease token.
 
-`PublicationMediaRepository` claims pending publication media and returns a context containing the publication, destination, channel snapshot, and source media needed by the worker. Completion of media upload is conditional on both the lease token and the expected media `source_hash` still matching.
+`PublicationMediaRepository` claims pending publication media and returns a context containing the publication,
+destination, channel snapshot, and source media needed by the worker. Completion of media upload is conditional on both
+the lease token and the expected media `source_hash` still matching.
 
-A separate `MediaRepository` is not needed: source media lifecycle belongs to `MessageRepository`, while destination delivery state belongs to `PublicationMediaRepository`.
+A separate `MediaRepository` is not needed: source media lifecycle belongs to `MessageRepository`, while destination
+delivery state belongs to `PublicationMediaRepository`.
 
 ## 38. Application services and schedulers
 
@@ -1364,35 +1498,48 @@ The application layer consists of four independent workflows.
 
 ### Channel workflow
 
-`ChannelScheduler` claims due channel operations in priority order and dispatches each claim to `ChannelProcessor` on virtual threads. `ChannelProcessor` invokes the matching `SourceAdapter` operation and conditionally completes or retries the claim through the repositories.
+`ChannelScheduler` claims due channel operations in priority order and dispatches each claim to `ChannelProcessor` on
+virtual threads. `ChannelProcessor` invokes the matching `SourceAdapter` operation and conditionally completes or
+retries the claim through the repositories.
 
-A successful poll is committed through `MessageRepository.ingestPoll(...)`, preserving the invariant that the waterline advances only after the entire batch is stored successfully.
+A successful poll is committed through `MessageRepository.ingestPoll(...)`, preserving the invariant that the waterline
+advances only after the entire batch is stored successfully.
 
 ### Live source events
 
-`SourceEventProcessor` implements `SourceEventSink` and persists normalized source events immediately through the repositories. There is no separate message-ingest service or durable event bus.
+`SourceEventProcessor` implements `SourceEventSink` and persists normalized source events immediately through the
+repositories. There is no separate message-ingest service or durable event bus.
 
-`SourceAdapter` must preserve event order within a channel. For Telegram, TDLib callbacks feed an internal queue and a sequential consumer normalizes and forwards updates to the event sink. This preserves TDLib update ordering rather than introducing reordering through unconstrained virtual-thread dispatch.
+`SourceAdapter` must preserve event order within a channel. For Telegram, TDLib callbacks feed an internal queue and a
+sequential consumer normalizes and forwards updates to the event sink. This preserves TDLib update ordering rather than
+introducing reordering through unconstrained virtual-thread dispatch.
 
 ### Publication building
 
 `PublicationBuilderScheduler` finds mirrors with unassigned messages and invokes `PublicationBuilder`.
 
-Publication building performs no network I/O and therefore does not use leases. `PublicationBuilder.build(mirrorId)` runs as a short Spring transaction and locks the relevant mirror row with `FOR UPDATE SKIP LOCKED` so that only one builder can group messages for a mirror at a time.
+Publication building performs no network I/O and therefore does not use leases. `PublicationBuilder.build(mirrorId)`
+runs as a short Spring transaction and locks the relevant mirror row with `FOR UPDATE SKIP LOCKED` so that only one
+builder can group messages for a mirror at a time.
 
 Messages are considered in `(published_at, id)` order. For adjacent messages:
 
 - `MUST_GROUP` always joins them;
 - `MUST_SEPARATE` closes the current group;
-- `UNKNOWN` joins them when the gap between adjacent messages is no greater than the source adapter's grouping threshold.
+- `UNKNOWN` joins them when the gap between adjacent messages is no greater than the source adapter's grouping
+  threshold.
 
-A group followed by a known boundary can be created immediately. The final known group is created only after `settlingDelay` has elapsed since its last message. Historical groups whose messages are already older than the settling delay are created immediately.
+A group followed by a known boundary can be created immediately. The final known group is created only after
+`settlingDelay` has elapsed since its last message. Historical groups whose messages are already older than the
+settling delay are created immediately.
 
-Creating a publication inserts `publications`, `publication_messages`, and `publication_media` atomically. New publications and publication-media rows are scheduled immediately with `next_attempt_at = now()`.
+Creating a publication inserts `publications`, `publication_messages`, and `publication_media` atomically. New
+publications and publication-media rows are scheduled immediately with `next_attempt_at = now()`.
 
 ### Publication media workflow
 
-`PublicationMediaScheduler` claims due pending media and dispatches them to `PublicationMediaProcessor` on virtual threads.
+`PublicationMediaScheduler` claims due pending media and dispatches them to `PublicationMediaProcessor` on virtual
+threads.
 
 The processor:
 
@@ -1405,17 +1552,25 @@ The processor:
 7. uploads to Moera with `downsize=true`;
 8. conditionally completes the claim as `UPLOADED`, `SKIPPED`, retryable failure, or permanent failure.
 
-The processor records the media `source_hash` before doing external work. A completion is accepted only if the current source hash still matches.
+The processor records the media `source_hash` before doing external work. A completion is accepted only if the current
+source hash still matches.
 
 ### Publication workflow
 
 `PublicationScheduler` claims ready publications and dispatches them to `PublicationProcessor` on virtual threads.
 
-For a claimed `targetRevision`, `PublicationRepository.loadContext(...)` obtains a consistent in-memory snapshot of the publication, its messages, uploaded media, destination, and mirror configuration. A short transaction holds an appropriate row lock while the snapshot is read. After the snapshot is materialized, no database transaction remains open during Moera calls.
+For a claimed `targetRevision`, `PublicationRepository.loadContext(...)` obtains a consistent in-memory snapshot of the
+publication, its messages, uploaded media, destination, and mirror configuration. A short transaction holds an
+appropriate row lock while the snapshot is read. After the snapshot is materialized, no database transaction remains
+open during Moera calls.
 
-If the source changes while revision N is being published, the persisted `revision` may advance to N+1 while the worker still publishes its in-memory snapshot for N. Successful completion sets `published_revision = N`, leaving the publication dirty so that a later worker publishes N+1.
+If the source changes while revision N is being published, the persisted `revision` may advance to N+1 while the worker
+still publishes its in-memory snapshot for N. Successful completion sets `published_revision = N`, leaving the
+publication dirty so that a later worker publishes N+1.
 
-`PublicationProcessor` creates a Moera post when no destination post exists, updates an existing post when the payload is non-empty, deletes the post when the new payload is empty, and performs no external call when both the payload and `destination_post_id` are absent. In the latter case it simply marks `targetRevision` as published.
+`PublicationProcessor` creates a Moera post when no destination post exists, updates an existing post when the payload
+is non-empty, deletes the post when the new payload is empty, and performs no external call when both the payload and
+`destination_post_id` are absent. In the latter case it simply marks `targetRevision` as published.
 
 ## 39. Staging files
 
@@ -1425,9 +1580,12 @@ Staging paths are deterministic and derived from publication ID, media ID, and s
 ${stagingDir}/<publication-id>/<media-id>-<source-hash>
 ```
 
-A retry can therefore reuse a file already downloaded by an earlier attempt without storing a path in PostgreSQL. Changing `Media.source_hash` naturally changes the staging path. Old orphaned staging files are later removed by cleanup.
+A retry can therefore reuse a file already downloaded by an earlier attempt without storing a path in PostgreSQL.
+Changing `Media.source_hash` naturally changes the staging path. Old orphaned staging files are later removed by
+cleanup.
 
-After a successful upload or terminal skip/failure, the staging file is deleted. It is retained across temporary or outcome-unknown upload failures so that retries do not need to download the source media again.
+After a successful upload or terminal skip/failure, the staging file is deleted. It is retained across temporary or
+outcome-unknown upload failures so that retries do not need to download the source media again.
 
 ## 40. Retry handling in processors
 
@@ -1436,7 +1594,8 @@ Network processors use the same failure pattern:
 - temporary failures are rescheduled using `RetryPolicy`;
 - outcome-unknown failures are rescheduled the same way but are separately logged and metered;
 - permanent failures clear automatic scheduling and retain `last_error`;
-- normal terminal media outcomes such as `TOO_LARGE`, `UNSUPPORTED`, and `SOURCE_UNAVAILABLE` become `SKIPPED` rather than failures.
+- normal terminal media outcomes such as `TOO_LARGE`, `UNSUPPORTED`, and `SOURCE_UNAVAILABLE` become `SKIPPED` rather
+  than failures.
 
 No separate retry scheduler is required. Existing schedulers pick work up again when `next_attempt_at` becomes due.
 
@@ -1444,18 +1603,22 @@ No separate retry scheduler is required. Existing schedulers pick work up again 
 
 Two concurrency patterns are intentionally used:
 
-- external/network work: short claim transaction → lease token and expiry → commit → external work → conditional completion by token;
-- pure database/application work such as publication grouping: short transaction with row locks (`FOR UPDATE SKIP LOCKED`) and no lease.
+- external/network work: short claim transaction → lease token and expiry → commit → external work →
+  conditional completion by token;
+- pure database/application work such as publication grouping: short transaction with row locks (`FOR UPDATE SKIP
+  LOCKED`) and no lease.
 
 This keeps PostgreSQL transactions short while avoiding unnecessary job infrastructure.
 
 ## 42. Testing strategy
 
-Testing is layered so that deterministic core logic is covered without external services, while persistence behavior is verified against real PostgreSQL semantics.
+Testing is layered so that deterministic core logic is covered without external services, while persistence behavior is
+verified against real PostgreSQL semantics.
 
 ### 42.1 Unit tests
 
-Pure application/domain logic is tested with ordinary JUnit 5 tests without Spring or PostgreSQL. Important units include:
+Pure application/domain logic is tested with ordinary JUnit 5 tests without Spring or PostgreSQL. Important units
+include:
 
 ```text
 publication grouping and settling
@@ -1466,15 +1629,18 @@ media-size decisions
 publication create/update/delete decision logic
 ```
 
-Grouping tests cover temporal thresholds, `MUST_GROUP`, `MUST_SEPARATE`, historical settled groups, and live settling boundaries.
+Grouping tests cover temporal thresholds, `MUST_GROUP`, `MUST_SEPARATE`, historical settled groups, and live settling
+boundaries.
 
-A `FakeSourceAdapter` supplies deterministic access/subscription/poll/download results and grouping behavior to application tests. Real Telegram is not required for ordinary core tests.
+A `FakeSourceAdapter` supplies deterministic access/subscription/poll/download results and grouping behavior to
+application tests. Real Telegram is not required for ordinary core tests.
 
 ### 42.2 Persistence integration tests
 
 Repository tests use real PostgreSQL through Testcontainers. H2 or another compatibility database is not used.
 
-The test database is initialized by the same Flyway migrations used in production, and jOOQ operates against the resulting PostgreSQL schema. Tests explicitly cover PostgreSQL-specific behavior such as:
+The test database is initialized by the same Flyway migrations used in production, and jOOQ operates against the
+resulting PostgreSQL schema. Tests explicitly cover PostgreSQL-specific behavior such as:
 
 ```text
 jsonb and PostgreSQL enums
@@ -1485,21 +1651,27 @@ conditional completion by processing_token
 atomic poll ingest + waterline advance
 ```
 
-Important concurrency tests use separate threads/transactions to prove that two workers cannot claim the same row, that an expired lease can be reclaimed, and that a stale token cannot complete newer work.
+Important concurrency tests use separate threads/transactions to prove that two workers cannot claim the same row, that
+an expired lease can be reclaimed, and that a stale token cannot complete newer work.
 
-Message-ingest integration tests cover creation at revision 0, idempotent re-ingest, text-format changes, media-set/hash changes, and deletion propagation.
+Message-ingest integration tests cover creation at revision 0, idempotent re-ingest, text-format changes,
+media-set/hash changes, and deletion propagation.
 
-Publication tests cover the race where revision N is published while the stored publication advances to N+1. Publication-media tests cover invalidation when `Media.source_hash` changes during upload.
+Publication tests cover the race where revision N is published while the stored publication advances to N+1.
+Publication-media tests cover invalidation when `Media.source_hash` changes during upload.
 
 ### 42.3 Telegram tests
 
-`TelegramMessageMapper` is isolated from live network behavior and unit-tested with TDLib objects, including formatted text/entity conversion, UTF-16 entity offsets, captions, media mapping, media-album metadata, remote file identifiers, and canonical hashes.
+`TelegramMessageMapper` is isolated from live network behavior and unit-tested with TDLib objects, including formatted
+text/entity conversion, UTF-16 entity offsets, captions, media mapping, media-album metadata, remote file identifiers,
+and canonical hashes.
 
 Tests that require a real Telegram account are opt-in smoke/integration tests and are not part of the default CI suite.
 
 ### 42.4 Moera tests
 
-`MoeraService` behavior is tested against controlled/fake HTTP or library boundaries where practical. Tests requiring a real Moera node are opt-in smoke tests rather than normal CI requirements.
+`MoeraService` behavior is tested against controlled/fake HTTP or library boundaries where practical. Tests requiring a
+real Moera node are opt-in smoke tests rather than normal CI requirements.
 
 ## 43. Observability and health
 
@@ -1520,13 +1692,15 @@ target_revision
 result
 ```
 
-Sensitive values are never logged, including message bodies, Telegram invite links, authentication tokens, verification codes, 2FA passwords, or Moera credentials.
+Sensitive values are never logged, including message bodies, Telegram invite links, authentication tokens, verification
+codes, 2FA passwords, or Moera credentials.
 
 Outcome-unknown Moera create failures are logged distinctly from ordinary temporary failures.
 
 ### 43.2 Metrics
 
-Metrics use only low-cardinality labels such as source type, operation type, and result category. IDs and node names are not metric labels.
+Metrics use only low-cardinality labels such as source type, operation type, and result category. IDs and node names
+are not metric labels.
 
 Useful counters/timers include conceptually:
 
@@ -1546,13 +1720,16 @@ message_revisions_total
 lease_reclaims_total
 ```
 
-Backlog monitoring emphasizes age of overdue work rather than only queue size, for example oldest overdue poll/publication/media age.
+Backlog monitoring emphasizes age of overdue work rather than only queue size, for example oldest overdue
+poll/publication/media age.
 
 ### 43.3 Liveness and readiness
 
 Liveness means that the JVM/process is functioning; temporary Telegram or Moera outages do not make liveness fail.
 
-Readiness requires PostgreSQL/schema availability and successful initialization of the TDLight session to the point where scheduled source work can run. Failure of one particular Moera destination does not make the entire service unready; its publications retry independently.
+Readiness requires PostgreSQL/schema availability and successful initialization of the TDLight session to the point
+where scheduled source work can run. Failure of one particular Moera destination does not make the entire service
+unready; its publications retry independently.
 
 ## 44. Recovery, cleanup, startup, and shutdown
 
@@ -1572,17 +1749,23 @@ Startup does not mass-clear expired lease columns. Claim queries treat an absent
 
 The recovery invariant is:
 
-> A process may terminate at any instruction boundary. After restart, the system must either continue the operation or safely repeat it once its lease expires.
+> A process may terminate at any instruction boundary. After restart, the system must either continue the operation or
+> safely repeat it once its lease expires.
 
-The known exception remains an ambiguous successful Moera create followed by a lost response while the Moera API lacks create idempotency.
+The known exception remains an ambiguous successful Moera create followed by a lost response while the Moera API lacks
+create idempotency.
 
 ### 44.1 Staging cleanup
 
-A cleanup task runs at startup and periodically. It scans deterministic staging paths, checks current PostgreSQL state, and removes files that no longer correspond to the current pending `(publication, media, source_hash)` state. A grace period prevents deletion of files that may belong to an active worker.
+A cleanup task runs at startup and periodically. It scans deterministic staging paths, checks current PostgreSQL state,
+and removes files that no longer correspond to the current pending `(publication, media, source_hash)` state. A grace
+period prevents deletion of files that may belong to an active worker.
 
-Files are removable when the media is already uploaded/skipped, the publication/media row no longer exists, the source hash has changed, or the file is otherwise orphaned.
+Files are removable when the media is already uploaded/skipped, the publication/media row no longer exists, the source
+hash has changed, or the file is otherwise orphaned.
 
-TDLight's own download cache is separate from core staging. Correctness does not depend on aggressively cleaning TDLight cache in the first version.
+TDLight's own download cache is separate from core staging. Correctness does not depend on aggressively cleaning
+TDLight cache in the first version.
 
 ### 44.2 Startup sequence
 
@@ -1604,5 +1787,7 @@ Schedulers do not execute Telegram work before TDLight is ready.
 
 ### 44.3 Graceful shutdown
 
-Shutdown stops claiming new work, stops source adapters/live intake, allows already-running workers a bounded grace period, and then exits. In-flight leases are not forcibly rolled back; after expiry they are safely reclaimed on a later run.
+Shutdown stops claiming new work, stops source adapters/live intake, allows already-running workers a bounded grace
+period, and then exits. In-flight leases are not forcibly rolled back; after expiry they are safely reclaimed on a
+later run.
 

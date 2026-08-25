@@ -1,0 +1,9 @@
+spring:
+  datasource:
+    url: jdbc:tc:postgresql:18.6-alpine:///moera_import
+    username: test
+    password: test
+  flyway:
+    enabled: true
+  jooq:
+    sql-dialect: postgres

@@ -1,0 +1,20 @@
+spring:
+  application:
+    name: moera-import-service
+
+  datasource:
+    url: ${DATABASE_URL:jdbc:postgresql://localhost:5432/moera_import}
+    username: ${DATABASE_USERNAME:moera_import}
+    password: ${DATABASE_PASSWORD:}
+
+  flyway:
+    enabled: true
+
+  jooq:
+    sql-dialect: postgres
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus

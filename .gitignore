@@ -3,7 +3,9 @@
 .*.ods#
 *.log
 /.idea/
+/.env.local
 /target/
 /log/
 /.ssl/
 /.codex
+/.worktrees/
