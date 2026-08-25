@@ -84,3 +84,14 @@ the user explicitly changes scope.
 - Do not add speculative abstractions for future RSS/Mastodon support. Add only the extension points already defined by
   the spec.
 - Keep files focused and prefer small, explicit classes over generic frameworks.
+
+## Language
+
+- Setters and getters should not contain any logic besides copying values.
+- If a lambda can be replaced with a method reference, replace it.
+- Do not use `@Inject` on constructors; use field injection with `@Inject`.
+- Name an injected field after its class, with the first letter lowercased.
+- Always add an empty line after the opening brace and before the closing brace of a class declaration if the class
+  contains any fields or methods.
+- If a record declaration contains no methods, do not put an empty line between the opening and closing braces. Keep
+   the opening and closing braces on separate lines.
