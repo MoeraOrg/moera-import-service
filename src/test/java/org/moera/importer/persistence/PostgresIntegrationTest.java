@@ -21,6 +21,7 @@ public abstract class PostgresIntegrationTest {
         registry.add("spring.datasource.url", PostgresIntegrationTest::jdbcUrl);
         registry.add("spring.datasource.username", POSTGRES::getUsername);
         registry.add("spring.datasource.password", POSTGRES::getPassword);
+        registry.add("moera.workers.scheduling-enabled", () -> false);
     }
 
     private static PostgreSQLContainer startPostgres() {

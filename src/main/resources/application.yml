@@ -18,3 +18,14 @@ management:
     web:
       exposure:
         include: health,prometheus
+
+moera:
+  workers:
+    scheduling-enabled: true
+    batch-size: 32
+    channel-lease: 5m
+    channel-schedule-interval: 1s
+    publication-builder-schedule-interval: 1s
+    retry-base-delay: 1s
+    retry-max-delay: 1h
+    retry-jitter-fraction: 0.2
