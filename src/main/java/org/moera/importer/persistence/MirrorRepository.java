@@ -1,0 +1,55 @@
+package org.moera.importer.persistence;
+
+import java.util.List;
+import java.util.Optional;
+import jakarta.inject.Inject;
+
+import org.jooq.DSLContext;
+import org.moera.importer.model.Mirror;
+import org.springframework.stereotype.Repository;
+
+import static org.jooq.impl.DSL.exists;
+import static org.jooq.impl.DSL.notExists;
+import static org.jooq.impl.DSL.selectOne;
+import static org.moera.importer.persistence.jooq.tables.Messages.MESSAGES;
+import static org.moera.importer.persistence.jooq.tables.Mirrors.MIRRORS;
+import static org.moera.importer.persistence.jooq.tables.PublicationMessages.PUBLICATION_MESSAGES;
+import static org.moera.importer.persistence.jooq.tables.Publications.PUBLICATIONS;
+
+@Repository
+public class MirrorRepository {
+
+    @Inject
+    private DSLContext dslContext;
+
+    @Inject
+    private JooqMappings jooqMappings;
+
+    public List<Long> findWithUnassignedMessages(int limit) {
+        return dslContext.select(MIRRORS.ID)
+            .from(MIRRORS)
+            .where(MIRRORS.ENABLED.isTrue())
+            .and(exists(selectOne()
+                .from(MESSAGES)
+                .where(MESSAGES.CHANNEL_ID.eq(MIRRORS.CHANNEL_ID))
+                .and(notExists(selectOne()
+                    .from(PUBLICATION_MESSAGES)
+                    .join(PUBLICATIONS).on(PUBLICATION_MESSAGES.PUBLICATION_ID.eq(PUBLICATIONS.ID))
+                    .where(PUBLICATION_MESSAGES.MESSAGE_ID.eq(MESSAGES.ID))
+                    .and(PUBLICATIONS.MIRROR_ID.eq(MIRRORS.ID))))))
+            .orderBy(MIRRORS.ID)
+            .limit(limit)
+            .fetch(MIRRORS.ID);
+    }
+
+    public Optional<Mirror> lockForBuild(long mirrorId) {
+        return dslContext.selectFrom(MIRRORS)
+            .where(MIRRORS.ID.eq(mirrorId))
+            .and(MIRRORS.ENABLED.isTrue())
+            .forUpdate()
+            .skipLocked()
+            .fetchOptional()
+            .map(jooqMappings::mirror);
+    }
+
+}
