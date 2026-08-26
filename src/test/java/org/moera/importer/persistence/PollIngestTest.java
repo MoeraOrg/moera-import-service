@@ -16,6 +16,8 @@ import org.moera.importer.model.BodyFormat;
 import org.moera.importer.model.SourceType;
 import org.moera.importer.source.ChannelSnapshot;
 import org.moera.importer.source.PollResult;
+import org.moera.importer.source.SourceLinkPreview;
+import org.moera.importer.source.SourceMedia;
 import org.moera.importer.source.SourceMessage;
 import org.springframework.boot.test.context.SpringBootTest;
 
@@ -25,6 +27,7 @@ import static org.moera.importer.persistence.jooq.enums.AccessState.GRANTED;
 import static org.moera.importer.persistence.jooq.enums.ChannelOperation.POLL;
 import static org.moera.importer.persistence.jooq.enums.SubscriptionState.ACTIVE;
 import static org.moera.importer.persistence.jooq.tables.Channels.CHANNELS;
+import static org.moera.importer.persistence.jooq.tables.MessageLinkPreviews.MESSAGE_LINK_PREVIEWS;
 import static org.moera.importer.persistence.jooq.tables.Messages.MESSAGES;
 
 @SpringBootTest
@@ -80,6 +83,8 @@ class PollIngestTest extends PostgresIntegrationTest {
 
         assertThat(completed).isTrue();
         assertThat(dslContext.fetchCount(MESSAGES)).isEqualTo(1);
+        assertThat(dslContext.fetchCount(MESSAGE_LINK_PREVIEWS)).isEqualTo(1);
+        assertThat(dslContext.select(MESSAGES.PINNED).from(MESSAGES).fetchSingle(MESSAGES.PINNED)).isTrue();
         var channel = dslContext.selectFrom(CHANNELS).fetchSingle();
         assertThat(jooqMappings.jsonNode(channel.getWaterline()).path("cursor").asText())
             .isEqualTo("advanced-waterline");
@@ -125,11 +130,13 @@ class PollIngestTest extends PostgresIntegrationTest {
         SourceMessage invalidMessage = new SourceMessage(
             "message-2",
             false,
+            false,
             Instant.parse("2026-08-25T10:16:30Z"),
             "Invalid hash length",
             BodyFormat.PLAIN_TEXT,
             new byte[31],
             JsonNodeFactory.instance.objectNode(),
+            List.of(),
             List.of()
         );
         PollResult result = new PollResult(
@@ -145,6 +152,49 @@ class PollIngestTest extends PostgresIntegrationTest {
         )).isInstanceOf(RuntimeException.class);
 
         assertThat(dslContext.fetchCount(MESSAGES)).isZero();
+        var channel = dslContext.selectFrom(CHANNELS).fetchSingle();
+        assertThat(jooqMappings.jsonNode(channel.getWaterline()).path("cursor").asText())
+            .isEqualTo("initial-waterline");
+        assertThat(channel.getProcessingToken()).isEqualTo(processingToken);
+    }
+
+    @Test
+    void rollsBackPreviewsAndWaterlineWhenPreviewImageIsInvalid() {
+        UUID processingToken = UUID.randomUUID();
+        long channelId = insertLeasedChannel(processingToken, "initial-waterline");
+        SourceMessage invalidMessage = new SourceMessage(
+            "message-2",
+            false,
+            false,
+            Instant.parse("2026-08-25T10:16:30Z"),
+            "Invalid preview",
+            BodyFormat.HTML,
+            hash(2),
+            JsonNodeFactory.instance.objectNode(),
+            List.of(),
+            List.of(new SourceLinkPreview(
+                null,
+                "https://example.com",
+                null,
+                null,
+                null,
+                "missing-image"
+            ))
+        );
+        PollResult result = new PollResult(
+            List.of(sourceMessage(), invalidMessage),
+            JsonNodeFactory.instance.objectNode().put("cursor", "advanced-waterline")
+        );
+
+        assertThatThrownBy(() -> messageRepository.ingestPoll(
+            channelId,
+            processingToken,
+            result,
+            Instant.parse("2026-08-25T10:30:00Z")
+        )).isInstanceOf(IllegalArgumentException.class);
+
+        assertThat(dslContext.fetchCount(MESSAGES)).isZero();
+        assertThat(dslContext.fetchCount(MESSAGE_LINK_PREVIEWS)).isZero();
         var channel = dslContext.selectFrom(CHANNELS).fetchSingle();
         assertThat(jooqMappings.jsonNode(channel.getWaterline()).path("cursor").asText())
             .isEqualTo("initial-waterline");
@@ -185,13 +235,36 @@ class PollIngestTest extends PostgresIntegrationTest {
         return new SourceMessage(
             "message-1",
             false,
+            true,
             Instant.parse("2026-08-25T10:15:30Z"),
             "Hello, Moera",
             BodyFormat.HTML,
             bodyHash,
             JsonNodeFactory.instance.objectNode(),
-            List.of()
+            List.of(new SourceMedia(
+                "preview-image",
+                0,
+                "image/jpeg",
+                "preview.jpg",
+                100L,
+                hash(2),
+                JsonNodeFactory.instance.objectNode()
+            )),
+            List.of(new SourceLinkPreview(
+                "Example",
+                "https://example.com",
+                "Title",
+                "Description",
+                Instant.parse("2026-08-24T09:00:00Z"),
+                "preview-image"
+            ))
         );
+    }
+
+    private byte[] hash(int firstByte) {
+        byte[] hash = new byte[32];
+        hash[0] = (byte) firstByte;
+        return hash;
     }
 
 }

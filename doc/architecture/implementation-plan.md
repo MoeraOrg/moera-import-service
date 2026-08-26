@@ -14,7 +14,7 @@ uses short row-locking transactions.
 **Tech Stack:** Java 25, Spring Boot/Spring Framework, Maven, PostgreSQL, Flyway, jOOQ, TDLight, Moera Java library,
 JUnit 5, Testcontainers, Micrometer/Actuator.
 
-**Spec:** `docs/architecture/import-service.md`
+**Spec:** `doc/architecture/import-service.md`
 
 ## Global Constraints
 
@@ -616,30 +616,197 @@ git commit -m "feat: add leased channel processing"
 
 ---
 
-### Task 6: Implement Telegram message mapping and canonical hashes
+### Task 6: Extend the universal message model and persistence for pinning and link previews
+
+Tasks 1–5 are already implemented against `V001__initial_schema.sql`; do not rewrite that migration or retrofit these
+requirements into completed tasks. Add the new schema and repository behavior forward-only in this task.
 
 **Files:**
-- Create: `src/main/java/org/moera/importer/source/telegram/TelegramMessageMapper.java`
-- Create: `src/main/java/org/moera/importer/source/telegram/TelegramHtmlFormatter.java`
-- Create: `src/main/java/org/moera/importer/source/telegram/TelegramCanonicalHash.java`
-- Create: `src/test/java/org/moera/importer/source/telegram/TelegramMessageMapperTest.java`
-- Create: `src/test/java/org/moera/importer/source/telegram/TelegramHtmlFormatterTest.java`
+- Create: `src/main/resources/db/migration/V002__message_pinning_and_link_previews.sql`
+- Create: `src/main/java/org/moera/importer/source/SourceLinkPreview.java`
+- Create: `src/main/java/org/moera/importer/persistence/MessageLinkPreview.java`
+- Create: `src/test/java/org/moera/importer/persistence/MessageLinkPreviewRepositoryTest.java`
+- Modify: `src/main/java/org/moera/importer/source/SourceMessage.java`
+- Modify: `src/main/java/org/moera/importer/model/Message.java`
+- Modify: `src/main/java/org/moera/importer/persistence/MessageRepository.java`
+- Modify: `src/main/java/org/moera/importer/persistence/JooqMappings.java`
+- Modify: `src/main/java/org/moera/importer/persistence/PublicationRepository.java`
+- Modify: `src/main/java/org/moera/importer/persistence/PublicationMediaRepository.java`
+- Modify: existing source/repository fixtures that construct `SourceMessage`
+- Modify: `src/test/java/org/moera/importer/persistence/SchemaMigrationTest.java`
+- Modify: `src/test/java/org/moera/importer/persistence/MessageRepositoryTest.java`
+- Modify: `src/test/java/org/moera/importer/persistence/PollIngestTest.java`
+- Modify: `src/test/java/org/moera/importer/application/PublicationBuilderTest.java`
 
 **Interfaces:**
 - Produces:
 
 ```java
-SourceMessage TelegramMessageMapper.map(TdApi.Message message);
-String TelegramHtmlFormatter.format(TdApi.FormattedText text);
-byte[] TelegramCanonicalHash.body(TdApi.FormattedText text);
-byte[] TelegramCanonicalHash.media(Telegram media metadata input);
+public record SourceLinkPreview(
+    String siteName,
+    String url,
+    String title,
+    String description,
+    Instant publishedAt,
+    String imageSourceMediaId
+) {}
+
+public record MessageLinkPreview(
+    long messageId,
+    int position,
+    String siteName,
+    String url,
+    String title,
+    String description,
+    Instant publishedAt,
+    Long imageMediaId
+) {}
+
+public record SourceMessage(
+    String sourceId,
+    boolean deleted,
+    boolean pinned,
+    Instant publishedAt,
+    String body,
+    BodyFormat bodyFormat,
+    byte[] sourceBodyHash,
+    JsonNode sourceData,
+    List<SourceMedia> media,
+    List<SourceLinkPreview> linkPreviews
+) {}
+
+List<MessageLinkPreview> MessageRepository.findLinkPreviews(long messageId);
 ```
 
-- [ ] **Step 1: Add TDLight dependency and write failing formatted-text tests**
+`SourceLinkPreview.url` is required. `imageSourceMediaId` refers to `SourceMedia.sourceId` within the same message;
+persistence resolves it to the matching `media.id`, and it is nullable when a preview has no selected image.
 
-Create TDLib `FormattedText` fixtures for plain text, bold, italic, link, code/pre, and overlapping/nested entities
-supported by Telegram. Include a surrogate-pair/emoji case proving offsets are handled with TDLib/Java UTF-16
-semantics.
+- [ ] **Step 1: Write failing migration and persistence tests**
+
+Extend `SchemaMigrationTest` to require `messages.pinned boolean NOT NULL DEFAULT false` and the
+`message_link_previews` table with an owning message, zero-based position, non-null URL, nullable descriptive fields,
+and nullable `image_media_id REFERENCES media(id)`. In repository tests, ingest a pinned message with two ordered
+previews, one of which refers to an ordinary media item; assert all values and the resolved media foreign key can be
+read back.
+
+- [ ] **Step 2: Run the focused tests and verify failure**
+
+```bash
+./mvnw -Dtest=SchemaMigrationTest,MessageLinkPreviewRepositoryTest,MessageRepositoryTest test
+```
+
+Expected: FAIL because `V002`, the universal preview type, and repository synchronization do not exist.
+
+- [ ] **Step 3: Add the forward-only Flyway migration and regenerate jOOQ**
+
+Create `V002__message_pinning_and_link_previews.sql`. Use direct PK/FK/UNIQUE/NOT NULL/simple position checks only;
+do not encode cross-message image ownership as a complex database constraint. Run:
+
+```bash
+./mvnw generate-sources
+```
+
+Expected: generated `MESSAGES.PINNED` and `MESSAGE_LINK_PREVIEWS` jOOQ artifacts are available to compilation.
+
+- [ ] **Step 4: Extend immutable universal values**
+
+Add `SourceLinkPreview`, `SourceMessage.pinned`, and `SourceMessage.linkPreviews`. Defensively copy the preview list and
+keep nullable preview fields nullable rather than using empty JSON. Extend the persistent `Message` projection with
+`pinned`; keep link previews as ordered child records loaded for publication snapshots.
+
+- [ ] **Step 5: Implement atomic preview persistence and revision detection**
+
+Inside the existing short ingest transaction, insert/update `messages.pinned`, validate preview image references,
+remove old preview rows before deleting/replacing referenced media, synchronize media, then insert previews in source
+order with newly resolved media IDs. A change to pin state, effective preview fields,
+preview order, or selected image reference increments the message/publication revision. Metadata refreshes that do not
+change destination-visible state remain revision-neutral. Deleted messages retain their stored preview rows, but
+publication payload construction ignores all content of deleted members.
+
+- [ ] **Step 6: Add replacement, removal, effective-media, and poll-atomicity tests**
+
+Prove that re-ingest can reorder previews, replace their image reference, remove all previews, and change pin state;
+that missing/non-owned `imageSourceMediaId` is rejected before commit; and that a poll batch persists previews and its
+waterline atomically. At publication creation and after member changes, derive effective media as all non-preview media
+plus images referenced by the first preview for each URL in fixed member/source order. Assert that later duplicate
+preview images are absent from `publication_media`, and that a later image is inserted and armed when removal of the
+earlier preview makes it effective. Recalculate this set for every affected immutable-membership publication, deleting
+obsolete delivery rows and preserving unchanged upload state. Also update all existing `SourceMessage` fixtures
+without changing their prior semantics.
+
+- [ ] **Step 7: Run the complete Task 6 test set**
+
+```bash
+./mvnw \
+  -Dtest=SchemaMigrationTest,MessageLinkPreviewRepositoryTest,MessageRepositoryTest,PollIngestTest,\
+PublicationBuilderTest,SourceMessageTest \
+  test
+```
+
+Expected: PASS against migrated Testcontainers PostgreSQL.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add src/main/resources/db/migration src/main/java/org/moera/importer src/test/java/org/moera/importer
+git commit -m "feat: persist message pinning and link previews"
+```
+
+---
+
+### Task 7: Implement explicit Telegram mapping, formatting, skips, and canonical hashes
+
+**Files:**
+- Create: `src/main/java/org/moera/importer/source/telegram/TelegramMappingResult.java`
+- Create: `src/main/java/org/moera/importer/source/telegram/TelegramSkipReason.java`
+- Create: `src/main/java/org/moera/importer/source/telegram/TelegramMessageMapper.java`
+- Create: `src/main/java/org/moera/importer/source/telegram/TelegramHtmlFormatter.java`
+- Create: `src/main/java/org/moera/importer/source/telegram/TelegramCanonicalHash.java`
+- Create: `src/test/java/org/moera/importer/source/telegram/TelegramMessageMapperTest.java`
+- Create: `src/test/java/org/moera/importer/source/telegram/TelegramHtmlFormatterTest.java`
+- Create: `src/test/java/org/moera/importer/source/telegram/TelegramCanonicalHashTest.java`
+- Modify: `pom.xml`
+
+**Interfaces:**
+- Produces:
+
+```java
+sealed interface TelegramMappingResult {
+
+    record Mapped(SourceMessage message) implements TelegramMappingResult {}
+    record Skipped(TelegramSkipReason reason) implements TelegramMappingResult {}
+
+}
+
+enum TelegramSkipReason {
+    UNSUPPORTED_CONTENT,
+    SERVICE_MESSAGE,
+    INVALID_CONTENT
+}
+
+TelegramMappingResult TelegramMessageMapper.map(TdApi.Message message);
+String TelegramHtmlFormatter.format(TdApi.FormattedText text);
+byte[] TelegramCanonicalHash.body(TdApi.Message message);
+byte[] TelegramCanonicalHash.media(TdApi.File file, JsonNode normalizedSourceData);
+```
+
+`TelegramSkipReason` never embeds source IDs or free-form source text.
+
+- [ ] **Step 1: Add TDLight and write failing paragraph/entity formatter tests**
+
+Cover HTML escaping; one newline as `<br>`; two or more newlines as a `<p>` boundary without empty edge paragraphs;
+TDLib UTF-16 offsets including surrogate pairs; valid nesting of overlapping ranges; and these exact mappings:
+
+```text
+Bold -> <b>                         Italic -> <i>
+Underline -> <u>                    Strikethrough -> <s>
+Code -> <code>                      Pre / PreCode -> <pre>
+BlockQuote / ExpandableBlockQuote -> <blockquote>
+```
+
+Also test inline `<mr-spoiler>` versus `<mr-spoiler-block>`, custom emoji visible text, safe URL/TextUrl/email/phone
+links, `@username` links, plain ID mentions, and plain hashtag/cashtag/bot-command/bank-card/timestamp/date-time text.
+Unknown entities preserve visible text while remaining distinguishable to canonical hashing.
 
 - [ ] **Step 2: Run formatter tests and verify failure**
 
@@ -647,51 +814,94 @@ semantics.
 ./mvnw -Dtest=TelegramHtmlFormatterTest test
 ```
 
-Expected: FAIL because formatter does not exist.
+Expected: FAIL because the formatter does not exist.
 
-- [ ] **Step 3: Implement sanitized HTML formatter**
+- [ ] **Step 3: Implement the sanitized HTML formatter**
 
-Escape raw text and attribute values. Convert supported entities to safe HTML tags/links. Do not pass arbitrary source
-HTML through unsanitized.
+Escape raw text and attributes, allow only the exact tags and URI schemes above, ignore `PreCode` language, and never
+pass arbitrary Telegram/source HTML through. Keep block construction separate from inline entity rendering so
+paragraphs are represented by `<p>`, never `<br><br>`.
 
-- [ ] **Step 4: Write canonical body-hash tests**
+- [ ] **Step 4: Write failing mapper and skip-result tests**
 
-Assert identical text/entities produce identical SHA-256, while formatting-only changes produce a different hash even
-when visible text is the same.
+Cover the explicit supported allowlist: `MessageText`; photo, animation, audio, document, video, video note, voice note;
+`MessageSticker`; `MessageAnimatedEmoji`; `MessagePoll`; `MessageChecklist`; location/live location; venue; contact; and
+expired photo/video/video-note/voice-note. Verify ordinary file rules: largest photo, primary video, still part of live
+photo, main file only, caption as body, no thumbnail/cover attachment except a selected preview image, and no technical
+metadata added to body.
 
-- [ ] **Step 5: Implement canonical hashing**
+For structured content assert:
 
-Serialize text plus ordered entity `(offset,length,type,semantic data)` into an unambiguous byte representation, then
-SHA-256 it. Do not hash generated HTML.
-
-- [ ] **Step 6: Write message/media mapping tests**
-
-Cover text, photo caption, video/document metadata, media album ID in `source_data`, exact file size, MIME type,
-filename, remote stable ID, remote reacquisition ID, and source media hash.
-
-- [ ] **Step 7: Implement TelegramMessageMapper**
-
-Use decimal `message.id` as `SourceMessage.sourceId`, `message.date` as `publishedAt`, HTML body format, and universal
-`SourceMedia` metadata without downloading files.
-
-- [ ] **Step 8: Run mapper tests**
-
-```bash
-./mvnw -Dtest=TelegramHtmlFormatterTest,TelegramMessageMapperTest test
+```text
+poll          -> question paragraph + ordered options
+quiz          -> poll + <mr-spoiler-block title="Right answer"> when answers are known
+checklist     -> title + ordered ☐/☑ tasks
+location      -> OpenStreetMap coordinate link
+venue         -> name + address + OpenStreetMap link
+contact       -> name + tel: link
+sticker       -> emoji + ordinary main-file media
+expired media -> [Media is no longer available] and no media
 ```
 
-Expected: PASS.
+Poll rendering includes only question and option text. Ignore vote counts, current choices/results, open/closed state,
+description, explanation, and `PollMedia`. Test an unrevealed quiz without a spoiler, a revealed quiz, and multiple
+correct answers rendered as a `<ul>` inside the titled spoiler. A later answer reveal must change the canonical hash.
+Checklist completion changes the hash; completer/time/permission data does not.
+Location accuracy/heading/duration, venue provider identity/type, contact Telegram user ID/vCard, and animated-emoji
+animation are ignored. Test that a normal media message changing to its expired counterpart removes the previously
+effective publication media.
+
+Test explicit skipping of dice/stake-dice, games, invoices, paid media, stories, giveaways/gifts/currencies/payments,
+`MessageRichMessage`, `MessageUnsupported`, every known administrative/service family, and an unknown future
+`MessageContent`. `MessagePinMessage` is skipped; `TdApi.Message.isPinned` populates `SourceMessage.pinned`.
+
+- [ ] **Step 5: Add forwarding, metadata, and link-preview mapper tests**
+
+Test source attribution at the start of every forwarded body as
+`<p><a href="source-url">Source name</a></p>`, exact public channel post links when possible, name-only fallback, and
+omission when neither value exists. Test author signature as `<p><i>— Author</i></p>`, safe URL buttons after content,
+ignored Telegram-only buttons, and the final fact-check block
+`<hr><p><b>Fact check</b></p><blockquote>formatted text</blockquote>`. Also cover ignored replies, counters, reactions,
+effects, timers, `canBeSaved`, restrictions, import/bot, and presentation metadata. Test all Moera preview fields,
+image selection priority (largest main photo, otherwise thumbnail/cover), preview image as ordinary media,
+missing-image fallback, and
+ignored `linkPreviewOptions` and full preview video/audio/document content.
+
+- [ ] **Step 6: Write canonical hash tests**
+
+Assert deterministic SHA-256 over original text, ordered entities plus semantic data, forward attribution, author
+signature, supported buttons, fact-check, poll/checklist state, and link-preview metadata. Relevant semantic
+changes must change the hash; every explicitly ignored source field must not. Hash source values, not generated HTML.
+`CustomEmoji` ID remains hash-relevant. Preview file identity belongs to the selected media `source_hash`; preview
+metadata and selected image reference belong to `source_body_hash`.
+
+- [ ] **Step 7: Implement the explicit mapper and canonical serializers**
+
+Use decimal `message.id`, `message.date`, HTML body format, and universal media/preview values without downloading.
+Return `Skipped`, never `null`, for intentional skips and invalid known content. Do not catch unexpected programming
+failures as skips. Ignore `hasSpoiler`, `isSecret`, caption position, and other fields declared irrelevant by the
+architecture. Store a stable normalized forward-attribution identity in Telegram `source_data` so grouped body
+composition can compare adjacent messages without parsing generated HTML. For video, omit alternate qualities,
+storyboards, cover, and start timestamp.
+
+- [ ] **Step 8: Run all mapper tests**
+
+```bash
+./mvnw -Dtest=TelegramHtmlFormatterTest,TelegramCanonicalHashTest,TelegramMessageMapperTest test
+```
+
+Expected: PASS without a Telegram account.
 
 - [ ] **Step 9: Commit**
 
 ```bash
 git add pom.xml src/main/java/org/moera/importer/source/telegram src/test/java/org/moera/importer/source/telegram
-git commit -m "feat: map Telegram messages into source model"
+git commit -m "feat: map supported Telegram content explicitly"
 ```
 
 ---
 
-### Task 7: Implement TDLight session, channel resolution, polling, live updates, and media download
+### Task 8: Implement TDLight session, channel resolution, polling, live updates, and media download
 
 **Files:**
 - Create: `src/main/java/org/moera/importer/config/TelegramProperties.java`
@@ -704,7 +914,7 @@ git commit -m "feat: map Telegram messages into source model"
 - Modify: `src/main/resources/application.yml`
 
 **Interfaces:**
-- Consumes: `SourceAdapter`, mapper from Task 6, persistent session/cache/staging config.
+- Consumes: `SourceAdapter`, explicit mapping result from Task 7, persistent session/cache/staging config.
 - Produces: full `SourceType.TELEGRAM` adapter.
 
 - [ ] **Step 1: Write adapter tests against a fake TelegramClient boundary**
@@ -733,7 +943,7 @@ Public username/link resolution stores stable decimal chat ID. Private invite ma
 maps to `REQUESTED`. Conflicting non-null resolved IDs are treated as permanent consistency errors by core completion
 logic.
 
-- [ ] **Step 5: Write failing polling/waterline tests**
+- [ ] **Step 5: Write failing polling/waterline and skip-semantics tests**
 
 Using fake history pages, assert the adapter:
 
@@ -743,6 +953,8 @@ reads through the configured look-behind
 returns messages oldest-to-newest
 returns new waterline at newest forward-scanned message ID
 never changes persistent waterline itself
+omits deliberately skipped messages while advancing the returned waterline past them
+propagates an unexpected mapper failure instead of silently skipping it
 ```
 
 - [ ] **Step 6: Implement Telegram polling**
@@ -753,8 +965,9 @@ Represent waterline as JSON `{ "messageId": <long> }`. The adapter only returns 
 - [ ] **Step 7: Implement ordered live update delivery**
 
 TDLight callbacks enqueue relevant updates. A sequential consumer maps/forwards events per the spec. Handle new
-message, content change/re-read, permanent deletion, and membership state changes. Do not advance waterline on live
-events.
+message, content change/re-read, `isPinned` changes, permanent deletion, and membership state changes. Emit
+`SourceEvent.MessageChanged` only for `Mapped`; ignore live `Skipped` results. Do not advance waterline on live events.
+If a previously persisted message now maps to `Skipped`, do not delete or overwrite its last supported version.
 
 - [ ] **Step 8: Implement media download**
 
@@ -788,7 +1001,7 @@ git commit -m "feat: implement Telegram source adapter"
 
 ---
 
-### Task 8: Implement Moera client/service, capabilities, body composition, and posting decisions
+### Task 9: Implement Moera client/service, structured body composition, and story updates
 
 **Files:**
 - Create: `src/main/java/org/moera/importer/moera/MoeraService.java`
@@ -811,14 +1024,26 @@ DestinationCapabilities MoeraService.capabilities(Destination destination);
 UploadedMedia MoeraService.uploadMedia(Destination destination, Path file, Media media);
 CreatedPosting MoeraService.createPost(Destination destination, PublicationPayload payload);
 void MoeraService.updatePost(Destination destination, String postingId, PublicationPayload payload);
+void MoeraService.updateStory(Destination destination, String storyId, boolean pinned);
 void MoeraService.deletePost(Destination destination, String postingId);
 PublicationPayload PublicationPayloadBuilder.build(PublicationContext context, DestinationCapabilities capabilities);
 ```
 
+`UploadedMedia` exposes distinct `id` and `hash` values. `CreatedPosting` exposes the posting ID and returned
+`FeedReference.storyId` keyed by configured feed, so later pin changes can address existing stories.
+
 - [ ] **Step 1: Add Moera Java library and write failing payload-builder tests**
 
 Cover same-format preservation, mixed-format conversion to HTML, fallback to plain text when HTML is unsupported,
-paragraph boundaries between source messages, media-only payload, earliest `publishedAt`, and configured feed names.
+paragraph boundaries between source messages, media-only payload, earliest `publishedAt`, configured feed names, and
+effective pin state (`true` when any non-deleted member is pinned). For Telegram HTML bodies, preserve per-message
+forward attribution and insert `<hr>` before a grouped message whose attribution differs from the previous one.
+
+Build structured `Body.linkPreviews` in member/source order, deduplicate by exact URL with the first preview winning,
+and omit preview-only media belonging to ignored duplicates. Map `siteName`, `url`, `title`, `description`, and
+`publishedAt`; set `imageHash` from the selected uploaded media's `PrivateMediaFileInfo.hash`, never its ID. The
+selected preview image remains attached to the posting as an ordinary media item. If that media was skipped or has no
+stored hash, retain the textual preview and leave `imageHash` absent.
 
 - [ ] **Step 2: Run payload tests and verify failure**
 
@@ -831,7 +1056,9 @@ Expected: FAIL because builder/types do not exist.
 - [ ] **Step 3: Implement payload builder**
 
 Do not implement HTML-to-Markdown conversion. Preserve one common supported format, otherwise prefer HTML, otherwise
-plain text. Join non-empty source bodies by one paragraph boundary in fixed publication order.
+plain text. Join non-empty source bodies by one paragraph boundary in fixed publication order. Recalculate effective
+previews and media from the current non-deleted snapshot on every build, allowing a later duplicate to become active
+when the earlier one disappears.
 
 - [ ] **Step 4: Write MoeraService boundary tests**
 
@@ -840,8 +1067,11 @@ Use a fake/mockable Moera client boundary to assert:
 ```text
 /features provides mediaMaxSize + sourceFormats
 private media upload always sets downsize=true
-create includes feed publications and earliest publishAt
+upload preserves distinct PrivateMediaFileInfo.id and PrivateMediaFileInfo.hash
+create includes feed publications, earliest publishAt, and StoryAttributes.pinned
+create returns feed story IDs
 update does not rebuild feed publication attributes
+updateStory changes only the pin attribute of an existing story
 delete not-found is treated as success
 media wrong-size maps to terminal TOO_LARGE semantics
 ```
@@ -855,7 +1085,8 @@ URL permanently.
 - [ ] **Step 6: Implement MoeraService**
 
 Cache `/features` capabilities in memory with a bounded TTL. Keep Moera-specific error mapping inside this package.
-Represent ambiguous mutating outcomes with a dedicated outcome-unknown exception used by processors.
+Represent ambiguous mutating outcomes with a dedicated outcome-unknown exception used by processors. Preserve both
+private-media ID/hash values, returned feed/story identity, and repeatable story updates by story ID.
 
 - [ ] **Step 7: Run Moera/payload tests**
 
@@ -879,7 +1110,7 @@ git commit -m "feat: implement Moera delivery boundary"
 
 ---
 
-### Task 9: Implement staging and publication-media delivery workflow
+### Task 10: Implement staging and publication-media delivery workflow
 
 **Files:**
 - Create: `src/main/java/org/moera/importer/staging/StagingFileManager.java`
@@ -923,7 +1154,7 @@ Cover:
 known size > max       -> SKIPPED/TOO_LARGE without download
 actual size > max      -> SKIPPED/TOO_LARGE after download
 existing staging file  -> reused on retry
-successful upload      -> UPLOADED + staging deleted
+successful upload      -> UPLOADED + staging deleted; ID column stores upload id and JSON stores upload hash
 temporary upload fail  -> retry + staging retained
 permanent fail         -> automatic scheduling stops + staging deleted
 source_hash changes    -> stale completion rejected
@@ -937,7 +1168,10 @@ conditionally by token. `uploaded/skipped` additionally verify current `Media.so
 - [ ] **Step 5: Implement PublicationMediaProcessor**
 
 Load source adapter by channel source type, load Moera capabilities, perform pre/post-download size checks, download
-only when staging is absent, upload with `MoeraService`, and map failures through shared retry policy.
+only when staging is absent, upload with `MoeraService`, and map failures through shared retry policy. Pass
+`UploadedMedia.id` as `destinationMediaId` and serialize `UploadedMedia.hash` into `destinationData`; never substitute
+one for the other. The same uploaded row can therefore be attached normally and referenced by link-preview
+`imageHash` later.
 
 - [ ] **Step 6: Implement thin scheduler**
 
@@ -965,7 +1199,7 @@ git commit -m "feat: deliver publication media"
 
 ---
 
-### Task 10: Implement publication snapshot/delivery workflow
+### Task 11: Implement publication snapshot, posting, and pin-delivery workflow
 
 **Files:**
 - Create: `src/main/java/org/moera/importer/application/PublicationProcessor.java`
@@ -1019,7 +1253,9 @@ next_attempt_at is armed for revision 6
 - [ ] **Step 4: Implement `loadContext` consistent snapshot**
 
 Use a short transaction and a row lock sufficient to read one coherent target revision into memory. Release transaction
-before calling Moera.
+before calling Moera. Include ordered member bodies and `source_data`, deleted/pinned state, ordered link previews,
+their optional media relations, and current uploaded media ID/hash data. Keep `DSLContext`, generated records, and jOOQ
+types inside the persistence layer; expose immutable application values to the payload builder.
 
 - [ ] **Step 5: Write PublicationProcessor decision tests**
 
@@ -1031,12 +1267,20 @@ existing post + non-empty payload           -> update
 existing post + empty payload               -> delete
 no post + empty payload                     -> no external call, mark revision published
 outcome unknown on create                    -> retry + distinct metric/log path
+create                                       -> persist posting ID, feed story IDs, and delivered pin state
+pin/unpin after create                       -> update every stored feed story by story ID
+content and pin change                       -> update post, then stories, then complete revision
+partial story-update failure                 -> retry without completing target revision
 ```
 
 - [ ] **Step 6: Implement PublicationProcessor and scheduler**
 
-Build payload from the in-memory context and Moera capabilities, perform the selected Moera operation, and complete
-only the captured target revision using the claim token.
+Build payload from the in-memory context and Moera capabilities, perform the selected Moera posting operation, and
+then synchronize pin state through `MoeraService.updateStory` when stored story IDs exist and the effective state
+changed. On create, persist `FeedReference.storyId` values keyed by feed and the delivered pin state in
+`publications.destination_data`. Do not attempt to change feed membership or `publishAt` during posting updates.
+Complete only the captured target revision using the claim token and only after every required posting/story call
+succeeds.
 
 - [ ] **Step 7: Run publication tests**
 
@@ -1059,7 +1303,7 @@ git commit -m "feat: deliver publication revisions"
 
 ---
 
-### Task 11: Add observability, health, staging cleanup, startup ordering, and graceful shutdown
+### Task 12: Add observability, health, staging cleanup, startup ordering, and graceful shutdown
 
 **Files:**
 - Create: `src/main/java/org/moera/importer/staging/StagingCleanup.java`
@@ -1116,10 +1360,15 @@ processing_token, attempt, target_revision, result
 
 Never log forbidden sensitive values from `AGENTS.md`.
 
+For a deliberate Telegram skip, log only safe channel/message identity, runtime content type, and the low-cardinality
+skip reason. Never log formatted text, captions, attribution details, preview URLs, invite links, or callback data.
+
 - [ ] **Step 6: Add Micrometer counters/timers/gauges**
 
 Implement the metrics named in the architecture spec, using only low-cardinality labels. Include
-`publication_unknown_outcomes_total` and overdue-work age gauges.
+`publication_unknown_outcomes_total`, `telegram_messages_skipped_total`, and overdue-work age gauges. The Telegram skip
+counter may be labeled by stable content family and `TelegramSkipReason`, but never by channel/message IDs, content
+text, URLs, node names, or processing tokens.
 
 - [ ] **Step 7: Implement graceful shutdown**
 
@@ -1152,15 +1401,15 @@ git commit -m "feat: add recovery and observability"
 
 ---
 
-### Task 12: Add an end-to-end application test and operational documentation
+### Task 13: Add an end-to-end application test and operational documentation
 
 **Files:**
 - Create: `src/test/java/org/moera/importer/ImportPipelineTest.java`
-- Create: `docs/operations.md`
+- Create: `doc/operations.md`
 - Modify: `README.md`
 
 **Interfaces:**
-- Consumes: complete application from Tasks 1-11.
+- Consumes: complete application from Tasks 1-12.
 - Produces: deterministic proof of the core pipeline and operator instructions for initial Telegram login, filesystem
   permissions, PostgreSQL, secrets, health, and smoke tests.
 
@@ -1170,17 +1419,19 @@ Use Testcontainers PostgreSQL, a fake source adapter, and a fake Moera client/se
 
 ```text
 channel poll
--> message/media ingest
+-> message/media/link-preview ingest
 -> publication grouping
 -> media processing
 -> publication create
--> source edit
--> publication update
+-> source edit with preview/pin change
+-> publication and feed-story update
 -> source deletion
 -> publication delete when empty
 ```
 
-Assert waterline advancement, revision transitions, immutable publication membership, and final destination operations.
+Assert waterline advancement past a deliberately skipped Telegram message, revision transitions, immutable publication
+membership, preview-image upload ID/hash handling, first-URL-wins preview composition, stored story IDs, pin/unpin
+calls, and final destination operations.
 
 - [ ] **Step 2: Run the pipeline test and verify any missing wiring fails**
 
@@ -1221,13 +1472,13 @@ opt-in Telegram/Moera smoke tests
 
 - [ ] **Step 6: Cross-check architecture and implementation**
 
-Read `docs/architecture/import-service.md` from start to finish. For every normative section, point to the
+Read `doc/architecture/import-service.md` from start to finish. For every normative section, point to the
 implementation/test that satisfies it. If implementation intentionally differs, update the architecture first and
 obtain approval rather than silently changing semantics.
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add README.md docs src/test/java/org/moera/importer/ImportPipelineTest.java
+git add README.md doc src/test/java/org/moera/importer/ImportPipelineTest.java
 git commit -m "test: verify complete import pipeline"
 ```

@@ -89,11 +89,13 @@ public class PublicationBuilder {
         return new SourceMessage(
             message.sourceId(),
             message.deleted(),
+            message.pinned(),
             message.publishedAt(),
             message.body(),
             message.bodyFormat(),
             message.sourceBodyHash(),
             message.sourceData(),
+            List.of(),
             List.of()
         );
     }

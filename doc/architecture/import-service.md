@@ -1,7 +1,7 @@
 # Moera Import Service Architecture
 
 **Status:** Living design document  
-**Date:** 2026-08-25
+**Date:** 2026-08-27
 
 ## 1. Purpose
 
@@ -62,6 +62,7 @@ Database tables use plural names:
 ```text
 channels
 messages
+message_link_previews
 media
 destinations
 mirrors
@@ -287,6 +288,7 @@ channel_id
 source_id
 revision
 deleted
+pinned
 published_at
 body
 body_format
@@ -299,7 +301,7 @@ updated_at
 Only the latest revision is stored. Revision history is not archived.
 
 `revision` is a service-owned `integer` starting at `0`. It increases whenever the normalized source state changes,
-including text/formatting, media set/content, or deletion state.
+including text/formatting, link previews, media set/content, pinning, or deletion state.
 
 `created_at` is the time the service first stored the message. `published_at` is the source publication time used for
 grouping. A separate `observed_at` is unnecessary.
@@ -333,8 +335,35 @@ only visible characters. Thus a formatting-only edit is detected.
 
 The source adapter defines the canonical source representation; the project standardizes the hash algorithm/size.
 
+The canonical body representation also includes normalized structured values that affect the destination body, such as
+link-preview metadata, forward attribution, author signatures, supported buttons, and fact-checks. Source fields that
+the mapping rules explicitly ignore are not included.
+
 When messages with different body formats are combined into a publication, the publication-building/destination path
 converts them to a common representation acceptable to Moera.
+
+### 12.1 Link previews
+
+Link previews are universal structured body data rather than Telegram JSON or pre-encoded Moera `Body` values.
+`SourceMessage` contains ordered `SourceLinkPreview` values with:
+
+```text
+site_name
+url
+title
+description
+published_at
+image_source_media_id
+```
+
+They are persisted in `message_link_previews` with the owning `message_id`, a source order `position`, the fields above,
+and an optional `image_media_id` foreign key to `media`. The referenced image is also an ordinary `Media` row and can be
+attached to the destination publication. This keeps the core model source-neutral and lets the Moera payload builder
+construct `Body.linkPreviews` without parsing `source_data`.
+
+When several member messages contribute previews with the same URL, the publication uses the first preview in message
+order and ignores later duplicates, including their preview-only images. The effective preview/media selection is
+recalculated when a member message changes, so a later duplicate can become active if the earlier one disappears.
 
 ## 13. Media
 
@@ -363,6 +392,10 @@ media properties itself.
 `mime_type` defaults to `application/octet-stream` when the source cannot provide a better value.
 
 `position` preserves source attachment order within the message.
+
+A media item referenced as a link-preview image still participates in ordinary publication-media upload and attachment.
+The link-preview relation determines whether it is also referenced from `Body.linkPreviews` and whether a duplicate
+preview makes it ineffective for a particular publication.
 
 `source_hash` is a non-null SHA-256 fingerprint of the canonical source media representation. If `(source_id,
 source_hash)` is unchanged, the media is unchanged. A changed hash, addition, or removal of media increments the owning
@@ -454,12 +487,12 @@ An adapter identifies a channel by external `(source_type, source_id)`, not by i
 
 For an observed source message:
 
-1. Normalize body and formatting.
+1. Normalize body, formatting, structured link previews, and pinning.
 2. Compute `source_body_hash`.
 3. Normalize the source media set and each `source_hash`.
 4. Compare with stored state.
 5. If unchanged, keep the existing revision.
-6. If body, media, or deletion state changed, update the stored state and increment `revision`.
+6. If body, link previews, media, pinning, or deletion state changed, update the stored state and increment `revision`.
 
 Deletion is represented by another revision with `deleted = true`.
 
@@ -658,6 +691,10 @@ There is no extra global media position here. Ordering is derived from `publicat
 The database does not attempt to prove that a referenced `Media` belongs to one of the publication's messages;
 application code constructs these rows correctly.
 
+`destination_media_id` stores `PrivateMediaFileInfo.id`. On successful upload, `destination_data` also stores
+`PrivateMediaFileInfo.hash`. The ID attaches the private file to a posting; the hash is used by
+`Body.LinkPreview.imageHash` when the media is a selected link-preview image.
+
 ## 23. Media staging and upload
 
 The source file is downloaded only when a publication needs it.
@@ -713,7 +750,8 @@ For each source media item:
 4. If it is too large, mark it `SKIPPED / TOO_LARGE` and delete the staging file.
 5. Upload acceptable files as Moera private media.
 6. Always request `downsize=true` for Moera media uploads.
-7. Store the returned Moera media ID in `publication_media.destination_media_id`.
+7. Store the returned `PrivateMediaFileInfo.id` in `publication_media.destination_media_id` and its `hash` in
+   `publication_media.destination_data`.
 8. Delete staging immediately after successful upload or terminal skip.
 
 A Moera `media.wrong-size` response is a terminal `TOO_LARGE` outcome. A storage/service failure is retryable when the
@@ -758,6 +796,12 @@ public class MoeraService {
         Destination destination,
         String destinationPostId
     );
+
+    void updateStory(
+        Destination destination,
+        String storyId,
+        boolean pinned
+    );
 }
 ```
 
@@ -791,8 +835,9 @@ otherwise
 The design does not require HTML-to-Markdown conversion. Telegram normally produces HTML, and RSS is also expected to
 commonly produce HTML.
 
-The payload supplies Moera source text (`bodySrc` / `bodySrcFormat`) and lets the Moera node build its processed
-representation.
+The payload supplies a structured Moera `Body` as `bodySrc`: its `text` field contains the selected source text, and its
+`linkPreviews` field contains the normalized universal previews. `bodySrcFormat` describes the text field. The Moera node
+builds its processed representation.
 
 A publication consisting only of media may have an empty source body.
 
@@ -804,7 +849,12 @@ A `Publication` can contain several source messages. Their non-empty bodies are 
 For plain text or Markdown this is conceptually a blank line. For HTML it is an appropriate HTML-level boundary rather
 than raw `\n\n` inserted into markup.
 
-This rule is intentionally simple. Source-specific joining behavior is not added until a real source requires it.
+Telegram forward attribution is the one source-specific addition to this rule. Attribution is part of each normalized
+message body and is repeated before every forwarded message. When a Telegram publication joins a message whose
+attribution differs from the previous message's attribution, the payload builder inserts `<hr>` before that message.
+
+Ordered universal link previews are collected from member messages after deleted messages are removed. They are
+deduplicated by URL; the first preview and its image win. The resulting values populate Moera `Body.linkPreviews`.
 
 ### 24.3 Publication time and feeds
 
@@ -829,8 +879,13 @@ The target feed set belongs to `mirrors.config`, for example conceptually:
 }
 ```
 
-Feed publication attributes are set when the Moera posting is first created. They are not rebuilt on ordinary content
-updates.
+Feed publication membership and publication time are set when the Moera posting is first created. They are not rebuilt
+on ordinary content updates.
+
+Pinning is an exception. A publication is pinned when any non-deleted member message is pinned. Creation passes this
+value in `StoryAttributes.pinned`. The create response's `FeedReference.storyId` values are stored by feed in
+`publications.destination_data`. Later pin/unpin changes use Moera's separate `updateStory(...)` operation because
+`PostingText.publications` cannot be modified when a posting is updated.
 
 ## 25. Publication delivery
 
@@ -846,17 +901,20 @@ Delivery flow:
 5. Select a source body format supported by the Moera node.
 6. On first creation, include the configured feed publications and use the earliest member `published_at` as feed
    `publishAt`.
-7. Create a Moera posting if no destination post exists.
+7. Create a Moera posting if no destination post exists, recording the posting ID and feed story IDs.
 8. Update an existing posting if the current payload is non-empty.
-9. Delete an existing posting if all text and media content disappeared.
-10. On success, set `published_revision` to the exact target revision captured by the worker.
+9. Update each existing feed story if its effective pin state changed.
+10. Delete an existing posting if all text and media content disappeared.
+11. On success, set `published_revision` to the exact target revision captured by the worker.
 
 Deleted member messages contribute no content. Skipped media is omitted.
 
-For create, the returned Moera posting ID is stored in `publications.destination_post_id`.
+For create, the returned Moera posting ID is stored in `publications.destination_post_id`; returned feed/story identity
+and delivered pin state are stored in `publications.destination_data`.
 
-For update, only posting content/media are updated; feed publication membership/time established at create time are
-left unchanged.
+For update, posting content/media and the pin attribute of existing feed stories may be updated; feed membership/time
+established at create time are left unchanged. Story updates are repeatable by story ID. A publication revision is
+completed only after all required posting and story operations succeed.
 
 For delete, a Moera "posting not found" result is treated as the desired final state and therefore as success.
 
@@ -1111,6 +1169,7 @@ A proposed package layout is:
 │   ├── ChannelSnapshot.java
 │   ├── MediaSnapshot.java
 │   ├── SourceMessage.java
+│   ├── SourceLinkPreview.java
 │   ├── SourceMedia.java
 │   ├── PollResult.java
 │   ├── AccessResult.java
@@ -1123,6 +1182,9 @@ A proposed package layout is:
 │   ├── TelegramSourceAdapter.java
 │   ├── TelegramClient.java
 │   ├── TelegramMessageMapper.java
+│   ├── TelegramMappingResult.java
+│   ├── TelegramHtmlFormatter.java
+│   ├── TelegramCanonicalHash.java
 │   └── TelegramMediaDownloader.java
 │
 ├── moera/
@@ -1313,10 +1375,11 @@ The Telegram adapter consumes the TDLib update stream and maps relevant updates 
 The important live paths are conceptually:
 
 ```text
-new message          -> SourceEvent.MessageChanged
-message content edit -> re-read/map -> SourceEvent.MessageChanged
-permanent deletion   -> SourceEvent.MessageDeleted
-membership changes   -> access/subscription state updates
+new message              -> SourceEvent.MessageChanged
+message content edit     -> re-read/map -> SourceEvent.MessageChanged
+message pin-state change -> re-read/map -> SourceEvent.MessageChanged
+permanent deletion       -> SourceEvent.MessageDeleted
+membership changes       -> access/subscription state updates
 ```
 
 Deletion is propagated only when TDLib indicates a permanent server-side deletion, not when an item merely disappears
@@ -1328,7 +1391,8 @@ durable application state.
 ### 33.6 Telegram message mapping
 
 Telegram message IDs become textual `SourceMessage.sourceId` values. Telegram publication timestamps become
-`published_at`.
+`published_at`, and `Message.isPinned` becomes the universal `SourceMessage.pinned` value. A `MessagePinMessage` service
+message is not ingested as a separate message.
 
 Telegram formatted text and captions are normalized to sanitized HTML, so Telegram messages normally use:
 
@@ -1336,18 +1400,166 @@ Telegram formatted text and captions are normalized to sanitized HTML, so Telegr
 body_format = HTML
 ```
 
-Plain text is HTML-escaped. The `source_body_hash` is calculated from a canonical representation of the original
-Telegram text plus ordered formatting entities and their semantic data, not from generated HTML.
+Plain text is HTML-escaped. A single line feed becomes `<br>`. Two or more consecutive line feeds form an HTML paragraph
+boundary; empty, leading, and trailing paragraphs are not generated, and every non-empty top-level text block is placed
+in `<p>`.
+
+The `source_body_hash` is calculated from a canonical representation of every source value that affects normalized body
+or link-preview output, not from generated HTML. This includes original Telegram text, ordered formatting entities and
+their semantic data, forward attribution, author signature, supported URL buttons, fact-checks, and link-preview
+metadata. Explicitly ignored fields are excluded.
 
 Formatting-only edits therefore increment `Message.revision`.
 
 Telegram entity offsets are interpreted according to TDLib semantics inside the Telegram mapper and do not leak into
 the universal model.
 
+The mapper uses an explicit allowlist. Its result is either `Mapped(SourceMessage)` or `Skipped(reason)`; it never uses
+`null` to represent a deliberate skip. Known skip reasons are low-cardinality values such as `UNSUPPORTED_CONTENT`,
+`SERVICE_MESSAGE`, and `INVALID_CONTENT`. A new unknown `MessageContent` is skipped by default rather than serialized,
+reflected, or guessed.
+
+A skipped message is a normal successful observation: it does not fail a poll batch, and the waterline advances past
+it. A live skipped message/update is ignored. If a previously stored message later maps to a skipped type, its last
+supported stored and delivered form remains unchanged. Safe diagnostics include only the content type, channel/message
+identity, and reason; source body or sensitive fields are never logged. Unexpected programming failures are not turned
+into skips and follow normal retry/diagnostic handling.
+
+#### 33.6.1 Telegram text entities
+
+Formatting maps as follows:
+
+```text
+Bold                  -> <b>
+Italic                -> <i>
+Underline             -> <u>
+Strikethrough         -> <s>
+Code                  -> <code>
+Pre / PreCode         -> <pre>
+BlockQuote            -> <blockquote>
+ExpandableBlockQuote  -> <blockquote>
+```
+
+The `PreCode` language is ignored. Nested/overlapping source ranges are converted to validly nested HTML while retaining
+TDLib UTF-16 offset semantics.
+
+`Spoiler` uses `<mr-spoiler>` when it contains no paragraphs or other block elements and `<mr-spoiler-block>` otherwise.
+`CustomEmoji` keeps its Unicode text without Telegram animation; its custom emoji ID remains part of the canonical hash.
+
+`Mention` (`@username`) links to `https://t.me/username`. `MentionName` by Telegram user ID remains plain text and does
+not expose the numeric ID. URL/TextUrl, email, and phone entities become links only with a safe supported URI scheme;
+otherwise their visible text is retained.
+
+Hashtag, cashtag, bot command, bank-card number, media timestamp, and date/time entities remain visible plain text. The
+Moera client recognizes literal `#hashtag` values. An unknown future entity also keeps its visible text without special
+HTML, while its type and available semantic fields remain in the canonical hash.
+
+#### 33.6.2 Supported structured content
+
+`MessagePoll` is rendered as the formatted question in `<p>` followed by an `<ol>` of formatted option text. Vote
+counts, chosen answers, open/closed state, poll description, explanation, and all `PollMedia` are ignored. A quiz adds
+the known correct option text after the list:
+
+```html
+<mr-spoiler-block title="Right answer">
+<p>Correct option</p>
+</mr-spoiler-block>
+```
+
+Multiple correct options use a `<ul>` inside the spoiler. If TDLib has not revealed the correct answers, the spoiler is
+absent; their later appearance changes the message revision.
+
+`MessageChecklist` is rendered as its formatted title followed by tasks marked `☐` or `☑`. Task text, order, addition,
+removal, and completion state affect the revision. Completing user/time and checklist permission metadata are ignored.
+
+`MessageLocation` and `MessageLiveLocation` render coordinates linked to OpenStreetMap. Accuracy, heading, live period,
+and other live-location metadata are ignored; a coordinate change affects the revision. `MessageVenue` adds its name and
+address before the same coordinate link and ignores provider-specific identity/type. `MessageContact` renders the name
+and a `tel:` link, while Telegram user ID and vCard are ignored.
+
+`MessageAnimatedEmoji` renders only its Unicode emoji. `MessageSticker` renders its associated emoji and maps the main
+sticker file as ordinary media; an unsupported sticker file format follows normal media skip behavior.
+
+Expired photo/video/video-note/voice-note content maps to a message without media and the plain text:
+
+```text
+[Media is no longer available]
+```
+
+This deliberately replaces previously available media instead of leaving a stale attachment.
+
+#### 33.6.3 Skipped content
+
+The initial Telegram adapter skips these user-content families:
+
+- dice and stake dice;
+- games and invoices;
+- paid media;
+- forwarded stories;
+- giveaways, gifts, Telegram currencies, payments, and their lifecycle messages;
+- rich messages (`MessageRichMessage`);
+- `MessageUnsupported`.
+
+All administrative/service `MessageContent` types are skipped by default, including membership/chat/topic/video-chat,
+payment, bot/Web App/Passport, checklist activity, suggested-post, and custom service messages. Pinning is the sole
+service-action exception and is synchronized through the referenced message's `Message.isPinned`, not by importing the
+service message itself.
+
+#### 33.6.4 Forwarding, buttons, and message metadata
+
+A forwarded message starts with source attribution. A public channel links to the exact original message when its
+message ID is available, otherwise to the channel; a public user links to their Telegram username:
+
+```html
+<p><a href="source-url">Source name</a></p>
+```
+
+When only a source name is available, it is emitted without a link; when neither is available, attribution is omitted.
+Attribution is repeated for every forwarded message. When grouped Telegram messages change attribution, `<hr>` is
+inserted before the differently attributed message.
+
+An `authorSignature` is appended after the message content as `<p><i>— Author</i></p>`. Ordinary safe-URL inline buttons
+are then appended as links; callbacks, Web Apps, login, payment, and other Telegram-only buttons are ignored. A Telegram
+fact-check follows buttons as:
+
+```html
+<hr>
+<p><b>Fact check</b></p>
+<blockquote>formatted fact-check text</blockquote>
+```
+
+The fact-check country code is ignored, and no block is emitted when TDLib has no text. Replies are not reproduced as
+links or quotations.
+
+Interaction/reaction/view/forward counters, unread reactions, import/via-bot metadata, message effects, sender boost/tag,
+paid-message/suggested-post data, summary language, and auto-delete/self-destruct timing are ignored. `canBeSaved`,
+`restrictionInfo`, and media `isSecret` do not prevent import; the adapter maps whatever content TDLib actually returns.
+
+#### 33.6.5 Telegram link previews
+
+`MessageText.linkPreview` is normalized into `SourceLinkPreview`, mapping every field supported by Moera: site name,
+URL, title, description, publication time, and an optional image-media reference. `linkPreviewOptions` presentation
+flags are ignored and excluded from the hash.
+
+The preview image is the largest main photo when available, otherwise an available thumbnail or cover. Only one image
+is selected; full preview video/audio/document content is ignored. The selected image is mapped as ordinary media so it
+is attached to the posting and is also referenced through `Body.LinkPreview.imageHash`. The Moera client excludes that
+same media hash from its ordinary gallery presentation. A missing/skipped preview image does not remove the textual
+preview.
+
 ### 33.7 Telegram media mapping
 
 Telegram file-bearing message content is mapped to universal `Media` metadata during ingest without downloading the
 source file.
+
+The supported ordinary types are photo, animation, audio, document, video, video note, and voice note. Their caption is
+the message body; track/performer/duration/dimensions and similar technical metadata are not added to the body. Photos
+use the largest available source size. A Telegram live photo imports only its still photo. For video, only the primary
+file is imported; alternative qualities, storyboards, cover, and start timestamp are ignored. Thumbnails and covers are
+not separate media except when one is deliberately selected as a link-preview image.
+
+`showCaptionAboveMedia`, media `hasSpoiler`, `isSecret`, viewed/listened state, and other Telegram-only presentation flags
+are ignored and excluded from canonical hashes.
 
 Where available:
 
@@ -1398,6 +1610,8 @@ The initial architecture intentionally accepts:
 - no full historical reconciliation;
 - publication membership is immutable after creation;
 - absence from a polling/feed result alone is not evidence of deletion;
+- if a previously imported Telegram message later maps to an intentionally skipped type, its last supported destination
+  representation remains until an explicit deletion or later supported update is observed;
 - source media is not stored permanently;
 - Moera create-post idempotency is currently unavailable, so a rare ambiguous failure can create a duplicate after
   retry;
@@ -1475,9 +1689,10 @@ not advance the waterline.
 
 ### Message ingest
 
-Message ingest compares `source_body_hash`, the media set, media `source_hash` values, and deletion state. A real
-change increments `messages.revision`. The repository synchronizes the current media set and marks affected
-publications dirty in the same transaction. Application code does not calculate revisions itself.
+Message ingest compares `source_body_hash`, normalized link previews, the media set, media `source_hash` values, pinning,
+and deletion state. A real change increments `messages.revision`. The repository synchronizes link previews and the
+current media set and marks affected publications dirty in the same transaction. Application code does not calculate
+revisions itself.
 
 ### Publication repositories
 
@@ -1533,8 +1748,10 @@ A group followed by a known boundary can be created immediately. The final known
 `settlingDelay` has elapsed since its last message. Historical groups whose messages are already older than the
 settling delay are created immediately.
 
-Creating a publication inserts `publications`, `publication_messages`, and `publication_media` atomically. New
-publications and publication-media rows are scheduled immediately with `next_attempt_at = now()`.
+Creating a publication inserts `publications`, `publication_messages`, and the currently effective `publication_media`
+atomically. Effective media includes ordinary attachments and the first link-preview image for each distinct URL. New
+publications and publication-media rows are scheduled immediately with `next_attempt_at = now()`. Message changes
+recalculate this effective set so a previously duplicate preview image can become active.
 
 ### Publication media workflow
 
@@ -1569,8 +1786,9 @@ still publishes its in-memory snapshot for N. Successful completion sets `publis
 publication dirty so that a later worker publishes N+1.
 
 `PublicationProcessor` creates a Moera post when no destination post exists, updates an existing post when the payload
-is non-empty, deletes the post when the new payload is empty, and performs no external call when both the payload and
-`destination_post_id` are absent. In the latter case it simply marks `targetRevision` as published.
+is non-empty, updates feed stories by story ID when effective pinning changes, deletes the post when the new payload is
+empty, and performs no external call when both the payload and `destination_post_id` are absent. In the latter case it
+simply marks `targetRevision` as published.
 
 ## 39. Staging files
 
@@ -1654,24 +1872,33 @@ atomic poll ingest + waterline advance
 Important concurrency tests use separate threads/transactions to prove that two workers cannot claim the same row, that
 an expired lease can be reclaimed, and that a stale token cannot complete newer work.
 
-Message-ingest integration tests cover creation at revision 0, idempotent re-ingest, text-format changes,
-media-set/hash changes, and deletion propagation.
+Message-ingest integration tests cover creation at revision 0, idempotent re-ingest, text-format changes, link-preview
+storage/image relations, pinning, media-set/hash changes, and deletion propagation.
 
 Publication tests cover the race where revision N is published while the stored publication advances to N+1.
-Publication-media tests cover invalidation when `Media.source_hash` changes during upload.
+Publication-media tests cover invalidation when `Media.source_hash` changes during upload, persistence of distinct Moera
+private-media ID/hash values, preview URL deduplication, and activation of a later duplicate preview image.
 
 ### 42.3 Telegram tests
 
-`TelegramMessageMapper` is isolated from live network behavior and unit-tested with TDLib objects, including formatted
-text/entity conversion, UTF-16 entity offsets, captions, media mapping, media-album metadata, remote file identifiers,
-and canonical hashes.
+`TelegramMessageMapper` is isolated from live network behavior and unit-tested with TDLib objects. Tests cover paragraph
+conversion, every supported entity mapping, UTF-16 offsets, nested/overlapping entities, inline/block spoilers, captions,
+poll/quiz, checklist, location/venue/contact, stickers/animated emoji, expired media, forward attribution, author
+signature, URL buttons, fact-check, link-preview fields/image selection, ordinary media, media-album metadata, remote
+file identifiers, and canonical hashes.
+
+Every intentionally skipped content family and the unknown-content default have explicit tests. Mapper tests also prove
+that ignored fields do not change hashes, relevant semantic fields do, a deliberate skip does not fail polling, and an
+unexpected mapper failure is not silently converted to a skip.
 
 Tests that require a real Telegram account are opt-in smoke/integration tests and are not part of the default CI suite.
 
 ### 42.4 Moera tests
 
-`MoeraService` behavior is tested against controlled/fake HTTP or library boundaries where practical. Tests requiring a
-real Moera node are opt-in smoke tests rather than normal CI requirements.
+`MoeraService` behavior is tested against controlled/fake HTTP or library boundaries where practical. Payload tests
+cover structured `Body.linkPreviews`, attaching their images as normal media, using `PrivateMediaFileInfo.hash` rather
+than its ID for `imageHash`, first-URL-wins deduplication, and pin/unpin through feed story IDs. Tests requiring a real
+Moera node are opt-in smoke tests rather than normal CI requirements.
 
 ## 43. Observability and health
 
@@ -1716,6 +1943,7 @@ media_uploaded_total
 media_skipped_total
 media_upload_bytes
 poll_messages_found_total
+telegram_messages_skipped_total
 message_revisions_total
 lease_reclaims_total
 ```
@@ -1790,4 +2018,3 @@ Schedulers do not execute Telegram work before TDLight is ready.
 Shutdown stops claiming new work, stops source adapters/live intake, allows already-running workers a bounded grace
 period, and then exits. In-flight leases are not forcibly rolled back; after expiry they are safely reclaimed on a
 later run.
-

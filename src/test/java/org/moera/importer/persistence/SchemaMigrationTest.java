@@ -26,12 +26,42 @@ class SchemaMigrationTest extends PostgresIntegrationTest {
         assertThat(tableNames).contains(
             "channels",
             "messages",
+            "message_link_previews",
             "media",
             "destinations",
             "mirrors",
             "publications",
             "publication_messages",
             "publication_media"
+        );
+    }
+
+    @Test
+    void messagePinningAndLinkPreviewSchemaIsAvailable() throws SQLException {
+        Set<String> pinnedColumn = queryStrings("""
+            SELECT is_nullable || ':' || column_default
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'messages'
+              AND column_name = 'pinned'
+            """);
+        Set<String> previewColumns = queryStrings("""
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'message_link_previews'
+            """);
+
+        assertThat(pinnedColumn).containsExactly("NO:false");
+        assertThat(previewColumns).contains(
+            "message_id",
+            "position",
+            "site_name",
+            "url",
+            "title",
+            "description",
+            "published_at",
+            "image_media_id"
         );
     }
 

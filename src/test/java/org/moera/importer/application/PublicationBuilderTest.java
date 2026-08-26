@@ -27,6 +27,7 @@ import org.moera.importer.source.GroupingRelation;
 import org.moera.importer.source.PollResult;
 import org.moera.importer.source.SourceAdapter;
 import org.moera.importer.source.SourceEventSink;
+import org.moera.importer.source.SourceLinkPreview;
 import org.moera.importer.source.SourceMedia;
 import org.moera.importer.source.SourceMessage;
 import org.moera.importer.source.SubscriptionResult;
@@ -39,11 +40,14 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.moera.importer.persistence.jooq.enums.AccessState.GRANTED;
+import static org.moera.importer.persistence.jooq.enums.PublicationMediaStatus.PENDING;
+import static org.moera.importer.persistence.jooq.enums.PublicationMediaStatus.UPLOADED;
 import static org.moera.importer.persistence.jooq.enums.SourceType.TELEGRAM;
 import static org.moera.importer.persistence.jooq.enums.SubscriptionState.ACTIVE;
 import static org.moera.importer.persistence.jooq.tables.Channels.CHANNELS;
 import static org.moera.importer.persistence.jooq.tables.Destinations.DESTINATIONS;
 import static org.moera.importer.persistence.jooq.tables.Mirrors.MIRRORS;
+import static org.moera.importer.persistence.jooq.tables.Media.MEDIA;
 import static org.moera.importer.persistence.jooq.tables.PublicationMedia.PUBLICATION_MEDIA;
 import static org.moera.importer.persistence.jooq.tables.PublicationMessages.PUBLICATION_MESSAGES;
 import static org.moera.importer.persistence.jooq.tables.Publications.PUBLICATIONS;
@@ -174,6 +178,70 @@ class PublicationBuilderTest extends PostgresIntegrationTest {
     }
 
     @Test
+    void keepsOnlyTheFirstPreviewImageForEachUrlAsEffectiveMedia() {
+        long mirrorId = insertMirror();
+        ingest(
+            "one",
+            NOW.minusSeconds(50),
+            List.of(media("ordinary-one", 0), media("preview-one", 1)),
+            List.of(preview("https://example.com/shared", "preview-one"))
+        );
+        ingest(
+            "two",
+            NOW.minusSeconds(40),
+            List.of(media("ordinary-two", 0), media("preview-two", 1)),
+            List.of(preview("https://example.com/shared", "preview-two"))
+        );
+
+        publicationBuilder.build(mirrorId);
+
+        assertThat(effectiveMediaSourceIds())
+            .containsExactlyInAnyOrder("ordinary-one", "preview-one", "ordinary-two");
+    }
+
+    @Test
+    void activatesLaterPreviewImageWhenTheEarlierPreviewIsRemoved() {
+        long mirrorId = insertMirror();
+        ingest(
+            "one",
+            NOW.minusSeconds(50),
+            List.of(media("ordinary-one", 0), media("preview-one", 1)),
+            List.of(preview("https://example.com/shared", "preview-one"))
+        );
+        ingest(
+            "two",
+            NOW.minusSeconds(40),
+            List.of(media("ordinary-two", 0), media("preview-two", 1)),
+            List.of(preview("https://example.com/shared", "preview-two"))
+        );
+        publicationBuilder.build(mirrorId);
+        dslContext.update(PUBLICATION_MEDIA)
+            .set(PUBLICATION_MEDIA.STATUS, UPLOADED)
+            .set(PUBLICATION_MEDIA.DESTINATION_MEDIA_ID, "uploaded-media")
+            .setNull(PUBLICATION_MEDIA.NEXT_ATTEMPT_AT)
+            .execute();
+
+        ingest("one", NOW.minusSeconds(50), List.of(media("ordinary-one", 0)), List.of());
+
+        assertThat(effectiveMediaSourceIds())
+            .containsExactlyInAnyOrder("ordinary-one", "ordinary-two", "preview-two");
+        var ordinaryDelivery = dslContext.select(PUBLICATION_MEDIA.STATUS, PUBLICATION_MEDIA.DESTINATION_MEDIA_ID)
+            .from(PUBLICATION_MEDIA)
+            .join(MEDIA).on(PUBLICATION_MEDIA.MEDIA_ID.eq(MEDIA.ID))
+            .where(MEDIA.SOURCE_ID.eq("ordinary-one"))
+            .fetchSingle();
+        assertThat(ordinaryDelivery.value1()).isEqualTo(UPLOADED);
+        assertThat(ordinaryDelivery.value2()).isEqualTo("uploaded-media");
+        var activatedPreview = dslContext.select(PUBLICATION_MEDIA.STATUS, PUBLICATION_MEDIA.NEXT_ATTEMPT_AT)
+            .from(PUBLICATION_MEDIA)
+            .join(MEDIA).on(PUBLICATION_MEDIA.MEDIA_ID.eq(MEDIA.ID))
+            .where(MEDIA.SOURCE_ID.eq("preview-two"))
+            .fetchSingle();
+        assertThat(activatedPreview.value1()).isEqualTo(PENDING);
+        assertThat(activatedPreview.value2().toInstant()).isEqualTo(NOW);
+    }
+
+    @Test
     void keepsExistingMembershipImmutableWhenLateMessageArrives() {
         long mirrorId = insertMirror();
         ingest("one", NOW.minusSeconds(50));
@@ -258,16 +326,50 @@ class PublicationBuilderTest extends PostgresIntegrationTest {
     }
 
     private void ingest(String sourceId, Instant publishedAt, List<SourceMedia> media) {
+        ingest(sourceId, publishedAt, media, List.of());
+    }
+
+    private void ingest(
+        String sourceId,
+        Instant publishedAt,
+        List<SourceMedia> media,
+        List<SourceLinkPreview> linkPreviews
+    ) {
         messageRepository.ingest(1, new SourceMessage(
             sourceId,
+            false,
             false,
             publishedAt,
             sourceId,
             BodyFormat.PLAIN_TEXT,
             hash(sourceId.hashCode()),
             JsonNodeFactory.instance.objectNode(),
-            media
+            media,
+            linkPreviews
         ));
+    }
+
+    private SourceMedia media(String sourceId, int position) {
+        return new SourceMedia(
+            sourceId,
+            position,
+            "image/jpeg",
+            sourceId + ".jpg",
+            100L,
+            hash(sourceId.hashCode()),
+            JsonNodeFactory.instance.objectNode()
+        );
+    }
+
+    private SourceLinkPreview preview(String url, String imageSourceMediaId) {
+        return new SourceLinkPreview(null, url, null, null, null, imageSourceMediaId);
+    }
+
+    private List<String> effectiveMediaSourceIds() {
+        return dslContext.select(MEDIA.SOURCE_ID)
+            .from(PUBLICATION_MEDIA)
+            .join(MEDIA).on(PUBLICATION_MEDIA.MEDIA_ID.eq(MEDIA.ID))
+            .fetch(MEDIA.SOURCE_ID);
     }
 
     private void assertPublicationGroups(List<List<String>> expectedGroups) {

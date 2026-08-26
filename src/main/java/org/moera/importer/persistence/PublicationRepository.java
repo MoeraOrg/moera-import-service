@@ -10,9 +10,6 @@ import org.moera.importer.model.Message;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
 
-import static org.moera.importer.persistence.jooq.enums.PublicationMediaStatus.PENDING;
-import static org.moera.importer.persistence.jooq.tables.Media.MEDIA;
-import static org.moera.importer.persistence.jooq.tables.PublicationMedia.PUBLICATION_MEDIA;
 import static org.moera.importer.persistence.jooq.tables.PublicationMessages.PUBLICATION_MESSAGES;
 import static org.moera.importer.persistence.jooq.tables.Publications.PUBLICATIONS;
 
@@ -27,6 +24,9 @@ public class PublicationRepository {
 
     @Inject
     private JooqMappings jooqMappings;
+
+    @Inject
+    private PublicationMediaRepository publicationMediaRepository;
 
     @Transactional
     public void create(long mirrorId, List<Message> orderedMessages) {
@@ -48,18 +48,7 @@ public class PublicationRepository {
                 .set(PUBLICATION_MESSAGES.POSITION, position)
                 .execute();
         }
-        List<Long> messageIds = orderedMessages.stream().map(Message::id).toList();
-        dslContext.select(MEDIA.ID)
-            .from(MEDIA)
-            .where(MEDIA.MESSAGE_ID.in(messageIds))
-            .orderBy(MEDIA.MESSAGE_ID, MEDIA.POSITION)
-            .fetch(MEDIA.ID)
-            .forEach(mediaId -> dslContext.insertInto(PUBLICATION_MEDIA)
-                .set(PUBLICATION_MEDIA.PUBLICATION_ID, publicationId)
-                .set(PUBLICATION_MEDIA.MEDIA_ID, mediaId)
-                .set(PUBLICATION_MEDIA.STATUS, PENDING)
-                .set(PUBLICATION_MEDIA.NEXT_ATTEMPT_AT, jooqMappings.offsetDateTime(now))
-                .execute());
+        publicationMediaRepository.synchronizeForPublication(publicationId);
     }
 
     public void reviseForMessage(long messageId) {

@@ -10,12 +10,14 @@ import org.moera.importer.model.BodyFormat;
 public record SourceMessage(
     String sourceId,
     boolean deleted,
+    boolean pinned,
     Instant publishedAt,
     String body,
     BodyFormat bodyFormat,
     byte[] sourceBodyHash,
     JsonNode sourceData,
-    List<SourceMedia> media
+    List<SourceMedia> media,
+    List<SourceLinkPreview> linkPreviews
 ) {
 
     public SourceMessage {
@@ -25,7 +27,8 @@ public record SourceMessage(
         Objects.requireNonNull(bodyFormat, "bodyFormat");
         sourceBodyHash = Objects.requireNonNull(sourceBodyHash, "sourceBodyHash").clone();
         Objects.requireNonNull(sourceData, "sourceData");
-        media = List.copyOf(media);
+        media = List.copyOf(Objects.requireNonNull(media, "media"));
+        linkPreviews = List.copyOf(Objects.requireNonNull(linkPreviews, "linkPreviews"));
     }
 
     @Override

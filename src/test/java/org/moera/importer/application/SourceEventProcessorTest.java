@@ -91,11 +91,13 @@ class SourceEventProcessorTest {
         return new SourceMessage(
             "message-1",
             false,
+            false,
             Instant.parse("2026-08-26T11:00:00Z"),
             "body",
             BodyFormat.PLAIN_TEXT,
             new byte[32],
             JsonNodeFactory.instance.objectNode(),
+            List.of(),
             List.of()
         );
     }

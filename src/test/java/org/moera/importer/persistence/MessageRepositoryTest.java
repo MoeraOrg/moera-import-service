@@ -64,6 +64,7 @@ class MessageRepositoryTest extends PostgresIntegrationTest {
         SourceMessage sourceMessage = new SourceMessage(
             "message-1",
             false,
+            false,
             Instant.parse("2026-08-25T10:15:30Z"),
             "Hello, Moera",
             BodyFormat.HTML,
@@ -88,7 +89,8 @@ class MessageRepositoryTest extends PostgresIntegrationTest {
                     firstMediaHash,
                     JsonNodeFactory.instance.objectNode().put("remote", "first")
                 )
-            )
+            ),
+            List.of()
         );
 
         IngestResult result = messageRepository.ingest(channelId, sourceMessage);
@@ -355,11 +357,16 @@ class MessageRepositoryTest extends PostgresIntegrationTest {
         long mirrorId = insertMirror(channelId);
         messageRepository.ingest(channelId, messageWithOneMedia());
         long messageId = dslContext.select(MESSAGES.ID).from(MESSAGES).fetchSingle(MESSAGES.ID);
+        long mediaId = dslContext.select(MEDIA.ID).from(MEDIA).fetchSingle(MEDIA.ID);
         long publicationId = insertPublication(mirrorId, 2, 4, "old failure");
         dslContext.insertInto(PUBLICATION_MESSAGES)
             .set(PUBLICATION_MESSAGES.PUBLICATION_ID, publicationId)
             .set(PUBLICATION_MESSAGES.MESSAGE_ID, messageId)
             .set(PUBLICATION_MESSAGES.POSITION, 0)
+            .execute();
+        dslContext.insertInto(PUBLICATION_MEDIA)
+            .set(PUBLICATION_MEDIA.PUBLICATION_ID, publicationId)
+            .set(PUBLICATION_MEDIA.MEDIA_ID, mediaId)
             .execute();
 
         boolean changed = messageRepository.markDeleted(channelId, "message-1");
@@ -371,6 +378,7 @@ class MessageRepositoryTest extends PostgresIntegrationTest {
         assertThat(publication.getAttempts()).isZero();
         assertThat(publication.getLastError()).isNull();
         assertThat(publication.getNextAttemptAt()).isNotNull();
+        assertThat(dslContext.fetchCount(PUBLICATION_MEDIA)).isZero();
     }
 
     @Test
@@ -389,6 +397,7 @@ class MessageRepositoryTest extends PostgresIntegrationTest {
         SourceMessage refreshed = new SourceMessage(
             "message-1",
             false,
+            false,
             Instant.parse("2026-08-25T10:16:30Z"),
             "Hello, Moera",
             BodyFormat.HTML,
@@ -402,7 +411,8 @@ class MessageRepositoryTest extends PostgresIntegrationTest {
                 500L,
                 hash(2),
                 JsonNodeFactory.instance.objectNode().put("remote", "refreshed")
-            ))
+            )),
+            List.of()
         );
 
         IngestResult result = messageRepository.ingest(channelId, refreshed);
@@ -426,11 +436,13 @@ class MessageRepositoryTest extends PostgresIntegrationTest {
         SourceMessage message = new SourceMessage(
             "message-1",
             false,
+            false,
             publishedAt,
             "Hello, Moera",
             BodyFormat.HTML,
             hash(1),
             JsonNodeFactory.instance.objectNode().put("number", 1.0),
+            List.of(),
             List.of()
         );
         messageRepository.ingest(channelId, message);
@@ -580,12 +592,14 @@ class MessageRepositoryTest extends PostgresIntegrationTest {
         return new SourceMessage(
             "message-1",
             deleted,
+            false,
             Instant.parse("2026-08-25T10:15:30Z"),
             body,
             bodyFormat,
             bodyHash,
             JsonNodeFactory.instance.objectNode().put("source", "message"),
-            media
+            media,
+            List.of()
         );
     }
 

@@ -11,6 +11,7 @@ public record Message(
     String sourceId,
     int revision,
     boolean deleted,
+    boolean pinned,
     Instant publishedAt,
     String body,
     BodyFormat bodyFormat,

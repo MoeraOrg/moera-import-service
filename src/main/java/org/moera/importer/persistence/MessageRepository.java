@@ -1,8 +1,10 @@
 package org.moera.importer.persistence;
 
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.Arrays;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -16,6 +18,7 @@ import org.moera.importer.model.Message;
 import org.moera.importer.persistence.jooq.tables.records.MediaRecord;
 import org.moera.importer.persistence.jooq.tables.records.MessagesRecord;
 import org.moera.importer.source.PollResult;
+import org.moera.importer.source.SourceLinkPreview;
 import org.moera.importer.source.SourceMedia;
 import org.moera.importer.source.SourceMessage;
 import org.springframework.stereotype.Repository;
@@ -24,6 +27,7 @@ import org.springframework.transaction.annotation.Transactional;
 import static org.moera.importer.persistence.jooq.enums.ChannelOperation.POLL;
 import static org.moera.importer.persistence.jooq.tables.Channels.CHANNELS;
 import static org.moera.importer.persistence.jooq.tables.Media.MEDIA;
+import static org.moera.importer.persistence.jooq.tables.MessageLinkPreviews.MESSAGE_LINK_PREVIEWS;
 import static org.moera.importer.persistence.jooq.tables.Messages.MESSAGES;
 import static org.moera.importer.persistence.jooq.tables.Mirrors.MIRRORS;
 import static org.moera.importer.persistence.jooq.tables.PublicationMessages.PUBLICATION_MESSAGES;
@@ -46,6 +50,7 @@ public class MessageRepository {
 
     @Transactional
     public IngestResult ingest(long channelId, SourceMessage message) {
+        validateLinkPreviews(message);
         lockChannel(channelId);
         MessagesRecord existing = dslContext.selectFrom(MESSAGES)
             .where(MESSAGES.CHANNEL_ID.eq(channelId))
@@ -54,7 +59,7 @@ public class MessageRepository {
             .fetchOne();
         if (existing != null) {
             List<MediaRecord> mediaRecords = findMedia(existing.getId());
-            boolean messageChanged = messageStateChanged(existing, message);
+            boolean messageChanged = messageStateChanged(existing, message, findSourceLinkPreviews(existing.getId()));
             boolean mediaChanged = mediaStateChanged(mediaRecords, message.media());
             if (!messageChanged && !mediaChanged) {
                 refreshMessageMetadata(existing.getId(), message);
@@ -65,11 +70,15 @@ public class MessageRepository {
             int revision = existing.getRevision() + 1;
             List<Long> mediaWithChangedSourceHash = mediaWithChangedSourceHash(mediaRecords, message.media());
             updateMessage(existing.getId(), revision, message);
+            dslContext.deleteFrom(MESSAGE_LINK_PREVIEWS)
+                .where(MESSAGE_LINK_PREVIEWS.MESSAGE_ID.eq(existing.getId()))
+                .execute();
             if (mediaChanged) {
                 synchronizeMedia(existing.getId(), mediaRecords, message.media());
             } else {
                 refreshMediaMetadata(mediaRecords, message.media());
             }
+            insertLinkPreviews(existing.getId(), message.linkPreviews());
             publicationRepository.reviseForMessage(existing.getId());
             publicationMediaRepository.synchronizeForMessage(existing.getId(), mediaWithChangedSourceHash);
             return new IngestResult(existing.getId(), revision, false, true);
@@ -80,6 +89,7 @@ public class MessageRepository {
             .set(MESSAGES.SOURCE_ID, message.sourceId())
             .set(MESSAGES.REVISION, 0)
             .set(MESSAGES.DELETED, message.deleted())
+            .set(MESSAGES.PINNED, message.pinned())
             .set(MESSAGES.PUBLISHED_AT, jooqMappings.offsetDateTime(message.publishedAt()))
             .set(MESSAGES.BODY, message.body())
             .set(MESSAGES.BODY_FORMAT, jooqMappings.bodyFormat(message.bodyFormat()))
@@ -89,8 +99,25 @@ public class MessageRepository {
             .fetchSingle();
 
         message.media().forEach(sourceMedia -> insertMedia(record.getId(), sourceMedia));
+        insertLinkPreviews(record.getId(), message.linkPreviews());
 
         return new IngestResult(record.getId(), record.getRevision(), true, true);
+    }
+
+    public List<MessageLinkPreview> findLinkPreviews(long messageId) {
+        return dslContext.selectFrom(MESSAGE_LINK_PREVIEWS)
+            .where(MESSAGE_LINK_PREVIEWS.MESSAGE_ID.eq(messageId))
+            .orderBy(MESSAGE_LINK_PREVIEWS.POSITION)
+            .fetch(record -> new MessageLinkPreview(
+                record.getMessageId(),
+                record.getPosition(),
+                record.getSiteName(),
+                record.getUrl(),
+                record.getTitle(),
+                record.getDescription(),
+                jooqMappings.instant(record.getPublishedAt()),
+                record.getImageMediaId()
+            ));
     }
 
     @Transactional
@@ -109,6 +136,7 @@ public class MessageRepository {
             return false;
         }
         publicationRepository.reviseForMessage(messageId);
+        publicationMediaRepository.synchronizeForMessage(messageId, List.of());
         return true;
     }
 
@@ -179,9 +207,63 @@ public class MessageRepository {
             .fetch();
     }
 
-    private boolean messageStateChanged(MessagesRecord record, SourceMessage message) {
+    private boolean messageStateChanged(
+        MessagesRecord record,
+        SourceMessage message,
+        List<SourceLinkPreview> storedLinkPreviews
+    ) {
         return record.getDeleted() != message.deleted()
-            || !Arrays.equals(record.getSourceBodyHash(), message.sourceBodyHash());
+            || record.getPinned() != message.pinned()
+            || !Arrays.equals(record.getSourceBodyHash(), message.sourceBodyHash())
+            || !linkPreviewsEqual(storedLinkPreviews, message.linkPreviews());
+    }
+
+    private List<SourceLinkPreview> findSourceLinkPreviews(long messageId) {
+        var imageMedia = MEDIA.as("image_media");
+        return dslContext.select(
+                MESSAGE_LINK_PREVIEWS.SITE_NAME,
+                MESSAGE_LINK_PREVIEWS.URL,
+                MESSAGE_LINK_PREVIEWS.TITLE,
+                MESSAGE_LINK_PREVIEWS.DESCRIPTION,
+                MESSAGE_LINK_PREVIEWS.PUBLISHED_AT,
+                imageMedia.SOURCE_ID
+            )
+            .from(MESSAGE_LINK_PREVIEWS)
+            .leftJoin(imageMedia).on(MESSAGE_LINK_PREVIEWS.IMAGE_MEDIA_ID.eq(imageMedia.ID))
+            .where(MESSAGE_LINK_PREVIEWS.MESSAGE_ID.eq(messageId))
+            .orderBy(MESSAGE_LINK_PREVIEWS.POSITION)
+            .fetch(record -> new SourceLinkPreview(
+                record.get(MESSAGE_LINK_PREVIEWS.SITE_NAME),
+                record.get(MESSAGE_LINK_PREVIEWS.URL),
+                record.get(MESSAGE_LINK_PREVIEWS.TITLE),
+                record.get(MESSAGE_LINK_PREVIEWS.DESCRIPTION),
+                jooqMappings.instant(record.get(MESSAGE_LINK_PREVIEWS.PUBLISHED_AT)),
+                record.get(imageMedia.SOURCE_ID)
+            ));
+    }
+
+    private boolean linkPreviewsEqual(List<SourceLinkPreview> stored, List<SourceLinkPreview> incoming) {
+        if (stored.size() != incoming.size()) {
+            return false;
+        }
+        for (int position = 0; position < stored.size(); position++) {
+            SourceLinkPreview storedPreview = stored.get(position);
+            SourceLinkPreview incomingPreview = incoming.get(position);
+            if (!Objects.equals(storedPreview.siteName(), incomingPreview.siteName())
+                || !storedPreview.url().equals(incomingPreview.url())
+                || !Objects.equals(storedPreview.title(), incomingPreview.title())
+                || !Objects.equals(storedPreview.description(), incomingPreview.description())
+                || !Objects.equals(normalizeInstant(storedPreview.publishedAt()),
+                    normalizeInstant(incomingPreview.publishedAt()))
+                || !Objects.equals(storedPreview.imageSourceMediaId(), incomingPreview.imageSourceMediaId())) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private Instant normalizeInstant(Instant instant) {
+        return instant == null ? null : instant.truncatedTo(ChronoUnit.MICROS);
     }
 
     private boolean mediaStateChanged(List<MediaRecord> records, List<SourceMedia> sourceMedia) {
@@ -249,6 +331,7 @@ public class MessageRepository {
 
     private void refreshMessageMetadata(long messageId, SourceMessage message) {
         dslContext.update(MESSAGES)
+            .set(MESSAGES.PINNED, message.pinned())
             .set(MESSAGES.PUBLISHED_AT, jooqMappings.offsetDateTime(message.publishedAt()))
             .set(MESSAGES.BODY, message.body())
             .set(MESSAGES.BODY_FORMAT, jooqMappings.bodyFormat(message.bodyFormat()))
@@ -262,6 +345,7 @@ public class MessageRepository {
         dslContext.update(MESSAGES)
             .set(MESSAGES.REVISION, revision)
             .set(MESSAGES.DELETED, message.deleted())
+            .set(MESSAGES.PINNED, message.pinned())
             .set(MESSAGES.PUBLISHED_AT, jooqMappings.offsetDateTime(message.publishedAt()))
             .set(MESSAGES.BODY, message.body())
             .set(MESSAGES.BODY_FORMAT, jooqMappings.bodyFormat(message.bodyFormat()))
@@ -317,6 +401,51 @@ public class MessageRepository {
             .set(MEDIA.SOURCE_HASH, media.sourceHash())
             .set(MEDIA.SOURCE_DATA, jooqMappings.json(media.sourceData()))
             .execute();
+    }
+
+    private void insertLinkPreviews(long messageId, List<SourceLinkPreview> linkPreviews) {
+        Map<String, Long> mediaIds = dslContext.select(MEDIA.SOURCE_ID, MEDIA.ID)
+            .from(MEDIA)
+            .where(MEDIA.MESSAGE_ID.eq(messageId))
+            .fetchMap(MEDIA.SOURCE_ID, MEDIA.ID);
+        for (int position = 0; position < linkPreviews.size(); position++) {
+            SourceLinkPreview linkPreview = linkPreviews.get(position);
+            Long imageMediaId = null;
+            if (linkPreview.imageSourceMediaId() != null) {
+                imageMediaId = mediaIds.get(linkPreview.imageSourceMediaId());
+                if (imageMediaId == null) {
+                    throw new IllegalArgumentException(
+                        "Link preview image does not belong to its message: " + linkPreview.imageSourceMediaId()
+                    );
+                }
+            }
+            dslContext.insertInto(MESSAGE_LINK_PREVIEWS)
+                .set(MESSAGE_LINK_PREVIEWS.MESSAGE_ID, messageId)
+                .set(MESSAGE_LINK_PREVIEWS.POSITION, position)
+                .set(MESSAGE_LINK_PREVIEWS.SITE_NAME, linkPreview.siteName())
+                .set(MESSAGE_LINK_PREVIEWS.URL, linkPreview.url())
+                .set(MESSAGE_LINK_PREVIEWS.TITLE, linkPreview.title())
+                .set(MESSAGE_LINK_PREVIEWS.DESCRIPTION, linkPreview.description())
+                .set(MESSAGE_LINK_PREVIEWS.PUBLISHED_AT,
+                    jooqMappings.offsetDateTime(linkPreview.publishedAt()))
+                .set(MESSAGE_LINK_PREVIEWS.IMAGE_MEDIA_ID, imageMediaId)
+                .execute();
+        }
+    }
+
+    private void validateLinkPreviews(SourceMessage message) {
+        var mediaSourceIds = new HashSet<String>();
+        message.media().forEach(media -> mediaSourceIds.add(media.sourceId()));
+        message.linkPreviews().stream()
+            .map(SourceLinkPreview::imageSourceMediaId)
+            .filter(Objects::nonNull)
+            .filter(imageSourceMediaId -> !mediaSourceIds.contains(imageSourceMediaId))
+            .findFirst()
+            .ifPresent(imageSourceMediaId -> {
+                throw new IllegalArgumentException(
+                    "Link preview image does not belong to its message: " + imageSourceMediaId
+                );
+            });
     }
 
 }

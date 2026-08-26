@@ -85,6 +85,7 @@ public class JooqMappings {
             record.getSourceId(),
             record.getRevision(),
             record.getDeleted(),
+            record.getPinned(),
             instant(record.getPublishedAt()),
             record.getBody(),
             BodyFormat.valueOf(record.getBodyFormat().getLiteral()),
