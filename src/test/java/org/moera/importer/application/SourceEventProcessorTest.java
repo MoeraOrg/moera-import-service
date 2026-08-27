@@ -6,12 +6,14 @@ import java.util.List;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.moera.importer.model.AccessState;
 import org.moera.importer.model.BodyFormat;
 import org.moera.importer.model.SourceType;
 import org.moera.importer.model.SubscriptionState;
+import org.moera.importer.observability.ImportMetrics;
 import org.moera.importer.persistence.ChannelRepository;
 import org.moera.importer.persistence.IngestResult;
 import org.moera.importer.persistence.MessageRepository;
@@ -27,14 +29,19 @@ class SourceEventProcessorTest {
     private SourceEventProcessor sourceEventProcessor;
     private RecordingChannelRepository channelRepository;
     private RecordingMessageRepository messageRepository;
+    private SimpleMeterRegistry meterRegistry;
 
     @BeforeEach
     void configureProcessor() {
         sourceEventProcessor = new SourceEventProcessor();
         channelRepository = new RecordingChannelRepository();
         messageRepository = new RecordingMessageRepository();
+        meterRegistry = new SimpleMeterRegistry();
+        ImportMetrics importMetrics = new ImportMetrics();
+        ReflectionTestUtils.setField(importMetrics, "meterRegistry", meterRegistry);
         ReflectionTestUtils.setField(sourceEventProcessor, "channelRepository", channelRepository);
         ReflectionTestUtils.setField(sourceEventProcessor, "messageRepository", messageRepository);
+        ReflectionTestUtils.setField(sourceEventProcessor, "importMetrics", importMetrics);
     }
 
     @Test
@@ -48,6 +55,8 @@ class SourceEventProcessorTest {
         assertThat(messageRepository.ingestedChannelId).isEqualTo(17);
         assertThat(messageRepository.ingestedMessage).isEqualTo(message);
         assertThat(messageRepository.pollIngested).isFalse();
+        assertThat(meterRegistry.get("message_revisions_total").tag("result", "created")
+            .counter().count()).isEqualTo(1);
     }
 
     @Test
@@ -58,6 +67,8 @@ class SourceEventProcessorTest {
 
         assertThat(messageRepository.deletedChannelId).isEqualTo(17);
         assertThat(messageRepository.deletedSourceId).isEqualTo("message-1");
+        assertThat(meterRegistry.get("message_revisions_total").tag("result", "deleted")
+            .counter().count()).isEqualTo(1);
     }
 
     @Test

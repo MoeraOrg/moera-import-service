@@ -15,6 +15,7 @@ import org.moera.importer.application.PublicationBuilder;
 import org.moera.importer.application.PublicationMediaProcessor;
 import org.moera.importer.application.PublicationProcessor;
 import org.moera.importer.config.WorkerProperties;
+import org.moera.importer.config.StartupCoordinator;
 import org.moera.importer.model.AccessState;
 import org.moera.importer.model.ChannelOperation;
 import org.moera.importer.model.SourceType;
@@ -49,6 +50,7 @@ class SchedulerTest {
         ReflectionTestUtils.setField(channelScheduler, "executorService", new DirectExecutorService());
         ReflectionTestUtils.setField(channelScheduler, "workerProperties", workerProperties);
         ReflectionTestUtils.setField(channelScheduler, "telegramRuntime", telegramRuntime);
+        ready(channelScheduler);
 
         channelScheduler.run();
 
@@ -74,10 +76,26 @@ class SchedulerTest {
         ReflectionTestUtils.setField(channelScheduler, "channelRepository", channelRepository);
         ReflectionTestUtils.setField(channelScheduler, "workerProperties", properties());
         ReflectionTestUtils.setField(channelScheduler, "telegramRuntime", telegramRuntime);
+        ready(channelScheduler);
 
         channelScheduler.run();
 
         assertThat(channelRepository.requestedOperations).isEmpty();
+    }
+
+    @Test
+    void schedulersDoNotClaimWorkBeforeStartupCompletes() {
+        RecordingPublicationRepository publicationRepository = new RecordingPublicationRepository();
+        PublicationScheduler scheduler = new PublicationScheduler();
+        StartupCoordinator startupCoordinator = mock(StartupCoordinator.class);
+        when(startupCoordinator.claimsEnabled()).thenReturn(false);
+        ReflectionTestUtils.setField(scheduler, "publicationRepository", publicationRepository);
+        ReflectionTestUtils.setField(scheduler, "workerProperties", properties());
+        ReflectionTestUtils.setField(scheduler, "startupCoordinator", startupCoordinator);
+
+        scheduler.run();
+
+        assertThat(publicationRepository.requestedLimit).isZero();
     }
 
     @Test
@@ -89,6 +107,7 @@ class SchedulerTest {
         ReflectionTestUtils.setField(scheduler, "mirrorRepository", mirrorRepository);
         ReflectionTestUtils.setField(scheduler, "publicationBuilder", publicationBuilder);
         ReflectionTestUtils.setField(scheduler, "workerProperties", properties());
+        ready(scheduler);
 
         scheduler.run();
 
@@ -109,6 +128,7 @@ class SchedulerTest {
         ReflectionTestUtils.setField(scheduler, "publicationMediaProcessor", publicationMediaProcessor);
         ReflectionTestUtils.setField(scheduler, "publicationMediaRepository", publicationMediaRepository);
         ReflectionTestUtils.setField(scheduler, "workerProperties", workerProperties);
+        ready(scheduler);
 
         scheduler.run();
 
@@ -128,6 +148,7 @@ class SchedulerTest {
         ReflectionTestUtils.setField(scheduler, "publicationProcessor", publicationProcessor);
         ReflectionTestUtils.setField(scheduler, "publicationRepository", publicationRepository);
         ReflectionTestUtils.setField(scheduler, "workerProperties", workerProperties);
+        ready(scheduler);
 
         scheduler.run();
 
@@ -141,6 +162,12 @@ class SchedulerTest {
         properties.setBatchSize(3);
         properties.setChannelLease(Duration.ofMinutes(5));
         return properties;
+    }
+
+    private void ready(Object scheduler) {
+        StartupCoordinator startupCoordinator = mock(StartupCoordinator.class);
+        when(startupCoordinator.claimsEnabled()).thenReturn(true);
+        ReflectionTestUtils.setField(scheduler, "startupCoordinator", startupCoordinator);
     }
 
     private static class RecordingChannelRepository extends ChannelRepository {

@@ -5,6 +5,7 @@ import jakarta.inject.Inject;
 
 import org.moera.importer.application.PublicationBuilder;
 import org.moera.importer.config.WorkerProperties;
+import org.moera.importer.config.StartupCoordinator;
 import org.moera.importer.persistence.MirrorRepository;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
@@ -24,9 +25,12 @@ public class PublicationBuilderScheduler {
     @Inject
     private WorkerProperties workerProperties;
 
+    @Inject
+    private StartupCoordinator startupCoordinator;
+
     @Scheduled(fixedDelayString = "${moera.workers.publication-builder-schedule-interval:PT1S}")
     public void run() {
-        if (!workerProperties.isSchedulingEnabled()) {
+        if (!startupCoordinator.claimsEnabled()) {
             return;
         }
         mirrorRepository.findWithUnassignedMessages(workerProperties.getBatchSize())

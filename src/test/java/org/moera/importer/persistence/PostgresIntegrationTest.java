@@ -22,6 +22,7 @@ public abstract class PostgresIntegrationTest {
         registry.add("spring.datasource.username", POSTGRES::getUsername);
         registry.add("spring.datasource.password", POSTGRES::getPassword);
         registry.add("moera.workers.scheduling-enabled", () -> false);
+        registry.add("moera.storage.staging-directory", () -> "target/test-staging");
     }
 
     private static PostgreSQLContainer startPostgres() {

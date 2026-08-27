@@ -850,8 +850,9 @@ public sealed interface MediaUpload {
 ```
 
 `MoeraClientFactory` resolves the current node URL from `destination.node_name`, obtains the credential referenced by
-`destinations.config`, and creates an authenticated Moera client. Node URL resolution must not be treated as
-permanently stable.
+`destinations.config`, and creates an authenticated Moera client. A global service setting selects either the main or
+development Moera naming server; the main server is the default. All destinations handled by one service instance use
+the same naming server. Node URL resolution must not be treated as permanently stable.
 
 Authentication, Moera IDs, `downsize=true`, API flags, and future idempotency state remain inside `MoeraService` and
 destination/publication JSONB state.

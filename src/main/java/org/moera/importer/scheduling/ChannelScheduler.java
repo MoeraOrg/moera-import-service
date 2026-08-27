@@ -6,6 +6,7 @@ import jakarta.inject.Inject;
 
 import org.moera.importer.application.ChannelProcessor;
 import org.moera.importer.config.WorkerProperties;
+import org.moera.importer.config.StartupCoordinator;
 import org.moera.importer.persistence.ChannelClaim;
 import org.moera.importer.persistence.ChannelRepository;
 import org.moera.importer.source.telegram.TelegramRuntime;
@@ -30,9 +31,12 @@ public class ChannelScheduler {
     @Inject
     private TelegramRuntime telegramRuntime;
 
+    @Inject
+    private StartupCoordinator startupCoordinator;
+
     @Scheduled(fixedDelayString = "${moera.workers.channel-schedule-interval:PT1S}")
     public void run() {
-        if (!workerProperties.isSchedulingEnabled() || !telegramRuntime.channelWorkReady()) {
+        if (!startupCoordinator.claimsEnabled() || !telegramRuntime.channelWorkReady()) {
             return;
         }
         int remaining = workerProperties.getBatchSize();

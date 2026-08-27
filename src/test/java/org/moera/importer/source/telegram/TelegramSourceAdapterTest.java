@@ -13,6 +13,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import it.tdlight.jni.TdApi;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.AfterEach;
@@ -22,11 +23,13 @@ import org.moera.importer.config.TelegramProperties;
 import org.moera.importer.model.AccessState;
 import org.moera.importer.model.SourceType;
 import org.moera.importer.model.SubscriptionState;
+import org.moera.importer.observability.ImportMetrics;
 import org.moera.importer.source.ChannelResolution;
 import org.moera.importer.source.ChannelSnapshot;
 import org.moera.importer.source.SourcePermanentException;
 import org.moera.importer.source.SourceTemporaryException;
 import org.moera.importer.source.SourceEvent;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -35,6 +38,7 @@ class TelegramSourceAdapterTest {
 
     private final FakeTelegramClient client = new FakeTelegramClient();
     private TelegramSourceAdapter adapter;
+    private SimpleMeterRegistry meterRegistry;
 
     @TempDir
     private Path temporaryDirectory;
@@ -47,6 +51,10 @@ class TelegramSourceAdapterTest {
         properties.setPollingInterval(Duration.ofMinutes(2));
         properties.setInactivePollingInterval(Duration.ofMinutes(15));
         adapter = new TelegramSourceAdapter(client, new TelegramMessageMapper(), properties);
+        meterRegistry = new SimpleMeterRegistry();
+        ImportMetrics importMetrics = new ImportMetrics();
+        ReflectionTestUtils.setField(importMetrics, "meterRegistry", meterRegistry);
+        ReflectionTestUtils.setField(adapter, "importMetrics", importMetrics);
     }
 
     @AfterEach
@@ -258,6 +266,7 @@ class TelegramSourceAdapterTest {
         assertThat(delivered.await(5, TimeUnit.SECONDS)).isTrue();
         assertThat(events).extracting(event -> ((SourceEvent.MessageChanged) event).message().sourceId())
             .containsExactly("2", "1");
+        assertThat(meterRegistry.get("telegram_messages_skipped_total").counter().count()).isEqualTo(1);
     }
 
     @Test

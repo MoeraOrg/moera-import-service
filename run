@@ -22,7 +22,7 @@ set +a
 
 export SERVER_PORT=8084
 
-JVM_ARGUMENTS="-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=5006"
+JVM_ARGUMENTS="-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=5010"
 
 cd "${PROJECT_DIR}"
 exec ./mvnw spring-boot:run \

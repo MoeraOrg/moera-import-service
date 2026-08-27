@@ -10,6 +10,7 @@ import java.util.Queue;
 import java.util.function.Consumer;
 
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import it.tdlight.jni.TdApi;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -17,7 +18,9 @@ import org.moera.importer.config.TelegramProperties;
 import org.moera.importer.model.AccessState;
 import org.moera.importer.model.SourceType;
 import org.moera.importer.model.SubscriptionState;
+import org.moera.importer.observability.ImportMetrics;
 import org.moera.importer.source.ChannelSnapshot;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -26,6 +29,7 @@ class TelegramPollingTest {
 
     private final HistoryClient client = new HistoryClient();
     private final TelegramProperties properties = new TelegramProperties();
+    private final SimpleMeterRegistry meterRegistry = new SimpleMeterRegistry();
 
     @BeforeEach
     void setUp() {
@@ -87,6 +91,9 @@ class TelegramPollingTest {
 
         assertThat(result.messages()).extracting(message -> message.sourceId()).containsExactly("21");
         assertThat(result.waterline().path("messageId").asLong()).isEqualTo(22);
+        assertThat(meterRegistry.get("telegram_messages_skipped_total")
+            .tags("content_family", "invalid_content", "reason", "invalid_content")
+            .counter().count()).isEqualTo(1);
     }
 
     @Test
@@ -106,7 +113,11 @@ class TelegramPollingTest {
     }
 
     private TelegramSourceAdapter adapter(TelegramMessageMapper mapper) {
-        return new TelegramSourceAdapter(client, mapper, properties);
+        ImportMetrics importMetrics = new ImportMetrics();
+        ReflectionTestUtils.setField(importMetrics, "meterRegistry", meterRegistry);
+        TelegramSourceAdapter telegramSourceAdapter = new TelegramSourceAdapter(client, mapper, properties);
+        ReflectionTestUtils.setField(telegramSourceAdapter, "importMetrics", importMetrics);
+        return telegramSourceAdapter;
     }
 
     private ChannelSnapshot channel(Long waterline) {

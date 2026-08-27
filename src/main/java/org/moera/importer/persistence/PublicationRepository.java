@@ -13,6 +13,7 @@ import jakarta.inject.Inject;
 import com.fasterxml.jackson.databind.JsonNode;
 import org.jooq.DSLContext;
 import org.moera.importer.model.Message;
+import org.moera.importer.observability.ImportMetrics;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -43,6 +44,9 @@ public class PublicationRepository {
     private JooqMappings jooqMappings;
 
     @Inject
+    private ImportMetrics importMetrics;
+
+    @Inject
     private PublicationMediaRepository publicationMediaRepository;
 
     @Transactional
@@ -51,7 +55,8 @@ public class PublicationRepository {
         var records = dslContext.select(
                 PUBLICATIONS.ID,
                 PUBLICATIONS.REVISION,
-                PUBLICATIONS.ATTEMPTS
+                PUBLICATIONS.ATTEMPTS,
+                PUBLICATIONS.PROCESSING_UNTIL
             )
             .from(PUBLICATIONS)
             .where(PUBLICATIONS.REVISION.isDistinctFrom(PUBLICATIONS.PUBLISHED_REVISION))
@@ -67,6 +72,10 @@ public class PublicationRepository {
             .forUpdate()
             .skipLocked()
             .fetch();
+        importMetrics.leaseReclaimed(
+            "publication",
+            (int) records.stream().filter(record -> record.get(PUBLICATIONS.PROCESSING_UNTIL) != null).count()
+        );
         return records.stream().map(record -> {
             long publicationId = record.get(PUBLICATIONS.ID);
             int targetRevision = record.get(PUBLICATIONS.REVISION);

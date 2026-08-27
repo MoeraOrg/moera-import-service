@@ -4,6 +4,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.HashSet;
+import java.util.HexFormat;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
@@ -15,6 +16,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import org.jooq.DSLContext;
 import org.moera.importer.model.MediaSkipReason;
+import org.moera.importer.observability.ImportMetrics;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -45,13 +47,17 @@ public class PublicationMediaRepository {
     @Inject
     private JooqMappings jooqMappings;
 
+    @Inject
+    private ImportMetrics importMetrics;
+
     @Transactional
     public List<PublicationMediaClaim> claimPending(int limit, Duration lease) {
         Instant now = clock.instant();
         var records = dslContext.select(
                 PUBLICATION_MEDIA.PUBLICATION_ID,
                 PUBLICATION_MEDIA.MEDIA_ID,
-                PUBLICATION_MEDIA.ATTEMPTS
+                PUBLICATION_MEDIA.ATTEMPTS,
+                PUBLICATION_MEDIA.PROCESSING_UNTIL
             )
             .from(PUBLICATION_MEDIA)
             .where(PUBLICATION_MEDIA.STATUS.eq(PENDING))
@@ -67,6 +73,10 @@ public class PublicationMediaRepository {
             .forUpdate()
             .skipLocked()
             .fetch();
+        importMetrics.leaseReclaimed(
+            "publication_media",
+            (int) records.stream().filter(record -> record.get(PUBLICATION_MEDIA.PROCESSING_UNTIL) != null).count()
+        );
         return records.stream().map(record -> {
             long publicationId = record.get(PUBLICATION_MEDIA.PUBLICATION_ID);
             long mediaId = record.get(PUBLICATION_MEDIA.MEDIA_ID);
@@ -110,6 +120,37 @@ public class PublicationMediaRepository {
             record.get(PUBLICATION_MEDIA.DESTINATION_MEDIA_ID),
             jooqMappings.jsonNode(record.get(PUBLICATION_MEDIA.DESTINATION_DATA))
         );
+    }
+
+    public Set<StagingMediaKey> findUploadPending(List<StagingMediaKey> keys) {
+        if (keys.isEmpty()) {
+            return Set.of();
+        }
+        org.jooq.Condition candidates = org.jooq.impl.DSL.falseCondition();
+        for (StagingMediaKey key : keys) {
+            candidates = candidates.or(
+                PUBLICATION_MEDIA.PUBLICATION_ID.eq(key.publicationId())
+                    .and(PUBLICATION_MEDIA.MEDIA_ID.eq(key.mediaId()))
+            );
+        }
+        return dslContext.select(
+                PUBLICATION_MEDIA.PUBLICATION_ID,
+                PUBLICATION_MEDIA.MEDIA_ID,
+                MEDIA.SOURCE_HASH
+            )
+            .from(PUBLICATION_MEDIA)
+            .join(MEDIA).on(MEDIA.ID.eq(PUBLICATION_MEDIA.MEDIA_ID))
+            .where(candidates)
+            .and(PUBLICATION_MEDIA.STATUS.eq(PENDING))
+            .and(PUBLICATION_MEDIA.DESTINATION_MEDIA_ID.isNull())
+            .fetch(record -> new StagingMediaKey(
+                record.get(PUBLICATION_MEDIA.PUBLICATION_ID),
+                record.get(PUBLICATION_MEDIA.MEDIA_ID),
+                HexFormat.of().formatHex(record.get(MEDIA.SOURCE_HASH))
+            ))
+            .stream()
+            .filter(keys::contains)
+            .collect(java.util.stream.Collectors.toUnmodifiableSet());
     }
 
     public boolean awaitingCompression(

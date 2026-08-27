@@ -4,7 +4,7 @@ import java.nio.file.Path;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
-import org.moera.importer.config.WorkerProperties;
+import org.moera.importer.config.StorageProperties;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -47,10 +47,10 @@ class StagingFileManagerTest {
     }
 
     private StagingFileManager manager() {
-        WorkerProperties workerProperties = new WorkerProperties();
-        workerProperties.setStagingDirectory(tempDirectory);
+        StorageProperties storageProperties = new StorageProperties();
+        storageProperties.setStagingDirectory(tempDirectory);
         StagingFileManager manager = new StagingFileManager();
-        ReflectionTestUtils.setField(manager, "workerProperties", workerProperties);
+        ReflectionTestUtils.setField(manager, "storageProperties", storageProperties);
         return manager;
     }
 

@@ -5,6 +5,7 @@ import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.time.temporal.ChronoUnit;
+import java.util.HexFormat;
 import java.util.List;
 import jakarta.inject.Inject;
 
@@ -18,6 +19,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.moera.importer.persistence.jooq.enums.AccessState.GRANTED;
 import static org.moera.importer.persistence.jooq.enums.PublicationMediaStatus.PENDING;
+import static org.moera.importer.persistence.jooq.enums.PublicationMediaStatus.UPLOADED;
 import static org.moera.importer.persistence.jooq.enums.SourceType.TELEGRAM;
 import static org.moera.importer.persistence.jooq.enums.SubscriptionState.ACTIVE;
 import static org.moera.importer.persistence.jooq.tables.Channels.CHANNELS;
@@ -164,6 +166,44 @@ class PublicationMediaRepositoryTest extends PostgresIntegrationTest {
         assertThat(failedRecord.getNextAttemptAt()).isNull();
         assertThat(failedRecord.getLastError()).isEqualTo("permanent");
         assertThat(failedRecord.getProcessingToken()).isNull();
+    }
+
+    @Test
+    void stagingRetentionRequiresCurrentUploadPendingStateAndSourceHash() {
+        byte[] originalHash = hash(1);
+        byte[] changedHash = hash(2);
+        Fixture fixture = insertFixture(originalHash);
+        StagingMediaKey originalKey = new StagingMediaKey(
+            fixture.publicationId(), fixture.mediaId(), HexFormat.of().formatHex(originalHash)
+        );
+        StagingMediaKey changedKey = new StagingMediaKey(
+            fixture.publicationId(), fixture.mediaId(), HexFormat.of().formatHex(changedHash)
+        );
+
+        assertThat(publicationMediaRepository.findUploadPending(List.of(originalKey)))
+            .containsExactly(originalKey);
+
+        dslContext.update(PUBLICATION_MEDIA)
+            .set(PUBLICATION_MEDIA.DESTINATION_MEDIA_ID, "original-id")
+            .execute();
+
+        assertThat(publicationMediaRepository.findUploadPending(List.of(originalKey))).isEmpty();
+
+        dslContext.update(PUBLICATION_MEDIA)
+            .setNull(PUBLICATION_MEDIA.DESTINATION_MEDIA_ID)
+            .execute();
+        dslContext.update(MEDIA)
+            .set(MEDIA.SOURCE_HASH, changedHash)
+            .execute();
+
+        assertThat(publicationMediaRepository.findUploadPending(List.of(originalKey, changedKey)))
+            .containsExactly(changedKey);
+
+        dslContext.update(PUBLICATION_MEDIA)
+            .set(PUBLICATION_MEDIA.STATUS, UPLOADED)
+            .execute();
+
+        assertThat(publicationMediaRepository.findUploadPending(List.of(changedKey))).isEmpty();
     }
 
     private Fixture insertFixture(byte[] sourceHash) {

@@ -16,6 +16,7 @@ public class TelegramAdapterLifecycle implements SmartLifecycle {
     private final SourceEventSink sink;
     private final TelegramProperties properties;
     private volatile boolean running;
+    private volatile boolean initialized;
 
     public TelegramAdapterLifecycle(TelegramSourceAdapter adapter, TelegramClient client, SourceEventSink sink,
                                     TelegramProperties properties) {
@@ -26,21 +27,38 @@ public class TelegramAdapterLifecycle implements SmartLifecycle {
     }
 
     @Override
-    public void start() {
-        adapter.start(sink);
-        client.awaitReady(properties.getReadinessTimeout());
+    public synchronized void start() {
+        adapter.initialize();
+        initialized = client.awaitReady(properties.getReadinessTimeout());
+        if (initialized) {
+            adapter.start(sink);
+        }
         running = true;
     }
 
     @Override
-    public void stop() {
+    public synchronized void stop() {
         adapter.stop();
+        initialized = false;
         running = false;
     }
 
     @Override
     public boolean isRunning() {
         return running;
+    }
+
+    public synchronized boolean isInitialized() {
+        if (!initialized && running && client.isReady()) {
+            adapter.start(sink);
+            initialized = true;
+        }
+        return initialized;
+    }
+
+    @Override
+    public boolean isAutoStartup() {
+        return false;
     }
 
     @Override

@@ -1,11 +1,8 @@
 package org.moera.importer;
 
 import java.time.Clock;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-
 import org.moera.importer.application.RetryPolicy;
-import org.moera.importer.config.WorkerProperties;
+import org.moera.importer.config.RetryProperties;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.context.annotation.Bean;
@@ -20,17 +17,12 @@ public class MoeraImportApplication {
         return Clock.systemUTC();
     }
 
-    @Bean(destroyMethod = "close")
-    public ExecutorService executorService() {
-        return Executors.newVirtualThreadPerTaskExecutor();
-    }
-
     @Bean
-    public RetryPolicy retryPolicy(WorkerProperties workerProperties) {
+    public RetryPolicy retryPolicy(RetryProperties retryProperties) {
         return new RetryPolicy(
-            workerProperties.getRetryBaseDelay(),
-            workerProperties.getRetryMaxDelay(),
-            workerProperties.getRetryJitterFraction()
+            retryProperties.getBaseDelay(),
+            retryProperties.getMaxDelay(),
+            retryProperties.getJitterFraction()
         );
     }
 

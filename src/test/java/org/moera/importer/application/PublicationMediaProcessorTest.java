@@ -13,10 +13,12 @@ import java.util.UUID;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.moera.importer.config.WorkerProperties;
+import org.moera.importer.config.StorageProperties;
 import org.moera.importer.model.AccessState;
 import org.moera.importer.model.Destination;
 import org.moera.importer.model.Media;
@@ -29,6 +31,7 @@ import org.moera.importer.moera.MoeraPermanentException;
 import org.moera.importer.moera.MoeraService;
 import org.moera.importer.moera.MoeraTemporaryException;
 import org.moera.importer.moera.UploadedMedia;
+import org.moera.importer.observability.ImportMetrics;
 import org.moera.importer.persistence.PublicationMediaClaim;
 import org.moera.importer.persistence.PublicationMediaContext;
 import org.moera.importer.persistence.PublicationMediaRepository;
@@ -62,6 +65,7 @@ class PublicationMediaProcessorTest {
     private FakeSourceAdapter sourceAdapter;
     private StagingFileManager stagingFileManager;
     private WorkerProperties workerProperties;
+    private SimpleMeterRegistry meterRegistry;
 
     @BeforeEach
     void configureProcessor() {
@@ -69,13 +73,18 @@ class PublicationMediaProcessorTest {
         publicationMediaRepository = new RecordingPublicationMediaRepository();
         moeraService = new FakeMoeraService();
         sourceAdapter = new FakeSourceAdapter();
+        meterRegistry = new SimpleMeterRegistry();
+        ImportMetrics importMetrics = new ImportMetrics();
+        ReflectionTestUtils.setField(importMetrics, "meterRegistry", meterRegistry);
         workerProperties = new WorkerProperties();
         workerProperties.setMediaCompressionPollInterval(Duration.ofSeconds(10));
-        workerProperties.setStagingDirectory(tempDirectory);
+        StorageProperties storageProperties = new StorageProperties();
+        storageProperties.setStagingDirectory(tempDirectory);
         stagingFileManager = new StagingFileManager();
-        ReflectionTestUtils.setField(stagingFileManager, "workerProperties", workerProperties);
+        ReflectionTestUtils.setField(stagingFileManager, "storageProperties", storageProperties);
         ReflectionTestUtils.setField(publicationMediaProcessor, "clock", Clock.fixed(NOW, ZoneOffset.UTC));
         ReflectionTestUtils.setField(publicationMediaProcessor, "moeraService", moeraService);
+        ReflectionTestUtils.setField(publicationMediaProcessor, "importMetrics", importMetrics);
         ReflectionTestUtils.setField(
             publicationMediaProcessor,
             "publicationMediaRepository",
@@ -105,6 +114,8 @@ class PublicationMediaProcessorTest {
         assertThat(publicationMediaRepository.skippedReason).isEqualTo(MediaSkipReason.TOO_LARGE);
         assertThat(sourceAdapter.downloads).isZero();
         assertThat(moeraService.uploads).isZero();
+        assertThat(meterRegistry.get("media_skipped_total").tag("reason", "too_large")
+            .counter().count()).isEqualTo(1);
     }
 
     @Test
@@ -135,6 +146,8 @@ class PublicationMediaProcessorTest {
         assertThat(publicationMediaRepository.uploadedId).isEqualTo("media-id");
         assertThat(publicationMediaRepository.destinationData.path("hash").asText()).isEqualTo("media-hash");
         assertThat(path).doesNotExist();
+        assertThat(meterRegistry.get("media_uploaded_total").counter().count()).isEqualTo(1);
+        assertThat(meterRegistry.get("media_upload_bytes").summary().totalAmount()).isEqualTo(2);
     }
 
     @Test

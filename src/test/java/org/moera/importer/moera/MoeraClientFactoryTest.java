@@ -1,14 +1,20 @@
 package org.moera.importer.moera;
 
 import java.time.Instant;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Function;
 
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import org.junit.jupiter.api.Test;
 import org.mockito.MockedStatic;
 import org.moera.importer.model.Destination;
+import org.moera.lib.jsonrpc.JsonRpcRequest;
+import org.moera.lib.jsonrpc.JsonRpcResponse;
+import org.moera.lib.jsonrpc.OkHttpJsonRpcFetcher;
 import org.moera.lib.naming.MoeraNaming;
 import org.moera.lib.node.MoeraNode;
 import org.moera.lib.node.NodeAuth;
+import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -47,6 +53,49 @@ class MoeraClientFactoryTest {
             naming.verify(() -> MoeraNaming.resolve(any(), any()), times(2));
         }
         verify(moeraCredentialStore, times(2)).resolve("env:MOERA_TOKEN");
+    }
+
+    @Test
+    void resolvesNodeThroughDevelopmentNamingServerWhenConfigured() {
+        MoeraCredentialStore moeraCredentialStore = mock(MoeraCredentialStore.class);
+        when(moeraCredentialStore.resolve("env:MOERA_TOKEN")).thenReturn("secret-token");
+        AtomicReference<Function<JsonRpcRequest, JsonRpcResponse>> fetcher = new AtomicReference<>();
+        ApplicationContextRunner contextRunner = new ApplicationContextRunner()
+            .withPropertyValues("moera.naming-server=development")
+            .withBean(MoeraCredentialStore.class, () -> moeraCredentialStore)
+            .withBean(MoeraClientFactory.class);
+
+        try (MockedStatic<MoeraNaming> naming = mockStatic(MoeraNaming.class)) {
+            naming.when(() -> MoeraNaming.resolve(any(), any())).thenAnswer(invocation -> {
+                fetcher.set(invocation.getArgument(1));
+                return "https://node.example";
+            });
+
+            contextRunner.run(context -> context.getBean(MoeraClientFactory.class).create(destination()));
+
+            assertThat(fetcher.get()).isInstanceOf(OkHttpJsonRpcFetcher.class);
+            assertThat(ReflectionTestUtils.getField(fetcher.get(), "url"))
+                .isEqualTo(MoeraNaming.DEV_NAMING_SERVER);
+        }
+    }
+
+    @Test
+    void rejectsUnknownNamingServerAtStartup() {
+        ApplicationContextRunner contextRunner = new ApplicationContextRunner()
+            .withPropertyValues("moera.naming-server=private")
+            .withBean(MoeraCredentialStore.class)
+            .withBean(MoeraClientFactory.class);
+
+        contextRunner.run(context -> {
+            assertThat(context).hasFailed();
+            assertThat(context.getStartupFailure()).hasCauseInstanceOf(MoeraConfigurationException.class);
+        });
+    }
+
+    private Destination destination() {
+        var config = JsonNodeFactory.instance.objectNode().put("credentialRef", "env:MOERA_TOKEN");
+        Instant now = Instant.parse("2026-08-27T12:00:00Z");
+        return new Destination(1, "alice", config, JsonNodeFactory.instance.objectNode(), now, now);
     }
 
 }

@@ -16,6 +16,7 @@ import org.jooq.DSLContext;
 import org.jooq.TableField;
 import org.moera.importer.model.ChannelOperation;
 import org.moera.importer.model.SourceType;
+import org.moera.importer.observability.ImportMetrics;
 import org.moera.importer.persistence.jooq.tables.records.ChannelsRecord;
 import org.moera.importer.source.AccessResult;
 import org.moera.importer.source.ChannelSnapshot;
@@ -38,6 +39,9 @@ public class ChannelRepository {
 
     @Inject
     private JooqMappings jooqMappings;
+
+    @Inject
+    private ImportMetrics importMetrics;
 
     public Optional<ChannelSnapshot> find(long id) {
         return dslContext.selectFrom(CHANNELS)
@@ -259,6 +263,11 @@ public class ChannelRepository {
             .forUpdate()
             .skipLocked()
             .fetch();
+
+        importMetrics.leaseReclaimed(
+            "channel",
+            (int) records.stream().filter(record -> record.getProcessingUntil() != null).count()
+        );
 
         List<ChannelClaim> claims = new ArrayList<>(records.size());
         for (ChannelsRecord record : records) {

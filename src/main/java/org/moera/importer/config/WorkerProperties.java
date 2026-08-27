@@ -1,6 +1,5 @@
 package org.moera.importer.config;
 
-import java.nio.file.Path;
 import java.time.Duration;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
@@ -20,10 +19,7 @@ public class WorkerProperties {
     private Duration publicationLease = Duration.ofMinutes(5);
     private Duration publicationScheduleInterval = Duration.ofSeconds(1);
     private Duration mediaCompressionPollInterval = Duration.ofSeconds(10);
-    private Path stagingDirectory = Path.of("var/staging");
-    private Duration retryBaseDelay = Duration.ofSeconds(1);
-    private Duration retryMaxDelay = Duration.ofHours(1);
-    private double retryJitterFraction = 0.2;
+    private Duration shutdownGracePeriod = Duration.ofSeconds(30);
 
     public boolean isSchedulingEnabled() {
         return schedulingEnabled;
@@ -105,36 +101,12 @@ public class WorkerProperties {
         this.mediaCompressionPollInterval = mediaCompressionPollInterval;
     }
 
-    public Path getStagingDirectory() {
-        return stagingDirectory;
+    public Duration getShutdownGracePeriod() {
+        return shutdownGracePeriod;
     }
 
-    public void setStagingDirectory(Path stagingDirectory) {
-        this.stagingDirectory = stagingDirectory;
-    }
-
-    public Duration getRetryBaseDelay() {
-        return retryBaseDelay;
-    }
-
-    public void setRetryBaseDelay(Duration retryBaseDelay) {
-        this.retryBaseDelay = retryBaseDelay;
-    }
-
-    public Duration getRetryMaxDelay() {
-        return retryMaxDelay;
-    }
-
-    public void setRetryMaxDelay(Duration retryMaxDelay) {
-        this.retryMaxDelay = retryMaxDelay;
-    }
-
-    public double getRetryJitterFraction() {
-        return retryJitterFraction;
-    }
-
-    public void setRetryJitterFraction(double retryJitterFraction) {
-        this.retryJitterFraction = retryJitterFraction;
+    public void setShutdownGracePeriod(Duration shutdownGracePeriod) {
+        this.shutdownGracePeriod = shutdownGracePeriod;
     }
 
 }

@@ -76,7 +76,7 @@ public class TdLightTelegramClient implements TelegramClient {
             ready.complete(null);
         } else if (!interactive && state instanceof TdApi.AuthorizationStateWaitPhoneNumber) {
             ready.completeExceptionally(new IllegalStateException(
-                "No usable saved Telegram session; run with MOERA_TELEGRAM_LOGIN=true once"
+                "No usable saved Telegram session; run with TELEGRAM_LOGIN=true once"
             ));
         }
     }

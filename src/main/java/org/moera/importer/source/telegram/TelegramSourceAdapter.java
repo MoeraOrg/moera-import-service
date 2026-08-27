@@ -13,6 +13,7 @@ import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
+import jakarta.inject.Inject;
 
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -21,6 +22,7 @@ import org.moera.importer.config.TelegramProperties;
 import org.moera.importer.model.AccessState;
 import org.moera.importer.model.SourceType;
 import org.moera.importer.model.SubscriptionState;
+import org.moera.importer.observability.ImportMetrics;
 import org.moera.importer.source.AccessResult;
 import org.moera.importer.source.ChannelResolution;
 import org.moera.importer.source.ChannelSnapshot;
@@ -49,7 +51,11 @@ public class TelegramSourceAdapter implements SourceAdapter {
     private final BlockingQueue<TdApi.Update> updateQueue = new LinkedBlockingQueue<>();
     private final Map<Long, Boolean> activeSupergroupMembership = new LinkedHashMap<>();
     private ExecutorService updateExecutor;
+    private boolean clientInitialized;
     private volatile boolean running;
+
+    @Inject
+    private ImportMetrics importMetrics;
 
     public TelegramSourceAdapter(TelegramClient client, TelegramMessageMapper mapper, TelegramProperties properties) {
         this.client = Objects.requireNonNull(client, "client");
@@ -246,6 +252,8 @@ public class TelegramSourceAdapter implements SourceAdapter {
             TelegramMappingResult result = mapper.map(message);
             if (result instanceof TelegramMappingResult.Mapped mapped) {
                 messages.add(mapped.message());
+            } else if (result instanceof TelegramMappingResult.Skipped skipped) {
+                skipped(message, skipped.reason());
             }
         });
         return new PollResult(messages, objectNode().put("messageId", newestScannedId));
@@ -263,15 +271,20 @@ public class TelegramSourceAdapter implements SourceAdapter {
         if (running) {
             throw new IllegalStateException("Telegram adapter is already started");
         }
+        initialize();
         running = true;
         updateExecutor = Executors.newSingleThreadExecutor(Thread.ofVirtual().name("telegram-updates-", 0).factory());
         updateExecutor.submit(() -> consumeUpdates(sink));
+    }
+
+    public synchronized void initialize() {
+        if (clientInitialized) {
+            return;
+        }
         try {
             client.start(updateQueue::add);
+            clientInitialized = true;
         } catch (RuntimeException e) {
-            running = false;
-            updateExecutor.shutdownNow();
-            updateExecutor = null;
             client.close();
             throw e;
         }
@@ -285,6 +298,8 @@ public class TelegramSourceAdapter implements SourceAdapter {
             updateExecutor = null;
         }
         client.close();
+        clientInitialized = false;
+        updateQueue.clear();
     }
 
     private void consumeUpdates(SourceEventSink sink) {
@@ -328,7 +343,30 @@ public class TelegramSourceAdapter implements SourceAdapter {
             sink.accept(new SourceEvent.MessageChanged(
                 SourceType.TELEGRAM, Long.toString(message.chatId), mapped.message()
             ));
+        } else if (result instanceof TelegramMappingResult.Skipped skipped) {
+            skipped(message, skipped.reason());
         }
+    }
+
+    private void skipped(TdApi.Message message, TelegramSkipReason reason) {
+        String contentFamily = contentFamily(message.content);
+        importMetrics.telegramMessageSkipped(contentFamily, reason);
+        log.atInfo()
+            .addKeyValue("operation", "telegram_map")
+            .addKeyValue("channel_id", message.chatId)
+            .addKeyValue("message_id", message.id)
+            .addKeyValue("content_type", contentFamily)
+            .addKeyValue("result", reason)
+            .log("Skipped Telegram message");
+    }
+
+    private String contentFamily(TdApi.MessageContent content) {
+        if (content == null) {
+            return "invalid_content";
+        }
+        String name = content.getClass().getSimpleName();
+        String base = name.startsWith("Message") ? name.substring("Message".length()) : name;
+        return base.replaceAll("([a-z0-9])([A-Z])", "$1_$2").toLowerCase(java.util.Locale.ROOT);
     }
 
     private void handleSupergroup(TdApi.Supergroup supergroup, SourceEventSink sink) {

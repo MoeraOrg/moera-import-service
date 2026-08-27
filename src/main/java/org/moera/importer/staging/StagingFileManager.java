@@ -8,18 +8,18 @@ import java.util.HexFormat;
 import java.util.Objects;
 import jakarta.inject.Inject;
 
-import org.moera.importer.config.WorkerProperties;
+import org.moera.importer.config.StorageProperties;
 import org.springframework.stereotype.Component;
 
 @Component
 public class StagingFileManager {
 
     @Inject
-    private WorkerProperties workerProperties;
+    private StorageProperties storageProperties;
 
     public Path path(long publicationId, long mediaId, byte[] sourceHash) {
         Objects.requireNonNull(sourceHash, "sourceHash");
-        Path root = workerProperties.getStagingDirectory().toAbsolutePath().normalize();
+        Path root = storageProperties.getStagingDirectory().toAbsolutePath().normalize();
         String fileName = mediaId + "-" + HexFormat.of().formatHex(sourceHash);
         Path path = root.resolve(Long.toString(publicationId)).resolve(fileName).normalize();
         if (!path.startsWith(root)) {

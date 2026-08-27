@@ -14,6 +14,7 @@ import org.moera.importer.moera.MoeraOutcomeUnknownException;
 import org.moera.importer.moera.MoeraPermanentException;
 import org.moera.importer.moera.MoeraService;
 import org.moera.importer.moera.MoeraTemporaryException;
+import org.moera.importer.observability.ImportMetrics;
 import org.moera.importer.persistence.PublicationClaim;
 import org.moera.importer.persistence.PublicationContext;
 import org.moera.importer.persistence.PublicationRepository;
@@ -32,6 +33,9 @@ public class PublicationProcessor {
 
     @Inject
     private MoeraService moeraService;
+
+    @Inject
+    private ImportMetrics importMetrics;
 
     @Inject
     private PublicationPayloadBuilder publicationPayloadBuilder;
@@ -56,15 +60,22 @@ public class PublicationProcessor {
                 updateOrDelete(claim, context, payload);
             }
         } catch (PublicationSnapshotChangedException e) {
+            log(claim, "revision_changed");
             publicationRepository.retry(
                 claim.publicationId(), claim.processingToken(), clock.instant(), null
             );
         } catch (MoeraOutcomeUnknownException e) {
-            logger.warn("Moera publication mutation outcome is unknown; scheduling a retry");
+            importMetrics.publicationUnknownOutcome();
+            importMetrics.publicationFailure("outcome_unknown");
+            log(claim, "outcome_unknown");
             retry(claim, e.getMessage());
         } catch (MoeraTemporaryException e) {
+            importMetrics.publicationFailure("temporary");
+            log(claim, "temporary_failure");
             retry(claim, e.getMessage());
         } catch (MoeraPermanentException | MoeraConfigurationException e) {
+            importMetrics.publicationFailure("permanent");
+            log(claim, "permanent_failure");
             publicationRepository.fail(
                 claim.publicationId(), claim.processingToken(), e.getMessage()
             );
@@ -77,22 +88,24 @@ public class PublicationProcessor {
         PublicationPayload payload
     ) {
         if (payload.empty()) {
-            publicationRepository.deleted(
+            boolean completed = publicationRepository.deleted(
                 claim.publicationId(),
                 claim.processingToken(),
                 claim.targetRevision(),
                 JsonNodeFactory.instance.objectNode()
             );
+            complete(claim, "deleted", completed);
             return;
         }
         CreatedPosting created = moeraService.createPost(context.destination(), payload);
-        publicationRepository.created(
+        boolean completed = publicationRepository.created(
             claim.publicationId(),
             claim.processingToken(),
             claim.targetRevision(),
             created.postingId(),
             createdData(created, payload.pinned())
         );
+        complete(claim, "created", completed);
     }
 
     private void updateOrDelete(
@@ -102,19 +115,21 @@ public class PublicationProcessor {
     ) {
         if (payload.empty()) {
             moeraService.deletePost(context.destination(), context.destinationPostId());
-            publicationRepository.deleted(
+            boolean completed = publicationRepository.deleted(
                 claim.publicationId(),
                 claim.processingToken(),
                 claim.targetRevision(),
                 JsonNodeFactory.instance.objectNode()
             );
+            complete(claim, "deleted", completed);
             return;
         }
         moeraService.updatePost(context.destination(), context.destinationPostId(), payload);
         ObjectNode destinationData = synchronizePin(context, payload.pinned());
-        publicationRepository.updated(
+        boolean completed = publicationRepository.updated(
             claim.publicationId(), claim.processingToken(), claim.targetRevision(), destinationData
         );
+        complete(claim, "updated", completed);
     }
 
     private ObjectNode synchronizePin(PublicationContext context, boolean pinned) {
@@ -150,6 +165,25 @@ public class PublicationProcessor {
         publicationRepository.retry(
             claim.publicationId(), claim.processingToken(), nextAttemptAt, error
         );
+    }
+
+    private void complete(PublicationClaim claim, String operation, boolean completed) {
+        String result = completed ? "success" : "stale_claim";
+        if (completed) {
+            importMetrics.publicationCompleted(operation);
+        }
+        log(claim, result);
+    }
+
+    private void log(PublicationClaim claim, String result) {
+        logger.atInfo()
+            .addKeyValue("operation", "publication_delivery")
+            .addKeyValue("publication_id", claim.publicationId())
+            .addKeyValue("processing_token", claim.processingToken())
+            .addKeyValue("attempt", claim.attempts())
+            .addKeyValue("target_revision", claim.targetRevision())
+            .addKeyValue("result", result)
+            .log("Publication operation finished");
     }
 
 }

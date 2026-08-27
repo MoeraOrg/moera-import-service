@@ -10,12 +10,14 @@ import java.util.List;
 import java.util.UUID;
 
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.moera.importer.model.AccessState;
 import org.moera.importer.model.ChannelOperation;
 import org.moera.importer.model.SourceType;
 import org.moera.importer.model.SubscriptionState;
+import org.moera.importer.observability.ImportMetrics;
 import org.moera.importer.persistence.ChannelClaim;
 import org.moera.importer.persistence.ChannelRepository;
 import org.moera.importer.persistence.MessageRepository;
@@ -44,6 +46,7 @@ class ChannelProcessorTest {
     private RecordingChannelRepository channelRepository;
     private RecordingMessageRepository messageRepository;
     private FakeSourceAdapter sourceAdapter;
+    private SimpleMeterRegistry meterRegistry;
 
     @BeforeEach
     void configureProcessor() {
@@ -51,6 +54,9 @@ class ChannelProcessorTest {
         channelRepository = new RecordingChannelRepository();
         messageRepository = new RecordingMessageRepository();
         sourceAdapter = new FakeSourceAdapter();
+        meterRegistry = new SimpleMeterRegistry();
+        ImportMetrics importMetrics = new ImportMetrics();
+        ReflectionTestUtils.setField(importMetrics, "meterRegistry", meterRegistry);
         RetryPolicy retryPolicy = new RetryPolicy(
             Duration.ofMinutes(1),
             Duration.ofHours(1),
@@ -60,6 +66,7 @@ class ChannelProcessorTest {
         ReflectionTestUtils.setField(channelProcessor, "channelRepository", channelRepository);
         ReflectionTestUtils.setField(channelProcessor, "clock", Clock.fixed(NOW, ZoneOffset.UTC));
         ReflectionTestUtils.setField(channelProcessor, "messageRepository", messageRepository);
+        ReflectionTestUtils.setField(channelProcessor, "importMetrics", importMetrics);
         ReflectionTestUtils.setField(channelProcessor, "retryPolicy", retryPolicy);
         ReflectionTestUtils.setField(
             channelProcessor,
@@ -83,6 +90,9 @@ class ChannelProcessorTest {
         assertThat(channelRepository.completedAccess).isEqualTo(result);
         assertThat(channelRepository.completedToken).isEqualTo(claim.processingToken());
         assertThat(messageRepository.pollResult).isNull();
+        assertThat(meterRegistry.get("source_operations_total")
+            .tags("source", "telegram", "operation", "access", "result", "success")
+            .counter().count()).isEqualTo(1);
     }
 
     @Test

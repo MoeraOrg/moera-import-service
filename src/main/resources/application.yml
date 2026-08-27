@@ -13,16 +13,38 @@ spring:
   jooq:
     sql-dialect: postgres
 
+logging:
+  file:
+    name: ${LOG_FILE:log/moera-import.log}
+  level:
+    it.tdlight: WARN
+  logback:
+    rollingpolicy:
+      clean-history-on-start: false
+      max-file-size: 100MB
+      max-history: 7
+      total-size-cap: 0B
+
 management:
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      group:
+        liveness:
+          include: livenessState
+        readiness:
+          include: readinessState,db,importReadiness
   endpoints:
     web:
       exposure:
         include: health,prometheus
 
 moera:
+  naming-server: ${MOERA_NAMING_SERVER:main}
   telegram:
-    enabled: ${MOERA_TELEGRAM_ENABLED:false}
-    login: ${MOERA_TELEGRAM_LOGIN:false}
+    enabled: ${TELEGRAM_ENABLED:false}
+    login: ${TELEGRAM_LOGIN:false}
     api-id: ${TELEGRAM_API_ID:0}
     api-hash: ${TELEGRAM_API_HASH:}
     database-directory: ${TELEGRAM_DATABASE_DIRECTORY:var/telegram/database}
@@ -46,7 +68,14 @@ moera:
     publication-lease: 5m
     publication-schedule-interval: 1s
     media-compression-poll-interval: 10s
+    startup-check-interval: 1s
+    shutdown-grace-period: 30s
+  storage:
     staging-directory: ${MOERA_STAGING_DIRECTORY:var/staging}
-    retry-base-delay: 1s
-    retry-max-delay: 1h
-    retry-jitter-fraction: 0.2
+    staging-grace-period: 1h
+    cleanup-interval: 1h
+    cleanup-batch-size: 500
+  retry:
+    base-delay: 1s
+    max-delay: 1h
+    jitter-fraction: 0.2

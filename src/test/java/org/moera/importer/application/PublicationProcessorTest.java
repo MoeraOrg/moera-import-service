@@ -13,6 +13,7 @@ import java.util.UUID;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.moera.importer.model.BodyFormat;
@@ -23,6 +24,7 @@ import org.moera.importer.moera.DestinationCapabilities;
 import org.moera.importer.moera.MoeraOutcomeUnknownException;
 import org.moera.importer.moera.MoeraPermanentException;
 import org.moera.importer.moera.MoeraService;
+import org.moera.importer.observability.ImportMetrics;
 import org.moera.importer.persistence.PublicationClaim;
 import org.moera.importer.persistence.PublicationContext;
 import org.moera.importer.persistence.PublicationRepository;
@@ -39,14 +41,19 @@ class PublicationProcessorTest {
     private PublicationProcessor publicationProcessor;
     private RecordingPublicationRepository publicationRepository;
     private FakeMoeraService moeraService;
+    private SimpleMeterRegistry meterRegistry;
 
     @BeforeEach
     void configureProcessor() {
         publicationProcessor = new PublicationProcessor();
         publicationRepository = new RecordingPublicationRepository();
         moeraService = new FakeMoeraService();
+        meterRegistry = new SimpleMeterRegistry();
+        ImportMetrics importMetrics = new ImportMetrics();
+        ReflectionTestUtils.setField(importMetrics, "meterRegistry", meterRegistry);
         ReflectionTestUtils.setField(publicationProcessor, "clock", Clock.fixed(NOW, ZoneOffset.UTC));
         ReflectionTestUtils.setField(publicationProcessor, "moeraService", moeraService);
+        ReflectionTestUtils.setField(publicationProcessor, "importMetrics", importMetrics);
         ReflectionTestUtils.setField(
             publicationProcessor, "publicationPayloadBuilder", new PublicationPayloadBuilder()
         );
@@ -128,6 +135,7 @@ class PublicationProcessorTest {
         assertThat(publicationRepository.completion).isNull();
         assertThat(publicationRepository.nextAttemptAt).isEqualTo(NOW.plus(Duration.ofMinutes(4)));
         assertThat(publicationRepository.error).isEqualTo("create outcome unknown");
+        assertThat(meterRegistry.get("publication_unknown_outcomes_total").counter().count()).isEqualTo(1);
     }
 
     @Test

@@ -22,6 +22,7 @@ import org.moera.importer.moera.MoeraPermanentException;
 import org.moera.importer.moera.MoeraService;
 import org.moera.importer.moera.MoeraTemporaryException;
 import org.moera.importer.moera.UploadedMedia;
+import org.moera.importer.observability.ImportMetrics;
 import org.moera.importer.persistence.PublicationMediaClaim;
 import org.moera.importer.persistence.PublicationMediaContext;
 import org.moera.importer.persistence.PublicationMediaRepository;
@@ -31,16 +32,23 @@ import org.moera.importer.source.SourceAdapterRegistry;
 import org.moera.importer.source.SourcePermanentException;
 import org.moera.importer.source.SourceTemporaryException;
 import org.moera.importer.staging.StagingFileManager;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 @Component
 public class PublicationMediaProcessor {
+
+    private static final Logger log = LoggerFactory.getLogger(PublicationMediaProcessor.class);
 
     @Inject
     private Clock clock;
 
     @Inject
     private MoeraService moeraService;
+
+    @Inject
+    private ImportMetrics importMetrics;
 
     @Inject
     private PublicationMediaRepository publicationMediaRepository;
@@ -84,13 +92,15 @@ public class PublicationMediaProcessor {
                 SourceAdapter sourceAdapter = sourceAdapterRegistry.get(context.channel().sourceType());
                 sourceAdapter.downloadMedia(context.channel(), snapshot(context.media()), stagingPath);
             }
-            if (Files.size(stagingPath) > mediaMaxSize) {
+            long stagingSize = Files.size(stagingPath);
+            if (stagingSize > mediaMaxSize) {
                 skipTooLarge(claim, context);
                 delete(stagingPath);
                 return;
             }
 
             uploadStarted = true;
+            importMetrics.mediaUploadBytes(stagingSize);
             MediaUpload upload = moeraService.uploadMedia(context.destination(), stagingPath, context.media());
             completeUpload(claim, context, upload);
             delete(stagingPath);
@@ -98,31 +108,36 @@ public class PublicationMediaProcessor {
             skipTooLarge(claim, context);
             delete(stagingPath);
         } catch (SourcePermanentException e) {
-            publicationMediaRepository.skipped(
+            boolean completed = publicationMediaRepository.skipped(
                 claim.publicationId(),
                 claim.mediaId(),
                 claim.processingToken(),
                 context.media().sourceHash(),
                 MediaSkipReason.SOURCE_UNAVAILABLE
             );
+            skipped(claim, MediaSkipReason.SOURCE_UNAVAILABLE, completed);
             delete(stagingPath);
         } catch (MoeraPermanentException | MoeraConfigurationException e) {
             publicationMediaRepository.fail(
                 claim.publicationId(), claim.mediaId(), claim.processingToken(), e.getMessage()
             );
+            log(claim, "permanent_failure");
             delete(stagingPath);
         } catch (SourceTemporaryException e) {
             retry(claim, e.retryAfter(), e.getMessage());
+            log(claim, "temporary_failure");
             if (!uploadStarted) {
                 delete(stagingPath);
             }
         } catch (MoeraTemporaryException | MoeraOutcomeUnknownException e) {
             retry(claim, null, e.getMessage());
+            log(claim, "temporary_failure");
             if (!uploadStarted) {
                 delete(stagingPath);
             }
         } catch (IOException | UncheckedIOException e) {
             retry(claim, null, "Cannot access staging file");
+            log(claim, "staging_failure");
             if (!uploadStarted) {
                 delete(stagingPath);
             }
@@ -139,8 +154,10 @@ public class PublicationMediaProcessor {
             publicationMediaRepository.fail(
                 claim.publicationId(), claim.mediaId(), claim.processingToken(), e.getMessage()
             );
+            log(claim, "permanent_failure");
         } catch (MoeraTemporaryException | MoeraOutcomeUnknownException e) {
             retry(claim, null, e.getMessage());
+            log(claim, "temporary_failure");
         }
     }
 
@@ -151,7 +168,7 @@ public class PublicationMediaProcessor {
     ) {
         if (upload instanceof MediaUpload.Ready ready) {
             UploadedMedia media = ready.media();
-            publicationMediaRepository.uploaded(
+            boolean completed = publicationMediaRepository.uploaded(
                 claim.publicationId(),
                 claim.mediaId(),
                 claim.processingToken(),
@@ -159,9 +176,13 @@ public class PublicationMediaProcessor {
                 media.id(),
                 destinationData(media)
             );
+            if (completed) {
+                importMetrics.mediaUploaded();
+            }
+            log(claim, completed ? "uploaded" : "stale_claim");
         } else if (upload instanceof MediaUpload.AwaitingCompression awaiting) {
             UploadedMedia media = awaiting.original();
-            publicationMediaRepository.awaitingCompression(
+            boolean completed = publicationMediaRepository.awaitingCompression(
                 claim.publicationId(),
                 claim.mediaId(),
                 claim.processingToken(),
@@ -170,17 +191,19 @@ public class PublicationMediaProcessor {
                 destinationData(media),
                 clock.instant().plus(workerProperties.getMediaCompressionPollInterval())
             );
+            log(claim, completed ? "awaiting_compression" : "stale_claim");
         }
     }
 
     private void skipTooLarge(PublicationMediaClaim claim, PublicationMediaContext context) {
-        publicationMediaRepository.skipped(
+        boolean completed = publicationMediaRepository.skipped(
             claim.publicationId(),
             claim.mediaId(),
             claim.processingToken(),
             context.media().sourceHash(),
             MediaSkipReason.TOO_LARGE
         );
+        skipped(claim, MediaSkipReason.TOO_LARGE, completed);
     }
 
     private void retry(PublicationMediaClaim claim, Duration retryAfter, String error) {
@@ -228,6 +251,24 @@ public class PublicationMediaProcessor {
         } catch (IOException e) {
             // Orphan staging files are removed by periodic cleanup.
         }
+    }
+
+    private void skipped(PublicationMediaClaim claim, MediaSkipReason reason, boolean completed) {
+        if (completed) {
+            importMetrics.mediaSkipped(reason);
+        }
+        log(claim, completed ? "skipped_" + reason.name().toLowerCase(java.util.Locale.ROOT) : "stale_claim");
+    }
+
+    private void log(PublicationMediaClaim claim, String result) {
+        log.atInfo()
+            .addKeyValue("operation", "publication_media")
+            .addKeyValue("publication_id", claim.publicationId())
+            .addKeyValue("media_id", claim.mediaId())
+            .addKeyValue("processing_token", claim.processingToken())
+            .addKeyValue("attempt", claim.attempts())
+            .addKeyValue("result", result)
+            .log("Publication media operation finished");
     }
 
 }
