@@ -12,10 +12,12 @@ import org.jooq.JSON;
 import org.moera.importer.model.BodyFormat;
 import org.moera.importer.model.Destination;
 import org.moera.importer.model.Message;
+import org.moera.importer.model.Media;
 import org.moera.importer.model.Mirror;
 import org.moera.importer.persistence.jooq.tables.records.ChannelsRecord;
 import org.moera.importer.persistence.jooq.tables.records.DestinationsRecord;
 import org.moera.importer.persistence.jooq.tables.records.MessagesRecord;
+import org.moera.importer.persistence.jooq.tables.records.MediaRecord;
 import org.moera.importer.persistence.jooq.tables.records.MirrorsRecord;
 import org.moera.importer.source.ChannelSnapshot;
 import org.springframework.stereotype.Component;
@@ -90,6 +92,22 @@ public class JooqMappings {
             record.getBody(),
             BodyFormat.valueOf(record.getBodyFormat().getLiteral()),
             record.getSourceBodyHash(),
+            jsonNode(record.getSourceData()),
+            instant(record.getCreatedAt()),
+            instant(record.getUpdatedAt())
+        );
+    }
+
+    public Media media(MediaRecord record) {
+        return new Media(
+            record.getId(),
+            record.getMessageId(),
+            record.getSourceId(),
+            record.getPosition(),
+            record.getMimeType(),
+            record.getFileName(),
+            record.getSize(),
+            record.getSourceHash(),
             jsonNode(record.getSourceData()),
             instant(record.getCreatedAt()),
             instant(record.getUpdatedAt())

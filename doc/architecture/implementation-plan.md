@@ -27,6 +27,8 @@ JUnit 5, Testcontainers, Micrometer/Actuator.
 - Database table names are plural; `media` remains `media`.
 - Telegram is the only initial `source_type` value.
 - Moera is the only destination; always use `downsize=true` for media upload.
+- Keep asynchronously compressed Moera media `PENDING` until the final compressed ID/hash is available; use
+  synchronous `createPosting`/`updatePosting`, not remote-posting APIs.
 - Only the latest `Message` revision is stored; `revision` starts at 0.
 - Publication membership is immutable; no reconciliation/regrouping is implemented.
 - Live source events never advance the Telegram waterline.
@@ -1008,10 +1010,12 @@ git commit -m "feat: implement Telegram source adapter"
 - Create: `src/main/java/org/moera/importer/moera/MoeraClientFactory.java`
 - Create: `src/main/java/org/moera/importer/moera/MoeraCredentialStore.java`
 - Create: `src/main/java/org/moera/importer/moera/DestinationCapabilities.java`
+- Create: `src/main/java/org/moera/importer/moera/MediaUpload.java`
 - Create: `src/main/java/org/moera/importer/moera/UploadedMedia.java`
 - Create: `src/main/java/org/moera/importer/moera/CreatedPosting.java`
 - Create: `src/main/java/org/moera/importer/application/PublicationPayload.java`
 - Create: `src/main/java/org/moera/importer/application/PublicationPayloadBuilder.java`
+- Create: `src/main/java/org/moera/importer/persistence/PublicationContext.java`
 - Create: `src/test/java/org/moera/importer/application/PublicationPayloadBuilderTest.java`
 - Create: `src/test/java/org/moera/importer/moera/MoeraServiceTest.java`
 - Modify: `pom.xml`
@@ -1021,16 +1025,24 @@ git commit -m "feat: implement Telegram source adapter"
 
 ```java
 DestinationCapabilities MoeraService.capabilities(Destination destination);
-UploadedMedia MoeraService.uploadMedia(Destination destination, Path file, Media media);
+MediaUpload MoeraService.uploadMedia(Destination destination, Path file, Media media);
+MediaUpload MoeraService.checkMediaCompression(Destination destination, String originalMediaId);
 CreatedPosting MoeraService.createPost(Destination destination, PublicationPayload payload);
 void MoeraService.updatePost(Destination destination, String postingId, PublicationPayload payload);
 void MoeraService.updateStory(Destination destination, String storyId, boolean pinned);
 void MoeraService.deletePost(Destination destination, String postingId);
 PublicationPayload PublicationPayloadBuilder.build(PublicationContext context, DestinationCapabilities capabilities);
+
+sealed interface MediaUpload {
+    record Ready(UploadedMedia media) implements MediaUpload;
+    record AwaitingCompression(UploadedMedia original) implements MediaUpload;
+}
 ```
 
-`UploadedMedia` exposes distinct `id` and `hash` values. `CreatedPosting` exposes the posting ID and returned
-`FeedReference.storyId` keyed by configured feed, so later pin changes can address existing stories.
+`UploadedMedia` exposes distinct `id` and `hash` values. `MediaUpload.AwaitingCompression` carries the original upload
+whose `PrivateMediaFileInfo.uncompressed` flag is true and whose `compressedMediaId` is not ready yet.
+`CreatedPosting` exposes the posting ID and returned `FeedReference.storyId` keyed by configured feed, so later pin
+changes can address existing stories.
 
 - [ ] **Step 1: Add Moera Java library and write failing payload-builder tests**
 
@@ -1065,11 +1077,15 @@ when the earlier one disappears.
 Use a fake/mockable Moera client boundary to assert:
 
 ```text
-/features provides mediaMaxSize + sourceFormats
+/features provides sourceFormats and getNodeSettings("media.max-size") provides mediaMaxSize
 private media upload always sets downsize=true
 upload preserves distinct PrivateMediaFileInfo.id and PrivateMediaFileInfo.hash
+uncompressed upload without compressedMediaId returns AwaitingCompression with the original ID/hash
+compression check without compressedMediaId remains AwaitingCompression
+compression check with compressedMediaId fetches that PrivateMediaFileInfo and returns Ready with its ID/hash
 create includes feed publications, earliest publishAt, and StoryAttributes.pinned
 create returns feed story IDs
+create/update use createPosting/updatePosting, never asynchronous createRemotePosting/updateRemotePosting
 update does not rebuild feed publication attributes
 updateStory changes only the pin attribute of an existing story
 delete not-found is treated as success
@@ -1087,6 +1103,13 @@ URL permanently.
 Cache `/features` capabilities in memory with a bounded TTL. Keep Moera-specific error mapping inside this package.
 Represent ambiguous mutating outcomes with a dedicated outcome-unknown exception used by processors. Preserve both
 private-media ID/hash values, returned feed/story identity, and repeatable story updates by story ID.
+
+Map an upload result to `MediaUpload.Ready` unless `uncompressed=true` and no compressed file is ready. In the latter
+case return `AwaitingCompression`. `checkMediaCompression` calls `getPrivateMediaInfo(originalMediaId, null)`; while
+`compressedMediaId` is absent it returns `AwaitingCompression`, otherwise it fetches the compressed file information
+and returns `Ready` with the compressed ID/hash. Posting create/update must continue to use synchronous
+`createPosting(PostingText)` and `updatePosting(...)`; do not call the remote-posting APIs because they return no
+posting ID or trackable result containing it.
 
 - [ ] **Step 7: Run Moera/payload tests**
 
@@ -1119,6 +1142,8 @@ git commit -m "feat: implement Moera delivery boundary"
 - Create: `src/test/java/org/moera/importer/staging/StagingFileManagerTest.java`
 - Create: `src/test/java/org/moera/importer/application/PublicationMediaProcessorTest.java`
 - Modify: `src/main/java/org/moera/importer/persistence/PublicationMediaRepository.java`
+- Modify: `src/main/java/org/moera/importer/config/WorkerProperties.java`
+- Modify: `src/main/resources/application.yml`
 
 **Interfaces:**
 - Produces:
@@ -1127,6 +1152,9 @@ git commit -m "feat: implement Moera delivery boundary"
 Path StagingFileManager.path(long publicationId, long mediaId, byte[] sourceHash);
 List<PublicationMediaClaim> PublicationMediaRepository.claimPending(int limit, Duration lease);
 PublicationMediaContext PublicationMediaRepository.loadContext(long publicationId, long mediaId);
+boolean PublicationMediaRepository.awaitingCompression(
+    long publicationId, long mediaId, UUID token, byte[] expectedSourceHash,
+    String originalMediaId, JsonNode destinationData, Instant nextAttemptAt);
 boolean PublicationMediaRepository.uploaded(
     long publicationId, long mediaId, UUID token, byte[] expectedSourceHash,
     String destinationMediaId, JsonNode destinationData);
@@ -1154,16 +1182,25 @@ Cover:
 known size > max       -> SKIPPED/TOO_LARGE without download
 actual size > max      -> SKIPPED/TOO_LARGE after download
 existing staging file  -> reused on retry
-successful upload      -> UPLOADED + staging deleted; ID column stores upload id and JSON stores upload hash
+ordinary upload        -> UPLOADED + staging deleted; ID column stores upload id and JSON stores upload hash
+compression required   -> PENDING + original ID/hash persisted + lease cleared + staging deleted
+compression not ready  -> no download/upload; PENDING is rescheduled with no last_error
+compression ready      -> UPLOADED with compressed ID/hash replacing the original ID/hash
 temporary upload fail  -> retry + staging retained
 permanent fail         -> automatic scheduling stops + staging deleted
-source_hash changes    -> stale completion rejected
+source_hash changes    -> stale wait/final completion rejected and intermediate destination data cleared
 ```
 
 - [ ] **Step 4: Implement media claim/completion repository operations**
 
 Claim only due `PENDING` rows with available/expired lease, increment attempts at claim time, and complete
-conditionally by token. `uploaded/skipped` additionally verify current `Media.source_hash` equals the expected hash.
+conditionally by token. Include current `destination_media_id` and `destination_data` in the claim/context so the
+processor can recognize a compression wait without re-uploading. `awaitingCompression`, `uploaded`, and `skipped`
+additionally verify current `Media.source_hash` equals the expected hash.
+
+`awaitingCompression` keeps `status=PENDING`, stores the original upload ID/hash and a `compressionPending=true`
+marker, clears the lease and `last_error`, and sets the fixed next check time. It is a normal wait transition, not a
+failure transition. Resetting a row after a source-hash change must clear its destination ID/data.
 
 - [ ] **Step 5: Implement PublicationMediaProcessor**
 
@@ -1172,6 +1209,13 @@ only when staging is absent, upload with `MoeraService`, and map failures throug
 `UploadedMedia.id` as `destinationMediaId` and serialize `UploadedMedia.hash` into `destinationData`; never substitute
 one for the other. The same uploaded row can therefore be attached normally and referenced by link-preview
 `imageHash` later.
+
+When upload returns `AwaitingCompression`, conditionally persist the original ID/hash, schedule the next check using
+`WorkerProperties.mediaCompressionPollInterval` (default `10s`), and delete staging after the transition attempt. On a
+claimed row marked `compressionPending`, skip source download/upload and call `checkMediaCompression`. If it still
+returns `AwaitingCompression`, schedule another fixed check without recording an error; if it returns `Ready`, replace
+the original destination ID/hash with the compressed values and mark `UPLOADED`. Do not hold the worker, database
+transaction, or lease between checks.
 
 - [ ] **Step 6: Implement thin scheduler**
 
@@ -1193,6 +1237,8 @@ git add \
   src/main/java/org/moera/importer/application/PublicationMediaProcessor.java \
   src/main/java/org/moera/importer/scheduling/PublicationMediaScheduler.java \
   src/main/java/org/moera/importer/persistence/PublicationMediaRepository.java \
+  src/main/java/org/moera/importer/config/WorkerProperties.java \
+  src/main/resources/application.yml \
   src/test/java/org/moera/importer
 git commit -m "feat: deliver publication media"
 ```
@@ -1204,7 +1250,7 @@ git commit -m "feat: deliver publication media"
 **Files:**
 - Create: `src/main/java/org/moera/importer/application/PublicationProcessor.java`
 - Create: `src/main/java/org/moera/importer/scheduling/PublicationScheduler.java`
-- Create: `src/main/java/org/moera/importer/persistence/PublicationContext.java`
+- Modify: `src/main/java/org/moera/importer/persistence/PublicationContext.java`
 - Create: `src/test/java/org/moera/importer/application/PublicationProcessorTest.java`
 - Create: `src/test/java/org/moera/importer/persistence/PublicationRevisionRaceTest.java`
 - Modify: `src/main/java/org/moera/importer/persistence/PublicationRepository.java`
@@ -1231,6 +1277,7 @@ Assert a publication is claimable only when:
 revision IS DISTINCT FROM published_revision
 next_attempt_at is due
 no current publication_media row is PENDING
+PENDING compression wait keeps the publication unclaimable even though the media row already has a destination_media_id
 lease is absent or expired
 ```
 
@@ -1323,9 +1370,10 @@ git commit -m "feat: deliver publication revisions"
 
 - [ ] **Step 1: Write failing staging cleanup tests**
 
-Create staging files representing current pending media, uploaded/skipped media, deleted DB rows, changed source
-hashes, and old orphans. Assert cleanup retains only current pending files plus files inside the configured grace
-period.
+Create staging files representing pending media that still needs upload, pending media already waiting for Moera
+compression, uploaded/skipped media, deleted DB rows, changed source hashes, and old orphans. Assert cleanup retains
+only current upload-pending files plus files inside the configured grace period; compression-pending rows do not retain
+staging because their original upload ID is already durable.
 
 - [ ] **Step 2: Implement StagingCleanup**
 
@@ -1430,8 +1478,10 @@ channel poll
 ```
 
 Assert waterline advancement past a deliberately skipped Telegram message, revision transitions, immutable publication
-membership, preview-image upload ID/hash handling, first-URL-wins preview composition, stored story IDs, pin/unpin
-calls, and final destination operations.
+membership, preview-image upload ID/hash handling, first-URL-wins preview composition, and the durable video path from
+an original uncompressed upload through at least one pending compression check to final compressed ID/hash without a
+second source download/upload. Also assert stored story IDs, pin/unpin calls, and final destination operations use
+synchronous posting create/update only after all compression waits are terminal.
 
 - [ ] **Step 2: Run the pipeline test and verify any missing wiring fails**
 

@@ -12,6 +12,8 @@ import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import org.junit.jupiter.api.Test;
 import org.moera.importer.application.ChannelProcessor;
 import org.moera.importer.application.PublicationBuilder;
+import org.moera.importer.application.PublicationMediaProcessor;
+import org.moera.importer.application.PublicationProcessor;
 import org.moera.importer.config.WorkerProperties;
 import org.moera.importer.model.AccessState;
 import org.moera.importer.model.ChannelOperation;
@@ -20,6 +22,10 @@ import org.moera.importer.model.SubscriptionState;
 import org.moera.importer.persistence.ChannelClaim;
 import org.moera.importer.persistence.ChannelRepository;
 import org.moera.importer.persistence.MirrorRepository;
+import org.moera.importer.persistence.PublicationMediaClaim;
+import org.moera.importer.persistence.PublicationMediaRepository;
+import org.moera.importer.persistence.PublicationClaim;
+import org.moera.importer.persistence.PublicationRepository;
 import org.moera.importer.source.ChannelSnapshot;
 import org.moera.importer.source.telegram.TelegramRuntime;
 import org.springframework.test.util.ReflectionTestUtils;
@@ -88,6 +94,46 @@ class SchedulerTest {
 
         assertThat(mirrorRepository.requestedLimit).isEqualTo(3);
         assertThat(publicationBuilder.mirrorIds).containsExactly(7L, 9L);
+    }
+
+    @Test
+    void publicationMediaSchedulerClaimsConfiguredBatchAndDispatchesIt() {
+        RecordingPublicationMediaRepository publicationMediaRepository =
+            new RecordingPublicationMediaRepository();
+        RecordingPublicationMediaProcessor publicationMediaProcessor =
+            new RecordingPublicationMediaProcessor();
+        WorkerProperties workerProperties = properties();
+        workerProperties.setPublicationMediaLease(Duration.ofMinutes(7));
+        PublicationMediaScheduler scheduler = new PublicationMediaScheduler();
+        ReflectionTestUtils.setField(scheduler, "executorService", new DirectExecutorService());
+        ReflectionTestUtils.setField(scheduler, "publicationMediaProcessor", publicationMediaProcessor);
+        ReflectionTestUtils.setField(scheduler, "publicationMediaRepository", publicationMediaRepository);
+        ReflectionTestUtils.setField(scheduler, "workerProperties", workerProperties);
+
+        scheduler.run();
+
+        assertThat(publicationMediaRepository.requestedLimit).isEqualTo(3);
+        assertThat(publicationMediaRepository.requestedLease).isEqualTo(Duration.ofMinutes(7));
+        assertThat(publicationMediaProcessor.mediaIds).containsExactly(23L, 29L);
+    }
+
+    @Test
+    void publicationSchedulerClaimsConfiguredBatchAndDispatchesIt() {
+        RecordingPublicationRepository publicationRepository = new RecordingPublicationRepository();
+        RecordingPublicationProcessor publicationProcessor = new RecordingPublicationProcessor();
+        WorkerProperties workerProperties = properties();
+        workerProperties.setPublicationLease(Duration.ofMinutes(9));
+        PublicationScheduler scheduler = new PublicationScheduler();
+        ReflectionTestUtils.setField(scheduler, "executorService", new DirectExecutorService());
+        ReflectionTestUtils.setField(scheduler, "publicationProcessor", publicationProcessor);
+        ReflectionTestUtils.setField(scheduler, "publicationRepository", publicationRepository);
+        ReflectionTestUtils.setField(scheduler, "workerProperties", workerProperties);
+
+        scheduler.run();
+
+        assertThat(publicationRepository.requestedLimit).isEqualTo(3);
+        assertThat(publicationRepository.requestedLease).isEqualTo(Duration.ofMinutes(9));
+        assertThat(publicationProcessor.publicationIds).containsExactly(31L, 37L);
     }
 
     private WorkerProperties properties() {
@@ -171,6 +217,62 @@ class SchedulerTest {
         @Override
         public void build(long mirrorId) {
             mirrorIds.add(mirrorId);
+        }
+
+    }
+
+    private static class RecordingPublicationMediaRepository extends PublicationMediaRepository {
+
+        private int requestedLimit;
+        private Duration requestedLease;
+
+        @Override
+        public List<PublicationMediaClaim> claimPending(int limit, Duration lease) {
+            requestedLimit = limit;
+            requestedLease = lease;
+            return List.of(
+                new PublicationMediaClaim(17, 23, UUID.randomUUID(), 1),
+                new PublicationMediaClaim(19, 29, UUID.randomUUID(), 1)
+            );
+        }
+
+    }
+
+    private static class RecordingPublicationMediaProcessor extends PublicationMediaProcessor {
+
+        private final List<Long> mediaIds = new ArrayList<>();
+
+        @Override
+        public void process(PublicationMediaClaim claim) {
+            mediaIds.add(claim.mediaId());
+        }
+
+    }
+
+    private static class RecordingPublicationRepository extends PublicationRepository {
+
+        private int requestedLimit;
+        private Duration requestedLease;
+
+        @Override
+        public List<PublicationClaim> claimReady(int limit, Duration lease) {
+            requestedLimit = limit;
+            requestedLease = lease;
+            return List.of(
+                new PublicationClaim(31, 4, UUID.randomUUID(), 1),
+                new PublicationClaim(37, 2, UUID.randomUUID(), 1)
+            );
+        }
+
+    }
+
+    private static class RecordingPublicationProcessor extends PublicationProcessor {
+
+        private final List<Long> publicationIds = new ArrayList<>();
+
+        @Override
+        public void process(PublicationClaim claim) {
+            publicationIds.add(claim.publicationId());
         }
 
     }

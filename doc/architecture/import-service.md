@@ -691,9 +691,14 @@ There is no extra global media position here. Ordering is derived from `publicat
 The database does not attempt to prove that a referenced `Media` belongs to one of the publication's messages;
 application code constructs these rows correctly.
 
-`destination_media_id` stores `PrivateMediaFileInfo.id`. On successful upload, `destination_data` also stores
-`PrivateMediaFileInfo.hash`. The ID attaches the private file to a posting; the hash is used by
+For an `UPLOADED` row, `destination_media_id` stores the final attachable `PrivateMediaFileInfo.id` and
+`destination_data` stores its `hash`. The ID attaches the private file to a posting; the hash is used by
 `Body.LinkPreview.imageHash` when the media is a selected link-preview image.
+
+A `PENDING` row may already contain the original uploaded media ID/hash while Moera is compressing it. In that case,
+`destination_data` also marks compression as pending. Once compression finishes, the original ID/hash are replaced by
+the compressed file's ID/hash and the row becomes `UPLOADED`. A source-hash change clears both the intermediate and
+final destination data.
 
 ## 23. Media staging and upload
 
@@ -720,8 +725,11 @@ upload to Moera
         |
         +-- temporary failure -> keep staging for retry
         +-- terminal skip/failure -> delete staging
+        +-- compression pending -> persist original ID/hash as PENDING
+        |                          -> delete staging
+        |                          -> poll Moera without re-uploading
         v
-success -> UPLOADED -> delete staging immediately
+final attachable media -> UPLOADED -> delete staging immediately
 ```
 
 The first implementation does not share staging files across mirrors. Duplicate downloads are acceptable in exchange
@@ -731,12 +739,12 @@ Startup/periodic cleanup removes orphan staging files.
 
 ### 23.1 Moera-specific behavior
 
-`MoeraService` obtains destination capabilities from the concrete Moera node's `/features` endpoint. The capabilities
-relevant to importing are primarily:
+`MoeraService` obtains destination capabilities from the concrete Moera node's `/features` and node-settings
+endpoints. The capabilities relevant to importing are primarily:
 
 ```text
-posting.mediaMaxSize
-posting.sourceFormats
+media.max-size from getNodeSettings("media.max-size")
+posting.sourceFormats from /features
 ```
 
 Capabilities may be cached in memory for a short TTL, but PostgreSQL is not their source of truth.
@@ -750,14 +758,40 @@ For each source media item:
 4. If it is too large, mark it `SKIPPED / TOO_LARGE` and delete the staging file.
 5. Upload acceptable files as Moera private media.
 6. Always request `downsize=true` for Moera media uploads.
-7. Store the returned `PrivateMediaFileInfo.id` in `publication_media.destination_media_id` and its `hash` in
-   `publication_media.destination_data`.
-8. Delete staging immediately after successful upload or terminal skip.
+7. If the returned file does not require asynchronous compression, store its `PrivateMediaFileInfo.id` in
+   `publication_media.destination_media_id` and its `hash` in `publication_media.destination_data`, then mark the row
+   `UPLOADED`.
+8. If `PrivateMediaFileInfo.uncompressed == true`, persist the original ID/hash with a compression-pending marker,
+   leave the row `PENDING`, and poll the original file's private-media information until `compressedMediaId` appears.
+9. Fetch `PrivateMediaFileInfo` for `compressedMediaId`, replace the stored destination ID/hash with the compressed
+   file's values, and only then mark the row `UPLOADED`.
+10. Delete staging immediately after the upload has succeeded, after a terminal skip, or after a terminal failure.
 
 A Moera `media.wrong-size` response is a terminal `TOO_LARGE` outcome. A storage/service failure is retryable when the
 Moera error semantics indicate a temporary condition.
 
 `downsize=true` is an internal `MoeraService` rule, not a universal media property.
+
+### 23.2 Asynchronous Moera media compression
+
+Compression waiting uses `publication_media` as its durable queue; it does not introduce a generic job table and does
+not keep a worker, PostgreSQL transaction, or lease occupied while compression runs.
+
+After the initial upload reports `uncompressed=true`, conditional completion stores the original ID/hash, leaves
+`status=PENDING`, clears the processing lease, keeps `last_error` empty, and sets `next_attempt_at` using a fixed,
+configurable compression-poll interval. Claiming this row still increments `attempts` according to the common queue
+rule, but waiting for compression is not classified as a failed attempt and does not use exponential failure backoff.
+
+On a later claim, the processor recognizes the compression-pending marker and calls Moera
+`getPrivateMediaInfo(originalId, null)` instead of downloading or uploading the source again. A missing
+`compressedMediaId` schedules another normal compression check. Once it is present, the processor fetches the
+compressed file's information and conditionally completes the row as `UPLOADED` with the compressed ID/hash. Both the
+intermediate wait transition and final completion must match `processing_token` and the expected source hash, so a
+stale compression result cannot overwrite newer source media.
+
+Because the payload builder reads only `UPLOADED` rows, `MediaToAttach` and any applicable link-preview `imageHash`
+automatically use the final compressed file information. No body-text hash replacement is needed specifically for
+Telegram video: video is never selected as a link-preview image.
 
 If a source media fingerprint changes while an old upload is running, the corresponding `publication_media` state is
 reset to `PENDING` and its lease token is invalidated. The old worker's eventual result is discarded because its token
@@ -775,10 +809,15 @@ Conceptually:
 public class MoeraService {
     DestinationCapabilities capabilities(Destination destination);
 
-    UploadedMedia uploadMedia(
+    MediaUpload uploadMedia(
         Destination destination,
         Path file,
         Media media
+    );
+
+    MediaUpload checkMediaCompression(
+        Destination destination,
+        String originalMediaId
     );
 
     CreatedPosting createPost(
@@ -802,6 +841,11 @@ public class MoeraService {
         String storyId,
         boolean pinned
     );
+}
+
+public sealed interface MediaUpload {
+    record Ready(UploadedMedia media) implements MediaUpload;
+    record AwaitingCompression(UploadedMedia original) implements MediaUpload;
 }
 ```
 
@@ -894,7 +938,7 @@ A publication whose `revision` differs from `published_revision` is not current.
 Delivery flow:
 
 1. Resolve current Moera destination capabilities.
-2. Process `PENDING` publication media.
+2. Process `PENDING` publication media, including polling already-uploaded files that await Moera compression.
 3. Wait until all current media are `UPLOADED` or `SKIPPED`. A `PENDING` item with `next_attempt_at = NULL` blocks
    publication until an input/configuration change re-arms it.
 4. Build the current payload from member messages in fixed publication order and from uploaded media.
@@ -937,6 +981,12 @@ An unknown create outcome is logged/diagnosed distinctly.
 
 Future Moera idempotency is an internal `MoeraService` concern. The core does not expose an idempotency capability/key
 abstraction. Persistent Moera-specific tokens can be stored in `publication.destination_data`.
+
+The importer does not use `createRemotePosting(...)` or `updateRemotePosting(...)` to work around media compression.
+Those calls are asynchronous and do not return the created posting ID or a trackable result containing it, which would
+break durable create completion and make ambiguous outcomes harder to reconcile. The importer waits for final media as
+described above, then uses synchronous `createPosting(...)` / `updatePosting(...)`, preserving the posting and feed
+story IDs returned by Moera.
 
 ## 27. Leasing and concurrency
 
@@ -1272,6 +1322,9 @@ directory. Horizontal scaling/leader election is deferred until needed.
 `destinations.config` stores a credential reference rather than the credential value itself. The credential is resolved
 from a mounted secret/file or equivalent deployment secret mechanism. Database dumps therefore do not contain Moera
 authentication secrets.
+
+The initial configuration uses `credentialRef` with either `env:VARIABLE_NAME` or `file:/absolute/path` syntax. The
+referenced environment value or file contains the Moera admin token.
 
 A dedicated abstraction with multiple credential-store implementations is not required initially; a concrete
 file/environment-backed implementation is sufficient.
@@ -1802,8 +1855,10 @@ A retry can therefore reuse a file already downloaded by an earlier attempt with
 Changing `Media.source_hash` naturally changes the staging path. Old orphaned staging files are later removed by
 cleanup.
 
-After a successful upload or terminal skip/failure, the staging file is deleted. It is retained across temporary or
-outcome-unknown upload failures so that retries do not need to download the source media again.
+After a successful upload, including the transition into durable compression waiting, or after a terminal
+skip/failure, the staging file is deleted. It is retained across temporary or outcome-unknown upload failures so that
+retries do not need to download the source media again. A `PENDING` row marked as compression-pending therefore does
+not justify retaining a staging file: subsequent work reads the already-uploaded original media from Moera.
 
 ## 40. Retry handling in processors
 

@@ -41,6 +41,12 @@ moera:
     channel-lease: 5m
     channel-schedule-interval: 1s
     publication-builder-schedule-interval: 1s
+    publication-media-lease: 5m
+    publication-media-schedule-interval: 1s
+    publication-lease: 5m
+    publication-schedule-interval: 1s
+    media-compression-poll-interval: 10s
+    staging-directory: ${MOERA_STAGING_DIRECTORY:var/staging}
     retry-base-delay: 1s
     retry-max-delay: 1h
     retry-jitter-fraction: 0.2

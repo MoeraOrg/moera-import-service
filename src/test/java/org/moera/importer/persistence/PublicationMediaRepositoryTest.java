@@ -1,0 +1,231 @@
+package org.moera.importer.persistence;
+
+import java.time.Duration;
+import java.time.Instant;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
+import java.time.temporal.ChronoUnit;
+import java.util.List;
+import jakarta.inject.Inject;
+
+import com.fasterxml.jackson.databind.node.JsonNodeFactory;
+import org.jooq.DSLContext;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.moera.importer.model.MediaSkipReason;
+import org.springframework.boot.test.context.SpringBootTest;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.moera.importer.persistence.jooq.enums.AccessState.GRANTED;
+import static org.moera.importer.persistence.jooq.enums.PublicationMediaStatus.PENDING;
+import static org.moera.importer.persistence.jooq.enums.SourceType.TELEGRAM;
+import static org.moera.importer.persistence.jooq.enums.SubscriptionState.ACTIVE;
+import static org.moera.importer.persistence.jooq.tables.Channels.CHANNELS;
+import static org.moera.importer.persistence.jooq.tables.Destinations.DESTINATIONS;
+import static org.moera.importer.persistence.jooq.tables.Media.MEDIA;
+import static org.moera.importer.persistence.jooq.tables.Messages.MESSAGES;
+import static org.moera.importer.persistence.jooq.tables.Mirrors.MIRRORS;
+import static org.moera.importer.persistence.jooq.tables.PublicationMedia.PUBLICATION_MEDIA;
+import static org.moera.importer.persistence.jooq.tables.PublicationMessages.PUBLICATION_MESSAGES;
+import static org.moera.importer.persistence.jooq.tables.Publications.PUBLICATIONS;
+
+@SpringBootTest
+class PublicationMediaRepositoryTest extends PostgresIntegrationTest {
+
+    @Inject
+    private DSLContext dslContext;
+
+    @Inject
+    private JooqMappings jooqMappings;
+
+    @Inject
+    private PublicationMediaRepository publicationMediaRepository;
+
+    @BeforeEach
+    void clearDatabase() {
+        dslContext.truncate(CHANNELS).restartIdentity().cascade().execute();
+        dslContext.truncate(DESTINATIONS).restartIdentity().cascade().execute();
+    }
+
+    @Test
+    void claimsOnlyDueRowsAndLoadsDeliveryContext() {
+        Fixture fixture = insertFixture(hash(1));
+        dslContext.update(PUBLICATION_MEDIA)
+            .set(PUBLICATION_MEDIA.ATTEMPTS, 2)
+            .where(PUBLICATION_MEDIA.PUBLICATION_ID.eq(fixture.publicationId()))
+            .and(PUBLICATION_MEDIA.MEDIA_ID.eq(fixture.mediaId()))
+            .execute();
+
+        PublicationMediaClaim claim = publicationMediaRepository.claimPending(1, Duration.ofMinutes(5)).getFirst();
+        PublicationMediaContext context = publicationMediaRepository.loadContext(
+            claim.publicationId(), claim.mediaId()
+        );
+
+        assertThat(claim.publicationId()).isEqualTo(fixture.publicationId());
+        assertThat(claim.mediaId()).isEqualTo(fixture.mediaId());
+        assertThat(claim.attempts()).isEqualTo(3);
+        assertThat(claim.processingToken()).isNotNull();
+        assertThat(context.destination().nodeName()).isEqualTo("destination.example");
+        assertThat(context.channel().sourceId()).isEqualTo("channel-1");
+        assertThat(context.media().sourceId()).isEqualTo("media-1");
+        assertThat(context.destinationMediaId()).isNull();
+        assertThat(context.destinationData()).isEqualTo(JsonNodeFactory.instance.objectNode());
+        assertThat(publicationMediaRepository.claimPending(1, Duration.ofMinutes(5))).isEmpty();
+    }
+
+    @Test
+    void compressionWaitIsNormalAndSourceHashChangeRejectsStaleCompletion() {
+        byte[] originalHash = hash(1);
+        Fixture fixture = insertFixture(originalHash);
+        PublicationMediaClaim firstClaim = publicationMediaRepository.claimPending(1, Duration.ofMinutes(5)).getFirst();
+        Instant nextCheck = Instant.now().plusSeconds(10).truncatedTo(ChronoUnit.MICROS);
+
+        boolean waiting = publicationMediaRepository.awaitingCompression(
+            fixture.publicationId(),
+            fixture.mediaId(),
+            firstClaim.processingToken(),
+            originalHash,
+            "original-id",
+            JsonNodeFactory.instance.objectNode().put("hash", "original-hash"),
+            nextCheck
+        );
+
+        assertThat(waiting).isTrue();
+        var waitingRecord = dslContext.selectFrom(PUBLICATION_MEDIA).fetchSingle();
+        assertThat(waitingRecord.getStatus()).isEqualTo(PENDING);
+        assertThat(waitingRecord.getDestinationMediaId()).isEqualTo("original-id");
+        assertThat(jooqMappings.jsonNode(waitingRecord.getDestinationData()))
+            .isEqualTo(JsonNodeFactory.instance.objectNode()
+                .put("hash", "original-hash")
+                .put("compressionPending", true));
+        assertThat(waitingRecord.getNextAttemptAt().toInstant()).isEqualTo(nextCheck);
+        assertThat(waitingRecord.getLastError()).isNull();
+        assertThat(waitingRecord.getProcessingToken()).isNull();
+
+        dslContext.update(PUBLICATION_MEDIA)
+            .set(PUBLICATION_MEDIA.NEXT_ATTEMPT_AT, OffsetDateTime.now(ZoneOffset.UTC).minusSeconds(1))
+            .execute();
+        PublicationMediaClaim staleClaim = publicationMediaRepository.claimPending(1, Duration.ofMinutes(5)).getFirst();
+        dslContext.update(MEDIA)
+            .set(MEDIA.SOURCE_HASH, hash(2))
+            .where(MEDIA.ID.eq(fixture.mediaId()))
+            .execute();
+        publicationMediaRepository.synchronizeForMessage(fixture.messageId(), List.of(fixture.mediaId()));
+
+        boolean uploaded = publicationMediaRepository.uploaded(
+            fixture.publicationId(),
+            fixture.mediaId(),
+            staleClaim.processingToken(),
+            originalHash,
+            "compressed-id",
+            JsonNodeFactory.instance.objectNode().put("hash", "compressed-hash")
+        );
+
+        assertThat(uploaded).isFalse();
+        var resetRecord = dslContext.selectFrom(PUBLICATION_MEDIA).fetchSingle();
+        assertThat(resetRecord.getDestinationMediaId()).isNull();
+        assertThat(jooqMappings.jsonNode(resetRecord.getDestinationData()))
+            .isEqualTo(JsonNodeFactory.instance.objectNode());
+        assertThat(resetRecord.getAttempts()).isZero();
+        assertThat(resetRecord.getProcessingToken()).isNull();
+    }
+
+    @Test
+    void terminalAndFailureTransitionsRequireMatchingToken() {
+        Fixture fixture = insertFixture(hash(1));
+        PublicationMediaClaim claim = publicationMediaRepository.claimPending(1, Duration.ofMinutes(5)).getFirst();
+
+        assertThat(publicationMediaRepository.skipped(
+            fixture.publicationId(),
+            fixture.mediaId(),
+            java.util.UUID.randomUUID(),
+            hash(1),
+            MediaSkipReason.TOO_LARGE
+        )).isFalse();
+        assertThat(publicationMediaRepository.retry(
+            fixture.publicationId(),
+            fixture.mediaId(),
+            claim.processingToken(),
+            Instant.now().plusSeconds(30),
+            "temporary"
+        )).isTrue();
+        var retryRecord = dslContext.selectFrom(PUBLICATION_MEDIA).fetchSingle();
+        assertThat(retryRecord.getLastError()).isEqualTo("temporary");
+        assertThat(retryRecord.getProcessingToken()).isNull();
+
+        dslContext.update(PUBLICATION_MEDIA)
+            .set(PUBLICATION_MEDIA.NEXT_ATTEMPT_AT, OffsetDateTime.now(ZoneOffset.UTC).minusSeconds(1))
+            .execute();
+        claim = publicationMediaRepository.claimPending(1, Duration.ofMinutes(5)).getFirst();
+        assertThat(publicationMediaRepository.fail(
+            fixture.publicationId(), fixture.mediaId(), claim.processingToken(), "permanent"
+        )).isTrue();
+        var failedRecord = dslContext.selectFrom(PUBLICATION_MEDIA).fetchSingle();
+        assertThat(failedRecord.getNextAttemptAt()).isNull();
+        assertThat(failedRecord.getLastError()).isEqualTo("permanent");
+        assertThat(failedRecord.getProcessingToken()).isNull();
+    }
+
+    private Fixture insertFixture(byte[] sourceHash) {
+        long channelId = dslContext.insertInto(CHANNELS)
+            .set(CHANNELS.SOURCE_TYPE, TELEGRAM)
+            .set(CHANNELS.SOURCE_ID, "channel-1")
+            .set(CHANNELS.SOURCE_URI, "https://t.me/channel-1")
+            .set(CHANNELS.ACCESS_STATE, GRANTED)
+            .set(CHANNELS.SUBSCRIPTION_STATE, ACTIVE)
+            .returningResult(CHANNELS.ID)
+            .fetchSingle(CHANNELS.ID);
+        long messageId = dslContext.insertInto(MESSAGES)
+            .set(MESSAGES.CHANNEL_ID, channelId)
+            .set(MESSAGES.SOURCE_ID, "message-1")
+            .set(MESSAGES.PUBLISHED_AT, OffsetDateTime.now(ZoneOffset.UTC))
+            .set(MESSAGES.SOURCE_BODY_HASH, hash(3))
+            .returningResult(MESSAGES.ID)
+            .fetchSingle(MESSAGES.ID);
+        long mediaId = dslContext.insertInto(MEDIA)
+            .set(MEDIA.MESSAGE_ID, messageId)
+            .set(MEDIA.SOURCE_ID, "media-1")
+            .set(MEDIA.POSITION, 0)
+            .set(MEDIA.MIME_TYPE, "image/jpeg")
+            .set(MEDIA.FILE_NAME, "media.jpg")
+            .set(MEDIA.SIZE, 100L)
+            .set(MEDIA.SOURCE_HASH, sourceHash)
+            .returningResult(MEDIA.ID)
+            .fetchSingle(MEDIA.ID);
+        long destinationId = dslContext.insertInto(DESTINATIONS)
+            .set(DESTINATIONS.NODE_NAME, "destination.example")
+            .returningResult(DESTINATIONS.ID)
+            .fetchSingle(DESTINATIONS.ID);
+        long mirrorId = dslContext.insertInto(MIRRORS)
+            .set(MIRRORS.CHANNEL_ID, channelId)
+            .set(MIRRORS.DESTINATION_ID, destinationId)
+            .returningResult(MIRRORS.ID)
+            .fetchSingle(MIRRORS.ID);
+        long publicationId = dslContext.insertInto(PUBLICATIONS)
+            .set(PUBLICATIONS.MIRROR_ID, mirrorId)
+            .returningResult(PUBLICATIONS.ID)
+            .fetchSingle(PUBLICATIONS.ID);
+        dslContext.insertInto(PUBLICATION_MESSAGES)
+            .set(PUBLICATION_MESSAGES.PUBLICATION_ID, publicationId)
+            .set(PUBLICATION_MESSAGES.MESSAGE_ID, messageId)
+            .set(PUBLICATION_MESSAGES.POSITION, 0)
+            .execute();
+        dslContext.insertInto(PUBLICATION_MEDIA)
+            .set(PUBLICATION_MEDIA.PUBLICATION_ID, publicationId)
+            .set(PUBLICATION_MEDIA.MEDIA_ID, mediaId)
+            .set(PUBLICATION_MEDIA.STATUS, PENDING)
+            .set(PUBLICATION_MEDIA.NEXT_ATTEMPT_AT, OffsetDateTime.now(ZoneOffset.UTC).minusSeconds(1))
+            .execute();
+        return new Fixture(publicationId, messageId, mediaId);
+    }
+
+    private byte[] hash(int firstByte) {
+        byte[] hash = new byte[32];
+        hash[0] = (byte) firstByte;
+        return hash;
+    }
+
+    private record Fixture(long publicationId, long messageId, long mediaId) {
+    }
+
+}

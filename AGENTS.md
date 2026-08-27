@@ -41,9 +41,9 @@ the user explicitly changes scope.
 - Moera is the only planned destination. Do not add a `DestinationAdapter` abstraction or destination type
   discriminator.
 - Destination identity is `node_name` (maximum 135 characters).
-- `MoeraService` owns node resolution, credentials, `/features`, private media upload, and posting CRUD.
+- `MoeraService` owns node resolution, credentials, `/features`, node settings, private media upload, and posting CRUD.
 - Always request `downsize=true` on Moera media upload.
-- Respect `posting.mediaMaxSize` and `posting.sourceFormats` from `/features`.
+- Respect `media.max-size` from `getNodeSettings()` and `posting.sourceFormats` from `/features`.
 - `publication_media.destination_media_id` is at most 40 characters.
 - Moera create currently lacks idempotency. Unknown create outcomes are retried and separately diagnosed; do not
   pretend exactly-once creation is guaranteed.
