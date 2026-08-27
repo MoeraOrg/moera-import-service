@@ -8,6 +8,7 @@ import org.moera.importer.application.ChannelProcessor;
 import org.moera.importer.config.WorkerProperties;
 import org.moera.importer.persistence.ChannelClaim;
 import org.moera.importer.persistence.ChannelRepository;
+import org.moera.importer.source.telegram.TelegramRuntime;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
@@ -26,9 +27,12 @@ public class ChannelScheduler {
     @Inject
     private WorkerProperties workerProperties;
 
+    @Inject
+    private TelegramRuntime telegramRuntime;
+
     @Scheduled(fixedDelayString = "${moera.workers.channel-schedule-interval:PT1S}")
     public void run() {
-        if (!workerProperties.isSchedulingEnabled()) {
+        if (!workerProperties.isSchedulingEnabled() || !telegramRuntime.channelWorkReady()) {
             return;
         }
         int remaining = workerProperties.getBatchSize();

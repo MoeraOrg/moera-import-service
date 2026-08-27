@@ -20,6 +20,21 @@ management:
         include: health,prometheus
 
 moera:
+  telegram:
+    enabled: ${MOERA_TELEGRAM_ENABLED:false}
+    login: ${MOERA_TELEGRAM_LOGIN:false}
+    api-id: ${TELEGRAM_API_ID:0}
+    api-hash: ${TELEGRAM_API_HASH:}
+    database-directory: ${TELEGRAM_DATABASE_DIRECTORY:var/telegram/database}
+    download-cache-directory: ${TELEGRAM_DOWNLOAD_CACHE_DIRECTORY:var/telegram/cache}
+    grouping-threshold: ${TELEGRAM_GROUPING_THRESHOLD:5m}
+    settling-delay: ${TELEGRAM_SETTLING_DELAY:30s}
+    polling-interval: ${TELEGRAM_POLLING_INTERVAL:1m}
+    inactive-polling-interval: ${TELEGRAM_INACTIVE_POLLING_INTERVAL:10m}
+    look-behind-count: ${TELEGRAM_LOOK_BEHIND_COUNT:20}
+    history-page-size: ${TELEGRAM_HISTORY_PAGE_SIZE:100}
+    readiness-timeout: ${TELEGRAM_READINESS_TIMEOUT:30s}
+    login-timeout: ${TELEGRAM_LOGIN_TIMEOUT:10m}
   workers:
     scheduling-enabled: true
     batch-size: 32

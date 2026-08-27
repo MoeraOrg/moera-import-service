@@ -85,6 +85,9 @@ public class TelegramMessageMapper {
             Attribution attribution = attribution(message.forwardInfo);
             String body = decorateBody(message, content.body(), attribution);
             ObjectNode sourceData = JsonNodeFactory.instance.objectNode();
+            if (message.mediaAlbumId != 0) {
+                sourceData.put("mediaAlbumId", message.mediaAlbumId);
+            }
             if (attribution != null) {
                 ObjectNode node = sourceData.putObject("forwardAttribution").put("name", attribution.name());
                 if (attribution.url() != null) {

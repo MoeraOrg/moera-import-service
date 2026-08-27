@@ -469,6 +469,14 @@ class TelegramMessageMapperTest {
         return message;
     }
 
+    @Test
+    void storesMediaAlbumIdForGrouping() {
+        TdApi.Message message = message(new TdApi.MessageText(text("album"), null, null));
+        message.mediaAlbumId = 987654321;
+
+        assertThat(mapped(message).sourceData().path("mediaAlbumId").asLong()).isEqualTo(987654321);
+    }
+
     private org.moera.importer.source.SourceMessage mapped(TdApi.Message message) {
         return ((TelegramMappingResult.Mapped) telegramMessageMapper.map(message)).message();
     }

@@ -21,9 +21,12 @@ import org.moera.importer.persistence.ChannelClaim;
 import org.moera.importer.persistence.ChannelRepository;
 import org.moera.importer.persistence.MirrorRepository;
 import org.moera.importer.source.ChannelSnapshot;
+import org.moera.importer.source.telegram.TelegramRuntime;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 class SchedulerTest {
 
@@ -33,10 +36,13 @@ class SchedulerTest {
         RecordingChannelProcessor channelProcessor = new RecordingChannelProcessor();
         WorkerProperties workerProperties = properties();
         ChannelScheduler channelScheduler = new ChannelScheduler();
+        TelegramRuntime telegramRuntime = mock(TelegramRuntime.class);
+        when(telegramRuntime.channelWorkReady()).thenReturn(true);
         ReflectionTestUtils.setField(channelScheduler, "channelProcessor", channelProcessor);
         ReflectionTestUtils.setField(channelScheduler, "channelRepository", channelRepository);
         ReflectionTestUtils.setField(channelScheduler, "executorService", new DirectExecutorService());
         ReflectionTestUtils.setField(channelScheduler, "workerProperties", workerProperties);
+        ReflectionTestUtils.setField(channelScheduler, "telegramRuntime", telegramRuntime);
 
         channelScheduler.run();
 
@@ -51,6 +57,21 @@ class SchedulerTest {
             ChannelOperation.SUBSCRIPTION,
             ChannelOperation.POLL
         );
+    }
+
+    @Test
+    void channelSchedulerDoesNotClaimWorkUntilTelegramIsReady() {
+        RecordingChannelRepository channelRepository = new RecordingChannelRepository();
+        ChannelScheduler channelScheduler = new ChannelScheduler();
+        TelegramRuntime telegramRuntime = mock(TelegramRuntime.class);
+        when(telegramRuntime.channelWorkReady()).thenReturn(false);
+        ReflectionTestUtils.setField(channelScheduler, "channelRepository", channelRepository);
+        ReflectionTestUtils.setField(channelScheduler, "workerProperties", properties());
+        ReflectionTestUtils.setField(channelScheduler, "telegramRuntime", telegramRuntime);
+
+        channelScheduler.run();
+
+        assertThat(channelRepository.requestedOperations).isEmpty();
     }
 
     @Test
