@@ -1314,6 +1314,10 @@ The download cache is disposable.
 Initial Telegram authentication is performed in a dedicated bootstrap/login mode rather than interactively during
 normal daemon startup. Verification codes and 2FA passwords are not stored in PostgreSQL or ordinary configuration.
 
+The TDLight client initializes authorization and the persistent session without eagerly loading the account's main or
+archived chat lists. Channel lookup, membership checks, history reads, and media access are performed on demand for
+configured source channels. This avoids account-wide Telegram API traffic during every service startup.
+
 The first implementation officially supports one active service instance owning the Telegram session. PostgreSQL
 leasing remains safe for multiple workers/instances, but multiple JVMs do not concurrently open the same TDLight state
 directory. Horizontal scaling/leader election is deferred until needed.

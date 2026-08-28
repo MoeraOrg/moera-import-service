@@ -5,36 +5,48 @@ import java.time.Duration;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 
+import it.tdlight.ClientFactory;
 import it.tdlight.client.APIToken;
-import it.tdlight.client.AuthenticationData;
-import it.tdlight.client.AuthenticationSupplier;
-import it.tdlight.client.SimpleTelegramClient;
-import it.tdlight.client.SimpleTelegramClientFactory;
 import it.tdlight.client.TDLibSettings;
 import it.tdlight.client.TelegramError;
 import it.tdlight.jni.TdApi;
 import org.moera.importer.config.TelegramProperties;
 import org.moera.importer.source.SourcePermanentException;
 import org.moera.importer.source.SourceTemporaryException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class TdLightTelegramClient implements TelegramClient {
 
+    private static final Logger log = LoggerFactory.getLogger(TdLightTelegramClient.class);
+
     private final TelegramProperties properties;
     private final boolean interactive;
-    private final CompletableFuture<Void> ready = new CompletableFuture<>();
-    private SimpleTelegramClientFactory factory;
-    private SimpleTelegramClient client;
+    private final Supplier<ClientFactory> clientFactorySupplier;
+    private final Supplier<TdLightLoginPrompt> loginPromptSupplier;
+    private ClientFactory factory;
+    private it.tdlight.TelegramClient client;
+    private TdLightAuthorization authorization;
+    private TdLightLoginPrompt loginPrompt;
     private volatile long selfUserId;
 
     public TdLightTelegramClient(TelegramProperties properties, boolean interactive) {
+        this(properties, interactive, ClientFactory::create, TdLightConsoleLoginPrompt::new);
+    }
+
+    TdLightTelegramClient(TelegramProperties properties, boolean interactive,
+                          Supplier<ClientFactory> clientFactorySupplier,
+                          Supplier<TdLightLoginPrompt> loginPromptSupplier) {
         this.properties = Objects.requireNonNull(properties, "properties");
         this.interactive = interactive;
+        this.clientFactorySupplier = Objects.requireNonNull(clientFactorySupplier, "clientFactorySupplier");
+        this.loginPromptSupplier = Objects.requireNonNull(loginPromptSupplier, "loginPromptSupplier");
     }
 
     @Override
@@ -52,39 +64,50 @@ public class TdLightTelegramClient implements TelegramClient {
         TDLibSettings settings = TDLibSettings.create(new APIToken(properties.getApiId(), properties.getApiHash()));
         settings.setDatabaseDirectoryPath(properties.getDatabaseDirectory());
         settings.setDownloadedFilesDirectoryPath(properties.getDownloadCacheDirectory());
-        factory = new SimpleTelegramClientFactory();
-        var builder = factory.builder(settings);
-        builder.addUpdatesHandler(update -> {
-            if (update instanceof TdApi.UpdateAuthorizationState authorization) {
-                handleAuthorizationState(authorization.authorizationState);
+        factory = clientFactorySupplier.get();
+        client = factory.createClient();
+        loginPrompt = interactive ? loginPromptSupplier.get() : null;
+        authorization = new TdLightAuthorization(settings, interactive, this::sendAuthorization, loginPrompt);
+        client.initialize(
+            (it.tdlight.UpdatesHandler) updates -> handleUpdates(updates, updateConsumer),
+            this::handleClientException,
+            this::handleClientException
+        );
+    }
+
+    private void handleUpdates(List<TdApi.Object> updates, Consumer<TdApi.Update> updateConsumer) {
+        for (TdApi.Object object : updates) {
+            if (object instanceof TdApi.Update update) {
+                if (update instanceof TdApi.UpdateAuthorizationState authorizationUpdate) {
+                    authorization.handle(authorizationUpdate.authorizationState);
+                }
+                updateConsumer.accept(update);
+            } else if (object instanceof TdApi.Error error) {
+                authorization.fail(new TelegramError(error));
             }
-            updateConsumer.accept(update);
-        });
-        AuthenticationSupplier<?> authentication = interactive
-            ? AuthenticationSupplier.consoleLogin() : nonInteractiveAuthentication();
-        client = builder.build(authentication);
-    }
-
-    private AuthenticationSupplier<AuthenticationData> nonInteractiveAuthentication() {
-        return () -> CompletableFuture.failedFuture(new IllegalStateException(
-            "No usable saved Telegram session; run the Telegram login bootstrap command"
-        ));
-    }
-
-    private void handleAuthorizationState(TdApi.AuthorizationState state) {
-        if (state instanceof TdApi.AuthorizationStateReady) {
-            ready.complete(null);
-        } else if (!interactive && state instanceof TdApi.AuthorizationStateWaitPhoneNumber) {
-            ready.completeExceptionally(new IllegalStateException(
-                "No usable saved Telegram session; run with TELEGRAM_LOGIN=true once"
-            ));
         }
+    }
+
+    private void sendAuthorization(TdApi.Function<?> function) {
+        client.send(function, result -> {
+            if (result instanceof TdApi.Error error) {
+                authorization.fail(new TelegramError(error));
+            }
+        }, authorization::fail);
+    }
+
+    private void handleClientException(Throwable failure) {
+        authorization.fail(failure);
+        log.warn("TDLight client callback failed", failure);
     }
 
     @Override
     public boolean awaitReady(Duration timeout) {
+        if (authorization == null) {
+            return false;
+        }
         try {
-            ready.get(timeout.toMillis(), TimeUnit.MILLISECONDS);
+            authorization.ready().get(timeout.toMillis(), TimeUnit.MILLISECONDS);
             return true;
         } catch (TimeoutException | InterruptedException e) {
             if (e instanceof InterruptedException) {
@@ -98,7 +121,7 @@ public class TdLightTelegramClient implements TelegramClient {
 
     @Override
     public boolean isReady() {
-        return ready.isDone() && !ready.isCompletedExceptionally();
+        return authorization != null && authorization.isReady();
     }
 
     @Override
@@ -198,13 +221,30 @@ public class TdLightTelegramClient implements TelegramClient {
 
     @Override
     public synchronized void close() {
-        if (client != null) {
-            client.closeAsync().join();
+        try {
+            if (client != null) {
+                client.sendAsync(new TdApi.Close()).join();
+                if (authorization != null) {
+                    authorization.closed().orTimeout(90, TimeUnit.SECONDS).join();
+                }
+            }
+        } finally {
             client = null;
-        }
-        if (factory != null) {
-            factory.close();
-            factory = null;
+            try {
+                if (loginPrompt != null) {
+                    loginPrompt.close();
+                }
+            } finally {
+                loginPrompt = null;
+                try {
+                    if (factory != null) {
+                        factory.close();
+                    }
+                } finally {
+                    factory = null;
+                    authorization = null;
+                }
+            }
         }
     }
 
@@ -213,7 +253,7 @@ public class TdLightTelegramClient implements TelegramClient {
             throw new IllegalStateException("TDLight client is not started");
         }
         try {
-            return client.send(function).join();
+            return client.sendAsync(function).join();
         } catch (CompletionException e) {
             throw new SourceTemporaryException("Telegram request failed", e.getCause());
         }
