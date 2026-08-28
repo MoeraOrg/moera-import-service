@@ -27,6 +27,7 @@ import org.moera.importer.source.AccessResult;
 import org.moera.importer.source.ChannelResolution;
 import org.moera.importer.source.ChannelSnapshot;
 import org.moera.importer.source.GroupingRelation;
+import org.moera.importer.source.InitialImportMode;
 import org.moera.importer.source.MediaSnapshot;
 import org.moera.importer.source.PollResult;
 import org.moera.importer.source.SourceAdapter;
@@ -70,9 +71,10 @@ public class TelegramSourceAdapter implements SourceAdapter {
     }
 
     @Override
-    public ChannelResolution resolveChannel(URI sourceUri) {
+    public ChannelResolution resolveChannel(URI sourceUri, InitialImportMode initialImportMode) {
+        Objects.requireNonNull(initialImportMode, "initialImportMode");
         TelegramReference reference = TelegramReference.parse(sourceUri);
-        ObjectNode sourceData = objectNode();
+        ObjectNode sourceData = objectNode().put("initialImportMode", initialImportMode.name());
         if (reference instanceof TelegramReference.Invite inviteReference) {
             TelegramClient.Invite invite = client.inspectInvite(inviteReference.inviteLink());
             sourceData.put("inviteLink", inviteReference.inviteLink());
@@ -200,13 +202,20 @@ public class TelegramSourceAdapter implements SourceAdapter {
         long previousWaterline = channel.waterline() == null ? 0 : channel.waterline().path("messageId").asLong(0);
         long fromMessageId = 0;
         long newestScannedId = previousWaterline;
+        int initialLimit = previousWaterline == 0 && !isFullInitialImport(channel)
+            ? properties.getInitialHistoryCount()
+            : Integer.MAX_VALUE;
         int lookBehindRead = 0;
         int noProgressPages = 0;
         boolean complete = false;
         Map<Long, TdApi.Message> scanned = new LinkedHashMap<>();
         while (!complete) {
+            int remaining = initialLimit - scanned.size();
+            if (remaining <= 0) {
+                break;
+            }
             TelegramClient.HistoryPage historyPage = client.history(
-                chatId, fromMessageId, properties.getHistoryPageSize()
+                chatId, fromMessageId, Math.min(properties.getHistoryPageSize(), remaining)
             );
             List<TdApi.Message> page = historyPage.messages();
             if (page.isEmpty()) {
@@ -219,7 +228,6 @@ public class TelegramSourceAdapter implements SourceAdapter {
                     continue;
                 }
                 progressed = true;
-                newestScannedId = Math.max(newestScannedId, message.id);
                 oldestId = Math.min(oldestId, message.id);
                 if (previousWaterline != 0 && message.id < previousWaterline) {
                     lookBehindRead++;
@@ -228,7 +236,13 @@ public class TelegramSourceAdapter implements SourceAdapter {
                         break;
                     }
                 }
-                scanned.putIfAbsent(message.id, message);
+                if (scanned.putIfAbsent(message.id, message) == null) {
+                    newestScannedId = Math.max(newestScannedId, message.id);
+                    if (scanned.size() == initialLimit) {
+                        complete = true;
+                        break;
+                    }
+                }
             }
             if (complete) {
                 break;
@@ -257,6 +271,10 @@ public class TelegramSourceAdapter implements SourceAdapter {
             }
         });
         return new PollResult(messages, objectNode().put("messageId", newestScannedId));
+    }
+
+    private boolean isFullInitialImport(ChannelSnapshot channel) {
+        return InitialImportMode.FULL.name().equals(channel.sourceData().path("initialImportMode").asText());
     }
 
     @Override

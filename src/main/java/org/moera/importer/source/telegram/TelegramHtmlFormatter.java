@@ -9,11 +9,12 @@ import java.util.Locale;
 import java.util.Set;
 
 import it.tdlight.jni.TdApi;
+import org.springframework.util.ObjectUtils;
 
 public class TelegramHtmlFormatter {
 
     public String format(TdApi.FormattedText formattedText) {
-        if (formattedText == null || formattedText.text == null || formattedText.text.isEmpty()) {
+        if (formattedText == null || ObjectUtils.isEmpty(formattedText.text)) {
             return "";
         }
         List<EntitySpan> entities = entities(formattedText);

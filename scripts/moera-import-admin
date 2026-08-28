@@ -129,6 +129,7 @@ def run_channel(args, client):
         created = client.request("POST", "/api/channels", {
             "sourceType": args.source_type,
             "sourceUri": args.source_uri,
+            "fullHistory": args.full_history,
         })
         print_table([created], [("id", "ID"), ("sourceUri", "SOURCE URI")])
         return
@@ -203,6 +204,7 @@ def parser():
     channel_add = channels.add_parser("add", help="resolve and add a channel")
     channel_add.add_argument("source_uri")
     channel_add.add_argument("--type", dest="source_type", default="TELEGRAM", choices=("TELEGRAM",))
+    channel_add.add_argument("--full-history", action="store_true", help="import all available source history")
     channel_delete = channels.add_parser("delete", help="delete a channel")
     channel_delete.add_argument("channel_id", type=positive_id)
     add_delete_confirmation(channel_delete)

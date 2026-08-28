@@ -10,12 +10,16 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.moera.importer.config.CreateRateProperties;
 import org.moera.importer.model.BodyFormat;
 import org.moera.importer.model.Destination;
 import org.moera.importer.model.Message;
@@ -29,7 +33,10 @@ import org.moera.importer.persistence.PublicationClaim;
 import org.moera.importer.persistence.PublicationContext;
 import org.moera.importer.persistence.PublicationRepository;
 import org.moera.importer.persistence.PublicationSnapshotChangedException;
+import org.moera.importer.persistence.DestinationCreateSlot;
+import org.moera.importer.persistence.DestinationRepository;
 import org.moera.lib.node.types.SourceFormat;
+import org.slf4j.LoggerFactory;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -40,6 +47,7 @@ class PublicationProcessorTest {
 
     private PublicationProcessor publicationProcessor;
     private RecordingPublicationRepository publicationRepository;
+    private RecordingDestinationRepository destinationRepository;
     private FakeMoeraService moeraService;
     private SimpleMeterRegistry meterRegistry;
 
@@ -47,6 +55,7 @@ class PublicationProcessorTest {
     void configureProcessor() {
         publicationProcessor = new PublicationProcessor();
         publicationRepository = new RecordingPublicationRepository();
+        destinationRepository = new RecordingDestinationRepository();
         moeraService = new FakeMoeraService();
         meterRegistry = new SimpleMeterRegistry();
         ImportMetrics importMetrics = new ImportMetrics();
@@ -54,6 +63,12 @@ class PublicationProcessorTest {
         ReflectionTestUtils.setField(publicationProcessor, "clock", Clock.fixed(NOW, ZoneOffset.UTC));
         ReflectionTestUtils.setField(publicationProcessor, "moeraService", moeraService);
         ReflectionTestUtils.setField(publicationProcessor, "importMetrics", importMetrics);
+        ReflectionTestUtils.setField(
+            publicationProcessor, "createRateProperties", new CreateRateProperties()
+        );
+        ReflectionTestUtils.setField(
+            publicationProcessor, "destinationRepository", destinationRepository
+        );
         ReflectionTestUtils.setField(
             publicationProcessor, "publicationPayloadBuilder", new PublicationPayloadBuilder()
         );
@@ -84,6 +99,49 @@ class PublicationProcessorTest {
             .isEqualTo("story-1");
         assertThat(publicationRepository.destinationData.path("storyIds").path("news").asText())
             .isEqualTo("story-2");
+        assertThat(destinationRepository.acquisitions).isEqualTo(1);
+        assertThat(destinationRepository.destinationId).isEqualTo(7);
+        assertThat(destinationRepository.interval).isEqualTo(Duration.ofSeconds(6));
+    }
+
+    @Test
+    void defersFirstCreateWhenDestinationSlotIsNotDue() {
+        publicationRepository.context = context(null, objectNode(), "Body", false, false);
+        destinationRepository.slot = new DestinationCreateSlot.Deferred(NOW.plusSeconds(6));
+
+        publicationProcessor.process(claim());
+
+        assertThat(moeraService.operations).containsExactly("capabilities");
+        assertThat(publicationRepository.deferredUntil).isEqualTo(NOW.plusSeconds(6));
+        assertThat(publicationRepository.error).isNull();
+        assertThat(meterRegistry.get("publication_rate_limited_total").counter().count()).isEqualTo(1);
+        assertThat(meterRegistry.find("publication_failures_total").counter()).isNull();
+    }
+
+    @Test
+    void reportsStaleClaimWhenRateDeferralRejectsToken() {
+        publicationRepository.context = context(null, objectNode(), "Body", false, false);
+        publicationRepository.deferAccepted = false;
+        destinationRepository.slot = new DestinationCreateSlot.Deferred(NOW.plusSeconds(6));
+        Logger logger = (Logger) LoggerFactory.getLogger(PublicationProcessor.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+
+        try {
+            publicationProcessor.process(claim());
+        } finally {
+            logger.detachAppender(appender);
+            appender.stop();
+        }
+
+        assertThat(moeraService.operations).containsExactly("capabilities");
+        assertThat(meterRegistry.find("publication_rate_limited_total").counter()).isNull();
+        assertThat(appender.list).anySatisfy(event -> assertThat(event.getKeyValuePairs())
+            .anySatisfy(pair -> {
+                assertThat(pair.key).isEqualTo("result");
+                assertThat(pair.value).isEqualTo("stale_claim");
+            }));
     }
 
     @Test
@@ -99,6 +157,7 @@ class PublicationProcessorTest {
         assertThat(publicationRepository.completion).isEqualTo("updated");
         assertThat(publicationRepository.destinationData.path("storyIds").path("timeline").asText())
             .isEqualTo("story-1");
+        assertThat(destinationRepository.acquisitions).isZero();
     }
 
     @Test
@@ -112,6 +171,7 @@ class PublicationProcessorTest {
         assertThat(moeraService.operations).containsExactly("capabilities", "delete:posting-1");
         assertThat(publicationRepository.completion).isEqualTo("deleted");
         assertThat(publicationRepository.destinationData).isEqualTo(objectNode());
+        assertThat(destinationRepository.acquisitions).isZero();
     }
 
     @Test
@@ -123,6 +183,7 @@ class PublicationProcessorTest {
         assertThat(moeraService.operations).containsExactly("capabilities");
         assertThat(publicationRepository.completion).isEqualTo("deleted");
         assertThat(publicationRepository.destinationData).isEqualTo(objectNode());
+        assertThat(destinationRepository.acquisitions).isZero();
     }
 
     @Test
@@ -136,6 +197,7 @@ class PublicationProcessorTest {
         assertThat(publicationRepository.nextAttemptAt).isEqualTo(NOW.plus(Duration.ofMinutes(4)));
         assertThat(publicationRepository.error).isEqualTo("create outcome unknown");
         assertThat(meterRegistry.get("publication_unknown_outcomes_total").counter().count()).isEqualTo(1);
+        assertThat(destinationRepository.acquisitions).isEqualTo(1);
     }
 
     @Test
@@ -295,9 +357,11 @@ class PublicationProcessorTest {
         private String postingId;
         private JsonNode destinationData;
         private Instant nextAttemptAt;
+        private Instant deferredUntil;
         private String error;
         private boolean failed;
         private boolean snapshotChanged;
+        private boolean deferAccepted = true;
 
         @Override
         public PublicationContext loadContext(long publicationId, int targetRevision) {
@@ -358,10 +422,33 @@ class PublicationProcessorTest {
         }
 
         @Override
+        public boolean deferCreateRate(long publicationId, UUID token, Instant nextAttemptAt) {
+            deferredUntil = nextAttemptAt;
+            return deferAccepted;
+        }
+
+        @Override
         public boolean fail(long publicationId, UUID token, String error) {
             failed = true;
             this.error = error;
             return true;
+        }
+
+    }
+
+    private static class RecordingDestinationRepository extends DestinationRepository {
+
+        private DestinationCreateSlot slot = new DestinationCreateSlot.Acquired();
+        private int acquisitions;
+        private long destinationId;
+        private Duration interval;
+
+        @Override
+        public DestinationCreateSlot acquireCreateSlot(long destinationId, Duration interval) {
+            acquisitions++;
+            this.destinationId = destinationId;
+            this.interval = interval;
+            return slot;
         }
 
     }

@@ -19,6 +19,7 @@ import org.moera.importer.persistence.DestinationRepository;
 import org.moera.importer.persistence.MirrorRepository;
 import org.moera.importer.source.ChannelResolution;
 import org.moera.importer.source.ChannelSnapshot;
+import org.moera.importer.source.InitialImportMode;
 import org.moera.importer.source.SourceAdapter;
 import org.moera.importer.source.SourceAdapterRegistry;
 import org.moera.importer.source.SourcePermanentException;
@@ -74,7 +75,10 @@ public class AdministrationService {
         }
         ChannelResolution resolution;
         try {
-            resolution = sourceAdapter.resolveChannel(sourceUri);
+            InitialImportMode initialImportMode = request.fullHistory()
+                ? InitialImportMode.FULL
+                : InitialImportMode.RECENT;
+            resolution = sourceAdapter.resolveChannel(sourceUri, initialImportMode);
         } catch (SourcePermanentException | IllegalArgumentException e) {
             throw badRequest("Source channel cannot be resolved");
         } catch (SourceTemporaryException | IllegalStateException e) {

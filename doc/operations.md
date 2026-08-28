@@ -237,6 +237,17 @@ CLI. Replace the source URI, registered node name, and credential reference:
 ./scripts/moera-import-admin mirror add 1 1 --feed timeline
 ```
 
+Without additional options, a newly added Telegram channel imports at most the newest 20 unique messages before
+establishing its waterline. To import all available Telegram history for a new channel, opt in explicitly:
+
+```bash
+./scripts/moera-import-admin channel add https://t.me/example_channel --full-history
+```
+
+`--full-history` affects only the channel's first poll while no waterline exists. Existing messages, publications, and
+already delivered Moera postings are never removed when these settings change. A restart preserves the queued backlog
+and continues delivering it; new Moera posts are paced by the destination rate described below.
+
 This creates three related objects:
 
 - `channels` tells the Telegram adapter which public channel URL or private invite link to resolve and poll;
@@ -310,6 +321,31 @@ ORDER BY r.id, p.id;
 If `publication_last_error` reports a missing or unavailable credential, check that `credentialRef` names an existing
 environment variable in the daemon process or an absolute file readable by the daemon user. If node resolution fails,
 check that `node_name` is registered in the naming service selected by `MOERA_NAMING_SERVER` and is not a URL.
+
+## Import flow control
+
+The default flow-control settings and their environment overrides are:
+
+| Setting | Default | Environment override |
+| --- | ---: | --- |
+| Initial Telegram history | 20 messages | `TELEGRAM_INITIAL_HISTORY_COUNT` |
+| Channel workflow concurrency | 2 | `MOERA_CHANNEL_CONCURRENCY` |
+| Publication-builder concurrency | 2 | `MOERA_PUBLICATION_BUILDER_CONCURRENCY` |
+| Publication-media concurrency | 4 | `MOERA_PUBLICATION_MEDIA_CONCURRENCY` |
+| Publication concurrency | 4 | `MOERA_PUBLICATION_CONCURRENCY` |
+| Moera creates per period, per destination | 10 | `MOERA_CREATE_RATE_COUNT` |
+| Moera create-rate period | 1 minute | `MOERA_CREATE_RATE_PERIOD` |
+
+The default create rate is therefore one new posting every six seconds for each destination. All destinations use the
+same configured rate but keep independent durable positions in PostgreSQL, so a busy or failing destination does not
+consume another destination's slots and a restart does not reset the rate. The slot is consumed immediately before a
+first `createPost` call. Posting updates and deletes, story changes, capability lookup, and media upload are not rate
+limited.
+
+Workflow concurrency limits are local to one service process and reserve capacity before database claims. They bound
+active channel, grouping, media, and publication work independently; changing one workflow limit does not change the
+others. Keep the PostgreSQL lease durations comfortably longer than ordinary work. Long Telegram polls renew their
+lease while active and stop completing work if ownership is lost.
 
 ## Starting the daemon
 

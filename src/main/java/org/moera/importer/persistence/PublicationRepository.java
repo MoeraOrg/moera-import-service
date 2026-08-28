@@ -197,6 +197,22 @@ public class PublicationRepository {
             .execute() == 1;
     }
 
+    public boolean deferCreateRate(long publicationId, UUID token, Instant nextAttemptAt) {
+        Instant now = clock.instant();
+        return dslContext.update(PUBLICATIONS)
+            .set(
+                PUBLICATIONS.ATTEMPTS,
+                when(PUBLICATIONS.ATTEMPTS.gt(0), PUBLICATIONS.ATTEMPTS.minus(1)).otherwise(0)
+            )
+            .set(PUBLICATIONS.NEXT_ATTEMPT_AT, jooqMappings.offsetDateTime(nextAttemptAt))
+            .setNull(PUBLICATIONS.PROCESSING_TOKEN)
+            .setNull(PUBLICATIONS.PROCESSING_UNTIL)
+            .set(PUBLICATIONS.UPDATED_AT, jooqMappings.offsetDateTime(now))
+            .where(PUBLICATIONS.ID.eq(publicationId))
+            .and(PUBLICATIONS.PROCESSING_TOKEN.eq(token))
+            .execute() == 1;
+    }
+
     public boolean fail(long publicationId, UUID token, String error) {
         Instant now = clock.instant();
         return dslContext.update(PUBLICATIONS)

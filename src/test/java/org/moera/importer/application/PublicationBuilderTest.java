@@ -24,6 +24,7 @@ import org.moera.importer.source.AccessResult;
 import org.moera.importer.source.ChannelResolution;
 import org.moera.importer.source.ChannelSnapshot;
 import org.moera.importer.source.GroupingRelation;
+import org.moera.importer.source.InitialImportMode;
 import org.moera.importer.source.PollResult;
 import org.moera.importer.source.SourceAdapter;
 import org.moera.importer.source.SourceEventSink;
@@ -432,7 +433,7 @@ class PublicationBuilderTest extends PostgresIntegrationTest {
         }
 
         @Override
-        public ChannelResolution resolveChannel(java.net.URI sourceUri) {
+        public ChannelResolution resolveChannel(java.net.URI sourceUri, InitialImportMode initialImportMode) {
             throw new UnsupportedOperationException();
         }
 

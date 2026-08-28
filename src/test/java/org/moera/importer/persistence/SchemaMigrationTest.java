@@ -78,6 +78,19 @@ class SchemaMigrationTest extends PostgresIntegrationTest {
     }
 
     @Test
+    void destinationCreateRateStateIsNullableTimestampWithTimeZone() throws SQLException {
+        Set<String> column = queryStrings("""
+            SELECT data_type || ':' || is_nullable
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'destinations'
+              AND column_name = 'next_create_at'
+            """);
+
+        assertThat(column).containsExactly("timestamp with time zone:YES");
+    }
+
+    @Test
     void migrationAllowsUnresolvedChannelWithoutSourceId() throws SQLException {
         try (Connection connection = openConnection();
              var statement = connection.prepareStatement("""

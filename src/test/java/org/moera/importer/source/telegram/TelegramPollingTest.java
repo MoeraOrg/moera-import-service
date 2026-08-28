@@ -20,6 +20,7 @@ import org.moera.importer.model.SourceType;
 import org.moera.importer.model.SubscriptionState;
 import org.moera.importer.observability.ImportMetrics;
 import org.moera.importer.source.ChannelSnapshot;
+import org.moera.importer.source.SourceMessage;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -112,6 +113,64 @@ class TelegramPollingTest {
             .hasMessage("mapper failed");
     }
 
+    @Test
+    void recentInitialPollStopsAfterConfiguredUniqueMessageCount() {
+        properties.setInitialHistoryCount(3);
+        client.pages.add(page(5, message(5, "five"), message(4, "four"), message(3, "three")));
+
+        var result = adapter(new TelegramMessageMapper()).poll(channel(null, "RECENT"));
+
+        assertThat(result.messages()).extracting(SourceMessage::sourceId)
+            .containsExactly("3", "4", "5");
+        assertThat(client.requestedLimits).containsExactly(3);
+        assertThat(result.waterline().path("messageId").asLong()).isEqualTo(5);
+    }
+
+    @Test
+    void fullInitialPollContinuesToHistoryStart() {
+        properties.setInitialHistoryCount(2);
+        client.pages.add(page(4, message(4, "four"), message(3, "three")));
+        client.pages.add(page(4, message(2, "two"), message(1, "one")));
+        client.pages.add(page(4));
+
+        var result = adapter(new TelegramMessageMapper()).poll(channel(null, "FULL"));
+
+        assertThat(result.messages()).extracting(SourceMessage::sourceId)
+            .containsExactly("1", "2", "3", "4");
+    }
+
+    @Test
+    void skippedMessageCountsTowardRecentInitialLimit() {
+        properties.setInitialHistoryCount(2);
+        client.pages.add(page(3, message(3, null), message(2, "two"), message(1, "one")));
+
+        var result = adapter(new TelegramMessageMapper()).poll(channel(null, "RECENT"));
+
+        assertThat(result.messages()).extracting(SourceMessage::sourceId).containsExactly("2");
+        assertThat(client.requestedLimits).containsExactly(2);
+        assertThat(result.waterline().path("messageId").asLong()).isEqualTo(3);
+    }
+
+    @Test
+    void missingInitialImportModeDefaultsToRecent() {
+        properties.setInitialHistoryCount(1);
+        client.pages.add(page(2, message(2, "two")));
+
+        adapter(new TelegramMessageMapper()).poll(channel(null, null));
+
+        assertThat(client.requestedLimits).containsExactly(1);
+    }
+
+    @Test
+    void unknownInitialImportModeDefaultsToRecent() {
+        properties.setInitialHistoryCount(1);
+        client.pages.add(page(2, message(2, "two")));
+
+        adapter(new TelegramMessageMapper()).poll(channel(null, "UNKNOWN"));
+
+        assertThat(client.requestedLimits).containsExactly(1);
+    }
+
     private TelegramSourceAdapter adapter(TelegramMessageMapper mapper) {
         ImportMetrics importMetrics = new ImportMetrics();
         ReflectionTestUtils.setField(importMetrics, "meterRegistry", meterRegistry);
@@ -121,8 +180,16 @@ class TelegramPollingTest {
     }
 
     private ChannelSnapshot channel(Long waterline) {
+        return channel(waterline, "RECENT");
+    }
+
+    private ChannelSnapshot channel(Long waterline, String initialImportMode) {
+        var sourceData = JsonNodeFactory.instance.objectNode();
+        if (initialImportMode != null) {
+            sourceData.put("initialImportMode", initialImportMode);
+        }
         return new ChannelSnapshot(1, SourceType.TELEGRAM, "-1001", URI.create("https://t.me/news"),
-            JsonNodeFactory.instance.objectNode(), AccessState.GRANTED, JsonNodeFactory.instance.objectNode(),
+            sourceData, AccessState.GRANTED, JsonNodeFactory.instance.objectNode(),
             SubscriptionState.ACTIVE, JsonNodeFactory.instance.objectNode(), waterline == null ? null
                 : JsonNodeFactory.instance.objectNode().put("messageId", waterline));
     }
@@ -146,10 +213,12 @@ class TelegramPollingTest {
 
         private final Queue<TelegramClient.HistoryPage> pages = new ArrayDeque<>();
         private final List<Long> fromIds = new ArrayList<>();
+        private final List<Integer> requestedLimits = new ArrayList<>();
 
         @Override
         public TelegramClient.HistoryPage history(long chatId, long fromMessageId, int limit) {
             fromIds.add(fromMessageId);
+            requestedLimits.add(limit);
             return pages.remove();
         }
 

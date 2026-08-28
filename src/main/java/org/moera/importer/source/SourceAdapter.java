@@ -10,7 +10,7 @@ public interface SourceAdapter {
 
     SourceType type();
 
-    ChannelResolution resolveChannel(URI sourceUri);
+    ChannelResolution resolveChannel(URI sourceUri, InitialImportMode initialImportMode);
 
     Duration groupingThreshold();
 

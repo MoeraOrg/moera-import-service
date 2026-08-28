@@ -95,3 +95,8 @@ the user explicitly changes scope.
   contains any fields or methods.
 - If a record declaration contains no methods, do not put an empty line between the opening and closing braces. Keep
    the opening and closing braces on separate lines.
+
+## Documents
+
+- Format all documents with a maximum line length of 120 characters.
+- Use ObjectUtils.isEmpty(s) instead of s == null || s.isEmpty().

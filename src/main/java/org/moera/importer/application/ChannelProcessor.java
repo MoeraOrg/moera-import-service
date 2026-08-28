@@ -11,6 +11,7 @@ import org.moera.importer.persistence.ChannelClaim;
 import org.moera.importer.persistence.ChannelRepository;
 import org.moera.importer.persistence.MessageRepository;
 import org.moera.importer.source.AccessResult;
+import org.moera.importer.source.PollResult;
 import org.moera.importer.source.SourceAdapter;
 import org.moera.importer.source.SourceAdapterRegistry;
 import org.moera.importer.source.SourcePermanentException;
@@ -37,6 +38,9 @@ public class ChannelProcessor {
     private ImportMetrics importMetrics;
 
     @Inject
+    private PollLeaseHeartbeat pollLeaseHeartbeat;
+
+    @Inject
     private RetryPolicy retryPolicy;
 
     @Inject
@@ -47,12 +51,12 @@ public class ChannelProcessor {
         String result = "unexpected_failure";
         SourceAdapter sourceAdapter = sourceAdapterRegistry.get(claim.channel().sourceType());
         try {
-            switch (claim.operation()) {
+            boolean completed = switch (claim.operation()) {
                 case ACCESS -> refreshAccess(claim, sourceAdapter);
                 case SUBSCRIPTION -> refreshSubscription(claim, sourceAdapter);
                 case POLL -> poll(claim, sourceAdapter);
-            }
-            result = "success";
+            };
+            result = completed ? "success" : "stale_claim";
         } catch (SourceTemporaryException e) {
             result = "temporary_failure";
             temporaryFailure(claim, e);
@@ -71,27 +75,42 @@ public class ChannelProcessor {
         }
     }
 
-    private void refreshAccess(ChannelClaim claim, SourceAdapter sourceAdapter) {
+    private boolean refreshAccess(ChannelClaim claim, SourceAdapter sourceAdapter) {
         AccessResult result = sourceAdapter.refreshAccess(claim.channel());
         if (claim.channel().sourceId() != null
             && result.resolvedSourceId() != null
             && !claim.channel().sourceId().equals(result.resolvedSourceId())) {
             throw new SourcePermanentException("Resolved source identity conflicts with the stored identity");
         }
-        channelRepository.completeAccess(claim.channel().id(), claim.processingToken(), result);
+        return channelRepository.completeAccess(claim.channel().id(), claim.processingToken(), result);
     }
 
-    private void refreshSubscription(ChannelClaim claim, SourceAdapter sourceAdapter) {
+    private boolean refreshSubscription(ChannelClaim claim, SourceAdapter sourceAdapter) {
         var result = sourceAdapter.refreshSubscription(claim.channel());
-        channelRepository.completeSubscription(claim.channel().id(), claim.processingToken(), result);
+        return channelRepository.completeSubscription(claim.channel().id(), claim.processingToken(), result);
     }
 
-    private void poll(ChannelClaim claim, SourceAdapter sourceAdapter) {
-        var result = sourceAdapter.poll(claim.channel());
-        importMetrics.pollMessagesFound(result.messages().size());
-        Duration pollingInterval = sourceAdapter.pollingInterval(claim.channel());
-        Instant nextPollAt = clock.instant().plus(pollingInterval);
-        messageRepository.ingestPoll(claim.channel().id(), claim.processingToken(), result, nextPollAt);
+    private boolean poll(ChannelClaim claim, SourceAdapter sourceAdapter) {
+        try (PollLeaseHeartbeat.Guard guard = pollLeaseHeartbeat.start(claim)) {
+            PollResult result;
+            try {
+                result = sourceAdapter.poll(claim.channel());
+            } catch (RuntimeException e) {
+                if (guard.leaseLost()) {
+                    return false;
+                }
+                throw e;
+            }
+            if (guard.leaseLost()) {
+                return false;
+            }
+            importMetrics.pollMessagesFound(result.messages().size());
+            Duration pollingInterval = sourceAdapter.pollingInterval(claim.channel());
+            Instant nextPollAt = clock.instant().plus(pollingInterval);
+            return messageRepository.ingestPoll(
+                claim.channel().id(), claim.processingToken(), result, nextPollAt
+            );
+        }
     }
 
     private void temporaryFailure(ChannelClaim claim, SourceTemporaryException exception) {

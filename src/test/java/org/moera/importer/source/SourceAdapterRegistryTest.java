@@ -61,7 +61,7 @@ class SourceAdapterRegistryTest {
     private record TestSourceAdapter(SourceType type) implements SourceAdapter {
 
         @Override
-        public ChannelResolution resolveChannel(URI sourceUri) {
+        public ChannelResolution resolveChannel(URI sourceUri, InitialImportMode initialImportMode) {
             throw new UnsupportedOperationException();
         }
 

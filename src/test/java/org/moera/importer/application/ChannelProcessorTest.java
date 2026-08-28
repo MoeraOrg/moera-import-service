@@ -25,6 +25,7 @@ import org.moera.importer.source.AccessResult;
 import org.moera.importer.source.ChannelResolution;
 import org.moera.importer.source.ChannelSnapshot;
 import org.moera.importer.source.GroupingRelation;
+import org.moera.importer.source.InitialImportMode;
 import org.moera.importer.source.MediaSnapshot;
 import org.moera.importer.source.PollResult;
 import org.moera.importer.source.SourceAdapter;
@@ -47,6 +48,7 @@ class ChannelProcessorTest {
     private RecordingMessageRepository messageRepository;
     private FakeSourceAdapter sourceAdapter;
     private SimpleMeterRegistry meterRegistry;
+    private RecordingPollLeaseHeartbeat pollLeaseHeartbeat;
 
     @BeforeEach
     void configureProcessor() {
@@ -54,6 +56,9 @@ class ChannelProcessorTest {
         channelRepository = new RecordingChannelRepository();
         messageRepository = new RecordingMessageRepository();
         sourceAdapter = new FakeSourceAdapter();
+        sourceAdapter.pollingInterval = Duration.ofMinutes(5);
+        pollLeaseHeartbeat = new RecordingPollLeaseHeartbeat();
+        messageRepository.pollLeaseHeartbeat = pollLeaseHeartbeat;
         meterRegistry = new SimpleMeterRegistry();
         ImportMetrics importMetrics = new ImportMetrics();
         ReflectionTestUtils.setField(importMetrics, "meterRegistry", meterRegistry);
@@ -67,6 +72,7 @@ class ChannelProcessorTest {
         ReflectionTestUtils.setField(channelProcessor, "clock", Clock.fixed(NOW, ZoneOffset.UTC));
         ReflectionTestUtils.setField(channelProcessor, "messageRepository", messageRepository);
         ReflectionTestUtils.setField(channelProcessor, "importMetrics", importMetrics);
+        ReflectionTestUtils.setField(channelProcessor, "pollLeaseHeartbeat", pollLeaseHeartbeat);
         ReflectionTestUtils.setField(channelProcessor, "retryPolicy", retryPolicy);
         ReflectionTestUtils.setField(
             channelProcessor,
@@ -127,6 +133,28 @@ class ChannelProcessorTest {
         assertThat(messageRepository.processingToken).isEqualTo(claim.processingToken());
         assertThat(messageRepository.pollResult).isEqualTo(result);
         assertThat(messageRepository.nextPollAt).isEqualTo(NOW.plus(sourceAdapter.pollingInterval));
+        assertThat(messageRepository.heartbeatOpenAtIngest).isTrue();
+        assertThat(pollLeaseHeartbeat.guard.closed).isTrue();
+    }
+
+    @Test
+    void reportsStaleClaimWhenPollIngestRejectsToken() {
+        messageRepository.pollAccepted = false;
+        sourceAdapter.pollResult = new PollResult(
+            List.of(),
+            JsonNodeFactory.instance.objectNode().put("messageId", 42)
+        );
+
+        channelProcessor.process(claim(ChannelOperation.POLL));
+
+        assertThat(meterRegistry.get("source_operations_total")
+            .tags("source", "telegram", "operation", "poll", "result", "stale_claim")
+            .counter().count()).isEqualTo(1);
+        assertThat(meterRegistry.find("source_operations_total")
+            .tags("source", "telegram", "operation", "poll", "result", "success")
+            .counter()).isNull();
+        assertThat(messageRepository.heartbeatOpenAtIngest).isTrue();
+        assertThat(pollLeaseHeartbeat.guard.closed).isTrue();
     }
 
     @Test
@@ -142,6 +170,20 @@ class ChannelProcessorTest {
         assertThat(channelRepository.failedToken).isEqualTo(claim.processingToken());
         assertThat(channelRepository.nextAttemptAt).isEqualTo(NOW.plus(Duration.ofMinutes(4)));
         assertThat(channelRepository.error).isEqualTo(failure.getMessage());
+    }
+
+    @Test
+    void doesNotSchedulePollFailureAfterHeartbeatLosesLease() {
+        SourceTemporaryException failure = new SourceTemporaryException("Telegram unavailable");
+        sourceAdapter.failure = failure;
+        pollLeaseHeartbeat.lostOnStart = true;
+
+        channelProcessor.process(claim(ChannelOperation.POLL));
+
+        assertThat(channelRepository.failedOperation).isNull();
+        assertThat(meterRegistry.get("source_operations_total")
+            .tags("source", "telegram", "operation", "poll", "result", "stale_claim")
+            .counter().count()).isEqualTo(1);
     }
 
     @Test
@@ -174,6 +216,9 @@ class ChannelProcessorTest {
         assertThat(channelRepository.completedAccess).isEqualTo(result);
         assertThat(channelRepository.failedOperation).isNull();
         assertThat(messageRepository.pollResult).isNull();
+        assertThat(meterRegistry.get("source_operations_total")
+            .tags("source", "telegram", "operation", "access", "result", "stale_claim")
+            .counter().count()).isEqualTo(1);
     }
 
     private ChannelClaim claim(ChannelOperation operation) {
@@ -272,6 +317,9 @@ class ChannelProcessorTest {
         private UUID processingToken;
         private PollResult pollResult;
         private Instant nextPollAt;
+        private RecordingPollLeaseHeartbeat pollLeaseHeartbeat;
+        private boolean pollAccepted = true;
+        private boolean heartbeatOpenAtIngest;
 
         @Override
         public boolean ingestPoll(
@@ -284,7 +332,41 @@ class ChannelProcessorTest {
             this.processingToken = processingToken;
             this.pollResult = result;
             this.nextPollAt = nextPollAt;
-            return true;
+            heartbeatOpenAtIngest = pollLeaseHeartbeat != null
+                && pollLeaseHeartbeat.guard != null
+                && !pollLeaseHeartbeat.guard.closed;
+            return pollAccepted;
+        }
+
+    }
+
+    private static class RecordingPollLeaseHeartbeat extends PollLeaseHeartbeat {
+
+        private RecordingGuard guard;
+        private boolean lostOnStart;
+
+        @Override
+        public Guard start(ChannelClaim claim) {
+            guard = new RecordingGuard();
+            guard.lost = lostOnStart;
+            return guard;
+        }
+
+        private static class RecordingGuard implements Guard {
+
+            private boolean lost;
+            private boolean closed;
+
+            @Override
+            public boolean leaseLost() {
+                return lost;
+            }
+
+            @Override
+            public void close() {
+                closed = true;
+            }
+
         }
 
     }
@@ -332,7 +414,7 @@ class ChannelProcessorTest {
         }
 
         @Override
-        public ChannelResolution resolveChannel(URI sourceUri) {
+        public ChannelResolution resolveChannel(URI sourceUri, InitialImportMode initialImportMode) {
             throw new UnsupportedOperationException();
         }
 

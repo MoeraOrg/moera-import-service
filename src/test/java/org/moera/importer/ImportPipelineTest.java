@@ -25,12 +25,14 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.jooq.DSLContext;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.moera.importer.admin.AdministrationService;
 import org.moera.importer.application.ChannelProcessor;
 import org.moera.importer.application.PublicationBuilder;
 import org.moera.importer.application.PublicationMediaProcessor;
 import org.moera.importer.application.PublicationPayload;
 import org.moera.importer.application.PublicationProcessor;
 import org.moera.importer.application.SourceEventProcessor;
+import org.moera.importer.config.CreateRateProperties;
 import org.moera.importer.model.AccessState;
 import org.moera.importer.model.BodyFormat;
 import org.moera.importer.model.Destination;
@@ -43,6 +45,8 @@ import org.moera.importer.moera.MediaUpload;
 import org.moera.importer.moera.MoeraService;
 import org.moera.importer.moera.UploadedMedia;
 import org.moera.importer.persistence.ChannelRepository;
+import org.moera.importer.persistence.DestinationCreateSlot;
+import org.moera.importer.persistence.DestinationRepository;
 import org.moera.importer.persistence.JooqMappings;
 import org.moera.importer.persistence.PostgresIntegrationTest;
 import org.moera.importer.persistence.PublicationMediaClaim;
@@ -52,6 +56,7 @@ import org.moera.importer.source.AccessResult;
 import org.moera.importer.source.ChannelResolution;
 import org.moera.importer.source.ChannelSnapshot;
 import org.moera.importer.source.GroupingRelation;
+import org.moera.importer.source.InitialImportMode;
 import org.moera.importer.source.MediaSnapshot;
 import org.moera.importer.source.PollResult;
 import org.moera.importer.source.SourceAdapter;
@@ -67,10 +72,10 @@ import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Primary;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.moera.importer.persistence.jooq.enums.AccessState.GRANTED;
-import static org.moera.importer.persistence.jooq.enums.SubscriptionState.ACTIVE;
+import static org.moera.importer.admin.AdministrationModels.ChannelCreate;
 import static org.moera.importer.persistence.jooq.tables.Channels.CHANNELS;
 import static org.moera.importer.persistence.jooq.tables.Destinations.DESTINATIONS;
 import static org.moera.importer.persistence.jooq.tables.Media.MEDIA;
@@ -94,6 +99,9 @@ class ImportPipelineTest extends PostgresIntegrationTest {
     private static final String SECOND_MESSAGE_ID = "3";
     private static final String SHARED_PREVIEW_URL = "https://example.com/shared";
     private static final String CHANGED_PREVIEW_URL = "https://example.com/changed";
+
+    @Inject
+    private AdministrationService administrationService;
 
     @Inject
     private ChannelProcessor channelProcessor;
@@ -128,6 +136,9 @@ class ImportPipelineTest extends PostgresIntegrationTest {
     @Inject
     private PublicationRepository publicationRepository;
 
+    private final RecordingDestinationRepository recordingDestinationRepository =
+        new RecordingDestinationRepository();
+
     @Inject
     private SourceEventProcessor sourceEventProcessor;
 
@@ -143,17 +154,29 @@ class ImportPipelineTest extends PostgresIntegrationTest {
         dslContext.truncate(DESTINATIONS).restartIdentity().cascade().execute();
         fakeMoeraService.reset();
         fakeSourceAdapter.reset();
+        recordingDestinationRepository.reset();
         testClock.reset();
+        CreateRateProperties createRateProperties = new CreateRateProperties();
+        createRateProperties.setCount(10);
+        createRateProperties.setPeriod(Duration.ofMinutes(1));
+        ReflectionTestUtils.setField(
+            publicationProcessor, "createRateProperties", createRateProperties
+        );
+        ReflectionTestUtils.setField(
+            publicationProcessor, "destinationRepository", recordingDestinationRepository
+        );
     }
 
     @Test
     void importsAndSynchronizesCompletePublicationLifecycle() {
         PipelineIds ids = insertPipeline();
+        assertThat(fakeSourceAdapter.initialImportMode).isEqualTo(InitialImportMode.RECENT);
         SourceMessage first = firstMessage(false, SHARED_PREVIEW_URL, hash(1));
         SourceMessage second = secondMessage();
         fakeSourceAdapter.pollResult = new PollResult(
             List.of(first, second), objectNode().put("messageId", 3)
         );
+        assertThat(fakeSourceAdapter.pollResult.messages()).hasSizeLessThanOrEqualTo(20);
 
         channelProcessor.process(channelRepository.claimPolls(1, LEASE).getFirst());
 
@@ -185,6 +208,8 @@ class ImportPipelineTest extends PostgresIntegrationTest {
         processPublication();
 
         assertThat(publicationRevision()).containsExactly(0, 0);
+        assertThat(recordingDestinationRepository.acquisitions).isEqualTo(1);
+        assertThat(recordingDestinationRepository.interval).isEqualTo(Duration.ofSeconds(6));
         assertThat(fakeMoeraService.createdPayloads).singleElement().satisfies(payload -> {
             assertThat(payload.bodySrc().getLinkPreviews()).singleElement().satisfies(preview -> {
                 assertThat(preview.getUrl()).isEqualTo(SHARED_PREVIEW_URL);
@@ -218,6 +243,7 @@ class ImportPipelineTest extends PostgresIntegrationTest {
         processPublication();
 
         assertThat(publicationRevision()).containsExactly(1, 1);
+        assertThat(recordingDestinationRepository.acquisitions).isEqualTo(1);
         assertThat(fakeMoeraService.updatedPayloads.getFirst().bodySrc().getLinkPreviews())
             .extracting(preview -> preview.getUrl())
             .containsExactly(CHANGED_PREVIEW_URL, SHARED_PREVIEW_URL);
@@ -269,6 +295,7 @@ class ImportPipelineTest extends PostgresIntegrationTest {
             "story:story-1:false",
             "delete"
         );
+        assertThat(recordingDestinationRepository.acquisitions).isEqualTo(1);
     }
 
     @Test
@@ -279,15 +306,9 @@ class ImportPipelineTest extends PostgresIntegrationTest {
     }
 
     private PipelineIds insertPipeline() {
-        long channelId = dslContext.insertInto(CHANNELS)
-            .set(CHANNELS.SOURCE_TYPE, org.moera.importer.persistence.jooq.enums.SourceType.TELEGRAM)
-            .set(CHANNELS.SOURCE_ID, CHANNEL_SOURCE_ID)
-            .set(CHANNELS.SOURCE_URI, "https://t.me/channel-1")
-            .set(CHANNELS.ACCESS_STATE, GRANTED)
-            .set(CHANNELS.SUBSCRIPTION_STATE, ACTIVE)
-            .set(CHANNELS.NEXT_POLL_AT, NOW.minusSeconds(1).atOffset(ZoneOffset.UTC))
-            .returningResult(CHANNELS.ID)
-            .fetchSingle(CHANNELS.ID);
+        long channelId = administrationService.createChannel(new ChannelCreate(
+            SourceType.TELEGRAM, "https://t.me/channel-1", false
+        )).id();
         long destinationId = dslContext.insertInto(DESTINATIONS)
             .set(DESTINATIONS.NODE_NAME, "destination.example")
             .returningResult(DESTINATIONS.ID)
@@ -497,10 +518,12 @@ class ImportPipelineTest extends PostgresIntegrationTest {
 
         private PollResult pollResult;
         private final List<String> downloadedMedia = new ArrayList<>();
+        private InitialImportMode initialImportMode;
 
         void reset() {
             pollResult = null;
             downloadedMedia.clear();
+            initialImportMode = null;
         }
 
         @Override
@@ -509,7 +532,8 @@ class ImportPipelineTest extends PostgresIntegrationTest {
         }
 
         @Override
-        public ChannelResolution resolveChannel(URI sourceUri) {
+        public ChannelResolution resolveChannel(URI sourceUri, InitialImportMode initialImportMode) {
+            this.initialImportMode = initialImportMode;
             return new ChannelResolution(
                 CHANNEL_SOURCE_ID,
                 sourceUri,
@@ -572,6 +596,25 @@ class ImportPipelineTest extends PostgresIntegrationTest {
 
         @Override
         public void stop() {
+        }
+
+    }
+
+    static class RecordingDestinationRepository extends DestinationRepository {
+
+        private int acquisitions;
+        private Duration interval;
+
+        void reset() {
+            acquisitions = 0;
+            interval = null;
+        }
+
+        @Override
+        public DestinationCreateSlot acquireCreateSlot(long destinationId, Duration interval) {
+            acquisitions++;
+            this.interval = interval;
+            return new DestinationCreateSlot.Acquired();
         }
 
     }

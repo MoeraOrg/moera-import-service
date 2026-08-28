@@ -59,11 +59,20 @@ moera:
     inactive-polling-interval: ${TELEGRAM_INACTIVE_POLLING_INTERVAL:10m}
     look-behind-count: ${TELEGRAM_LOOK_BEHIND_COUNT:20}
     history-page-size: ${TELEGRAM_HISTORY_PAGE_SIZE:100}
+    initial-history-count: ${TELEGRAM_INITIAL_HISTORY_COUNT:20}
     readiness-timeout: ${TELEGRAM_READINESS_TIMEOUT:30s}
     login-timeout: ${TELEGRAM_LOGIN_TIMEOUT:10m}
+  delivery:
+    create-rate:
+      count: ${MOERA_CREATE_RATE_COUNT:10}
+      period: ${MOERA_CREATE_RATE_PERIOD:1m}
   workers:
     scheduling-enabled: true
     batch-size: 32
+    channel-concurrency: ${MOERA_CHANNEL_CONCURRENCY:2}
+    publication-builder-concurrency: ${MOERA_PUBLICATION_BUILDER_CONCURRENCY:2}
+    publication-media-concurrency: ${MOERA_PUBLICATION_MEDIA_CONCURRENCY:4}
+    publication-concurrency: ${MOERA_PUBLICATION_CONCURRENCY:4}
     channel-lease: 5m
     channel-schedule-interval: 1s
     publication-builder-schedule-interval: 1s

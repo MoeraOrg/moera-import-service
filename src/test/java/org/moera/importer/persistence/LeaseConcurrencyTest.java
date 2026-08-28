@@ -160,6 +160,82 @@ class LeaseConcurrencyTest extends PostgresIntegrationTest {
     }
 
     @Test
+    void matchingLivePollTokenExtendsLeaseWithoutChangingAttempts() {
+        insertDuePoll();
+        ChannelClaim claim = channelRepository.claimPolls(1, Duration.ofSeconds(30)).getFirst();
+        OffsetDateTime before = dslContext.selectFrom(CHANNELS).fetchSingle().getProcessingUntil();
+
+        boolean renewed = channelRepository.renewPollLease(
+            claim.channel().id(), claim.processingToken(), Duration.ofMinutes(5)
+        );
+
+        var channel = dslContext.selectFrom(CHANNELS).fetchSingle();
+        assertThat(renewed).isTrue();
+        assertThat(channel.getProcessingUntil()).isAfter(before);
+        assertThat(channel.getPollAttempts()).isEqualTo(claim.attempts());
+    }
+
+    @Test
+    void wrongPollTokenCannotRenewLease() {
+        insertDuePoll();
+        ChannelClaim claim = channelRepository.claimPolls(1, Duration.ofMinutes(5)).getFirst();
+        OffsetDateTime before = dslContext.selectFrom(CHANNELS).fetchSingle().getProcessingUntil();
+
+        boolean renewed = channelRepository.renewPollLease(
+            claim.channel().id(), UUID.randomUUID(), Duration.ofMinutes(10)
+        );
+
+        assertThat(renewed).isFalse();
+        assertThat(dslContext.selectFrom(CHANNELS).fetchSingle().getProcessingUntil()).isEqualTo(before);
+    }
+
+    @Test
+    void expiredPollLeaseCannotBeRenewed() {
+        insertDuePoll();
+        ChannelClaim claim = channelRepository.claimPolls(1, Duration.ofMinutes(5)).getFirst();
+        OffsetDateTime expired = OffsetDateTime.now(ZoneOffset.UTC)
+            .minusSeconds(1)
+            .truncatedTo(ChronoUnit.MICROS);
+        dslContext.update(CHANNELS)
+            .set(CHANNELS.PROCESSING_UNTIL, expired)
+            .execute();
+
+        boolean renewed = channelRepository.renewPollLease(
+            claim.channel().id(), claim.processingToken(), Duration.ofMinutes(10)
+        );
+
+        assertThat(renewed).isFalse();
+        assertThat(dslContext.selectFrom(CHANNELS).fetchSingle().getProcessingUntil()).isEqualTo(expired);
+    }
+
+    @Test
+    void concurrentReclaimCannotBeOverwrittenByOldRenewal() throws Exception {
+        insertDuePoll();
+        ChannelClaim oldClaim = channelRepository.claimPolls(1, Duration.ofMinutes(5)).getFirst();
+        dslContext.update(CHANNELS)
+            .set(CHANNELS.PROCESSING_UNTIL, OffsetDateTime.now(ZoneOffset.UTC).minusSeconds(1))
+            .execute();
+        CountDownLatch start = new CountDownLatch(1);
+
+        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            Future<Boolean> renewal = executor.submit(() -> {
+                start.await();
+                return channelRepository.renewPollLease(
+                    oldClaim.channel().id(), oldClaim.processingToken(), Duration.ofMinutes(10)
+                );
+            });
+            Future<List<ChannelClaim>> reclaim = executor.submit(() -> claimPoll(start));
+            start.countDown();
+
+            ChannelClaim newClaim = reclaim.get().getFirst();
+            assertThat(renewal.get()).isFalse();
+            var channel = dslContext.selectFrom(CHANNELS).fetchSingle();
+            assertThat(channel.getProcessingToken()).isEqualTo(newClaim.processingToken());
+            assertThat(channel.getProcessingUntil()).isAfter(OffsetDateTime.now(ZoneOffset.UTC));
+        }
+    }
+
+    @Test
     void accessLossInvalidatesLeaseAndRearmsDependentWork() {
         UUID token = UUID.randomUUID();
         insertExpiredPoll(token);

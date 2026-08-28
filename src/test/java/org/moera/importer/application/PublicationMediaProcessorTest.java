@@ -39,6 +39,7 @@ import org.moera.importer.source.AccessResult;
 import org.moera.importer.source.ChannelResolution;
 import org.moera.importer.source.ChannelSnapshot;
 import org.moera.importer.source.GroupingRelation;
+import org.moera.importer.source.InitialImportMode;
 import org.moera.importer.source.MediaSnapshot;
 import org.moera.importer.source.PollResult;
 import org.moera.importer.source.SourceAdapter;
@@ -459,7 +460,7 @@ class PublicationMediaProcessorTest {
         }
 
         @Override
-        public ChannelResolution resolveChannel(URI sourceUri) {
+        public ChannelResolution resolveChannel(URI sourceUri, InitialImportMode initialImportMode) {
             throw new UnsupportedOperationException();
         }
 

@@ -1,6 +1,5 @@
 package org.moera.importer.scheduling;
 
-import java.util.concurrent.ExecutorService;
 import jakarta.inject.Inject;
 
 import org.moera.importer.application.PublicationProcessor;
@@ -14,7 +13,7 @@ import org.springframework.stereotype.Component;
 public class PublicationScheduler {
 
     @Inject
-    private ExecutorService executorService;
+    private WorkerDispatcher workerDispatcher;
 
     @Inject
     private PublicationProcessor publicationProcessor;
@@ -33,9 +32,16 @@ public class PublicationScheduler {
         if (!startupCoordinator.claimsEnabled()) {
             return;
         }
-        publicationRepository.claimReady(
-            workerProperties.getBatchSize(), workerProperties.getPublicationLease()
-        ).forEach(claim -> executorService.submit(() -> publicationProcessor.process(claim)));
+        try (WorkerDispatcher.Reservation reservation = workerDispatcher.reserve(
+            WorkerWorkflow.PUBLICATION, workerProperties.getBatchSize()
+        )) {
+            if (reservation.capacity() == 0) {
+                return;
+            }
+            publicationRepository.claimReady(
+                reservation.capacity(), workerProperties.getPublicationLease()
+            ).forEach(claim -> reservation.dispatch(() -> publicationProcessor.process(claim)));
+        }
     }
 
 }

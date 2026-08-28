@@ -19,6 +19,7 @@ import it.tdlight.client.ParameterInfoPasswordHint;
 import it.tdlight.client.ParameterInfoTermsOfService;
 import it.tdlight.client.TDLibSettings;
 import it.tdlight.jni.TdApi;
+import org.springframework.util.ObjectUtils;
 
 final class TdLightAuthorization {
 
@@ -169,7 +170,7 @@ final class TdLightAuthorization {
     }
 
     private void register(String firstName, String lastName) {
-        if (firstName == null || firstName.isEmpty() || firstName.length() > 64) {
+        if (ObjectUtils.isEmpty(firstName) || firstName.length() > 64) {
             ready.completeExceptionally(new IllegalArgumentException("Invalid Telegram first name"));
         } else if (lastName == null || lastName.length() > 64) {
             ready.completeExceptionally(new IllegalArgumentException("Invalid Telegram last name"));

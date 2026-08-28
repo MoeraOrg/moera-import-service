@@ -2,6 +2,7 @@ package org.moera.importer.config;
 
 import java.nio.file.Path;
 import java.time.Duration;
+import jakarta.annotation.PostConstruct;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.stereotype.Component;
@@ -22,6 +23,7 @@ public class TelegramProperties {
     private Duration inactivePollingInterval = Duration.ofMinutes(10);
     private int lookBehindCount = 20;
     private int historyPageSize = 100;
+    private int initialHistoryCount = 20;
     private Duration readinessTimeout = Duration.ofSeconds(30);
     private Duration loginTimeout = Duration.ofMinutes(10);
 
@@ -121,6 +123,14 @@ public class TelegramProperties {
         this.historyPageSize = historyPageSize;
     }
 
+    public int getInitialHistoryCount() {
+        return initialHistoryCount;
+    }
+
+    public void setInitialHistoryCount(int initialHistoryCount) {
+        this.initialHistoryCount = initialHistoryCount;
+    }
+
     public Duration getReadinessTimeout() {
         return readinessTimeout;
     }
@@ -135,6 +145,13 @@ public class TelegramProperties {
 
     public void setLoginTimeout(Duration loginTimeout) {
         this.loginTimeout = loginTimeout;
+    }
+
+    @PostConstruct
+    void validate() {
+        if (initialHistoryCount <= 0) {
+            throw new IllegalStateException("Telegram initial history count must be positive");
+        }
     }
 
 }

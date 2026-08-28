@@ -1,7 +1,7 @@
 # Moera Import Service Architecture
 
 **Status:** Living design document  
-**Date:** 2026-08-27
+**Date:** 2026-08-28
 
 ## 1. Purpose
 
@@ -265,7 +265,12 @@ adapter can establish it reliably.
 ### 10.2 Initial scan
 
 `waterline = NULL` means that no successful initial forward scan has completed. The source adapter chooses the initial
-import scope.
+import scope. Channel creation supplies an `InitialImportMode` of `RECENT` or `FULL`; the source adapter persists and
+interprets that choice as source state. A missing or unrecognized choice is treated as `RECENT`.
+
+For Telegram, `RECENT` scans the newest configured number of unique Telegram messages and defaults to 20. Deliberately
+skipped messages count toward this scan boundary. `FULL` scans to the beginning of available history. The mode affects
+only a null-waterline initial scan; ordinary polling always uses the waterline and configured look-behind.
 
 ## 11. Message
 
@@ -426,7 +431,7 @@ Conceptually:
 public interface SourceAdapter {
     SourceType type();
 
-    ChannelResolution resolveChannel(URI sourceUri);
+    ChannelResolution resolveChannel(URI sourceUri, InitialImportMode initialImportMode);
 
     Duration groupingThreshold();
     Duration settlingDelay();
@@ -457,6 +462,9 @@ the supplied path; the adapter does not own staging lifecycle.
 state. The result may contain a null `sourceId` when an external service deliberately withholds stable identity until
 access is granted. `AccessResult` may later return a `resolvedSourceId`; the core persists it only if the channel has
 no source ID yet, and treats a conflicting later ID as a permanent consistency error.
+
+`InitialImportMode` carries the operator's requested initial scope without promoting a source cursor or Telegram
+pagination detail into the core. Each adapter stores and interprets the mode through its source state.
 
 ## 15. Live source events
 
@@ -509,11 +517,15 @@ id
 node_name varchar(135)
 config JSONB
 data JSONB
+next_create_at
 created_at
 updated_at
 ```
 
 `node_name` is unique.
+
+`next_create_at` is nullable durable rate state for new Moera postings. `NULL` means a create slot is available
+immediately. It does not limit updates, deletes, story changes, or media uploads.
 
 `config` is service-owned configuration. `data` is persistent Moera-adapter state. Secrets should preferably be
 referenced rather than embedded directly in JSONB.
@@ -1029,8 +1041,12 @@ processing_until timestamptz
 A completion update succeeds only if the token still matches. If a worker is delayed beyond its lease and another
 worker claims the row, the old worker cannot overwrite the newer result.
 
-The first implementation does not use heartbeat/lease renewal. External operations have hard timeouts and leases are
-configured with sufficient margin. Renewal can be added later if long uploads require it.
+Long-running channel polls renew their lease while they remain active. A heartbeat runs on a virtual thread at one
+third of the configured channel lease, and conditionally extends `processing_until` only while the channel operation
+is `POLL`, the token still matches, and the current lease has not expired. It remains active through atomic poll ingest.
+If renewal cannot succeed before the last known expiry, the poll is interrupted best-effort and its eventual result is
+still rejected by the token check. Access, subscription, publication-media, and publication work do not use heartbeat
+renewal.
 
 No `processing_owner` is stored; worker/instance identity belongs in structured logs together with the token.
 
@@ -1274,9 +1290,11 @@ Repositories are concrete classes and may implement atomic persistence operation
 example, `MessageRepository.ingest(...)` may, in one transaction, compare hashes/media, insert or update the message,
 synchronize its media rows, and increment the message revision when necessary.
 
-Schedulers are deliberately thin. They ask repositories to claim due work and hand claimed items to processors,
-normally running network/file work on Java virtual threads. `FOR UPDATE SKIP LOCKED`, lease creation, and conditional
-lease completion remain encapsulated in repositories.
+Schedulers are deliberately thin. Before querying or claiming work, each scheduler reserves local admission capacity
+for its workflow. It asks repositories for no more work than can start immediately and hands returned items to
+processors on Java virtual threads; unused reservation is released immediately and task capacity is released in
+`finally`. `FOR UPDATE SKIP LOCKED`, lease creation, renewal, and conditional lease completion remain encapsulated in
+repositories.
 
 `SourceAdapterRegistry` maps `SourceType` to the corresponding Spring-managed `SourceAdapter`, so application code does
 not switch on Telegram/RSS/Mastodon explicitly.
@@ -1292,8 +1310,10 @@ durable application state           -> PostgreSQL
 Telegram TDLight authorization state -> persistent filesystem volume
 ```
 
-Operational tuning such as worker batch sizes, lease durations, retry backoff, Telegram polling intervals, grouping
-threshold, settling delay, and look-behind size belongs in typed Spring `@ConfigurationProperties`, not in PostgreSQL.
+Operational tuning such as worker batch sizes, per-workflow concurrency, lease durations, retry backoff, destination
+create rate, Telegram polling intervals, grouping threshold, settling delay, initial-history count, and look-behind
+size belongs in typed Spring `@ConfigurationProperties`, not in PostgreSQL. Durable current rate position belongs in
+`destinations.next_create_at` so restart or another worker cannot reset it.
 
 ### 32.1 TDLight session storage
 
@@ -1422,6 +1442,10 @@ waterline.
 
 A short/partial TDLib history page is not by itself treated as proof that history has ended; pagination continues
 according to the adapter's scan rules.
+
+On a null waterline, the stored initial-import mode controls the scan boundary. `RECENT` stops after the configured
+number of unique source messages, defaulting to 20; `FULL` continues to the beginning of history. A missing mode is
+`RECENT`. Once a waterline exists, the mode is ignored.
 
 Polling absence is not considered proof of deletion. In the first version, look-behind primarily detects edits and
 fills gaps/new messages.
@@ -1674,7 +1698,7 @@ The initial architecture intentionally accepts:
 - Moera create-post idempotency is currently unavailable, so a rare ambiguous failure can create a duplicate after
   retry;
 - staging files are not shared across mirrors;
-- no lease heartbeat/renewal in the first implementation.
+- lease heartbeat is limited to long-running channel polls.
 
 ## 35. Planned source integrations
 
@@ -1778,6 +1802,9 @@ retries the claim through the repositories.
 A successful poll is committed through `MessageRepository.ingestPoll(...)`, preserving the invariant that the waterline
 advances only after the entire batch is stored successfully.
 
+A poll heartbeat conditionally renews the channel lease until `ingestPoll(...)` has returned. If that method rejects a
+stale token, the processor records `stale_claim`, not success.
+
 ### Live source events
 
 `SourceEventProcessor` implements `SourceEventSink` and persists normalized source events immediately through the
@@ -1848,6 +1875,12 @@ is non-empty, updates feed stories by story ID when effective pinning changes, d
 empty, and performs no external call when both the payload and `destination_post_id` are absent. In the latter case it
 simply marks `targetRevision` as published.
 
+Immediately before a non-empty first create, the processor atomically acquires the destination's durable create slot.
+The default rate is ten creates per minute per destination, represented as a six-second minimum interval. A future
+slot defers the publication to that timestamp, clears its lease, reverses the claim's attempt increment because no
+delivery attempt started, and records no failure. Acquiring a slot advances `destinations.next_create_at` before the
+network call, so temporary and outcome-unknown creates still consume the interval.
+
 ## 39. Staging files
 
 Staging paths are deterministic and derived from publication ID, media ID, and source hash, for example:
@@ -1887,6 +1920,13 @@ Two concurrency patterns are intentionally used:
   LOCKED`) and no lease.
 
 This keeps PostgreSQL transactions short while avoiding unnecessary job infrastructure.
+
+Local admission control bounds active work independently for channel, publication-builder, publication-media, and
+publication workflows. Defaults are 2, 2, 4, and 4 respectively. Capacity is reserved before a database claim, so a
+batch size is only a query ceiling and cannot create an unbounded in-memory task queue.
+
+PostgreSQL additionally coordinates channel poll renewal and the per-destination create rate. These correctness gates
+remain effective across workers even though workflow concurrency limits are local to the service process.
 
 ## 42. Testing strategy
 
@@ -2006,6 +2046,8 @@ poll_messages_found_total
 telegram_messages_skipped_total
 message_revisions_total
 lease_reclaims_total
+lease_renewals_total
+publication_rate_limited_total
 ```
 
 Backlog monitoring emphasizes age of overdue work rather than only queue size, for example oldest overdue
@@ -2101,7 +2143,8 @@ POST   /api/mirrors
 DELETE /api/mirrors/{channelId}/{destinationId}
 ```
 
-Channel creation accepts `sourceType` and `sourceUri`. It calls the matching `SourceAdapter.resolveChannel(...)`
+Channel creation accepts `sourceType`, `sourceUri`, and optional `fullHistory`, which defaults to false. It maps that
+flag to `InitialImportMode.RECENT` or `InitialImportMode.FULL` and calls the matching `SourceAdapter.resolveChannel(...)`
 before opening the insertion transaction, then persists the returned canonical URI, identity, JSONB state, access
 state, and subscription state. No PostgreSQL transaction is held across Telegram or another external source call.
 Newly created channels are scheduled immediately for every operation applicable to their resolved states. The initial
@@ -2121,4 +2164,5 @@ those postings removed must do so before deleting the importer configuration.
 
 A Python command-line client wraps exactly these operations. It uses the Python standard library, defaults to
 `http://127.0.0.1:8084`, and may select another loopback URL for local deployment. It does not implement authentication
-or accept raw Moera credentials.
+or accept raw Moera credentials. `channel add` accepts `--full-history`; without it Telegram imports only the recent
+configured initial count.

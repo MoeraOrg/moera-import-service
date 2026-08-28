@@ -1,6 +1,5 @@
 package org.moera.importer.scheduling;
 
-import java.util.concurrent.ExecutorService;
 import jakarta.inject.Inject;
 
 import org.moera.importer.application.PublicationMediaProcessor;
@@ -14,7 +13,7 @@ import org.springframework.stereotype.Component;
 public class PublicationMediaScheduler {
 
     @Inject
-    private ExecutorService executorService;
+    private WorkerDispatcher workerDispatcher;
 
     @Inject
     private PublicationMediaProcessor publicationMediaProcessor;
@@ -33,9 +32,16 @@ public class PublicationMediaScheduler {
         if (!startupCoordinator.claimsEnabled()) {
             return;
         }
-        publicationMediaRepository.claimPending(
-            workerProperties.getBatchSize(), workerProperties.getPublicationMediaLease()
-        ).forEach(claim -> executorService.submit(() -> publicationMediaProcessor.process(claim)));
+        try (WorkerDispatcher.Reservation reservation = workerDispatcher.reserve(
+            WorkerWorkflow.PUBLICATION_MEDIA, workerProperties.getBatchSize()
+        )) {
+            if (reservation.capacity() == 0) {
+                return;
+            }
+            publicationMediaRepository.claimPending(
+                reservation.capacity(), workerProperties.getPublicationMediaLease()
+            ).forEach(claim -> reservation.dispatch(() -> publicationMediaProcessor.process(claim)));
+        }
     }
 
 }

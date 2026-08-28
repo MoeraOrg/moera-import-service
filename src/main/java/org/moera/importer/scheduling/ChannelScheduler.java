@@ -1,7 +1,6 @@
 package org.moera.importer.scheduling;
 
 import java.util.List;
-import java.util.concurrent.ExecutorService;
 import jakarta.inject.Inject;
 
 import org.moera.importer.application.ChannelProcessor;
@@ -23,7 +22,7 @@ public class ChannelScheduler {
     private ChannelRepository channelRepository;
 
     @Inject
-    private ExecutorService executorService;
+    private WorkerDispatcher workerDispatcher;
 
     @Inject
     private WorkerProperties workerProperties;
@@ -39,27 +38,40 @@ public class ChannelScheduler {
         if (!startupCoordinator.claimsEnabled() || !telegramRuntime.channelWorkReady()) {
             return;
         }
-        int remaining = workerProperties.getBatchSize();
-        List<ChannelClaim> accessClaims = channelRepository.claimAccess(
-            remaining, workerProperties.getChannelLease()
-        );
-        dispatch(accessClaims);
-        remaining -= accessClaims.size();
+        try (WorkerDispatcher.Reservation reservation = workerDispatcher.reserve(
+            WorkerWorkflow.CHANNEL, workerProperties.getBatchSize()
+        )) {
+            int remaining = reservation.capacity();
+            if (remaining == 0) {
+                return;
+            }
+            List<ChannelClaim> accessClaims = channelRepository.claimAccess(
+                remaining, workerProperties.getChannelLease()
+            );
+            dispatch(accessClaims, reservation);
+            remaining -= accessClaims.size();
 
-        List<ChannelClaim> subscriptionClaims = channelRepository.claimSubscriptions(
-            remaining, workerProperties.getChannelLease()
-        );
-        dispatch(subscriptionClaims);
-        remaining -= subscriptionClaims.size();
+            if (remaining == 0) {
+                return;
+            }
+            List<ChannelClaim> subscriptionClaims = channelRepository.claimSubscriptions(
+                remaining, workerProperties.getChannelLease()
+            );
+            dispatch(subscriptionClaims, reservation);
+            remaining -= subscriptionClaims.size();
 
-        List<ChannelClaim> pollClaims = channelRepository.claimPolls(
-            remaining, workerProperties.getChannelLease()
-        );
-        dispatch(pollClaims);
+            if (remaining == 0) {
+                return;
+            }
+            List<ChannelClaim> pollClaims = channelRepository.claimPolls(
+                remaining, workerProperties.getChannelLease()
+            );
+            dispatch(pollClaims, reservation);
+        }
     }
 
-    private void dispatch(List<ChannelClaim> claims) {
-        claims.forEach(claim -> executorService.submit(() -> channelProcessor.process(claim)));
+    private void dispatch(List<ChannelClaim> claims, WorkerDispatcher.Reservation reservation) {
+        claims.forEach(claim -> reservation.dispatch(() -> channelProcessor.process(claim)));
     }
 
 }

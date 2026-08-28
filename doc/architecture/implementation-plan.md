@@ -1595,3 +1595,22 @@ python3 scripts/moera-import-admin --help
 git add doc scripts src/main src/test
 git commit -m "feat: add local administration API"
 ```
+
+---
+
+### Task 15: Bound import concurrency, renew poll leases, and pace initial delivery
+
+**Spec:** `doc/architecture/import-flow-control-design.md`
+
+**Detailed executable plan:** `doc/architecture/import-flow-control-implementation-plan.md`
+
+The detailed plan is authoritative for exact files, interfaces, RED/GREEN commands, and commit boundaries. Execute its
+tasks in order:
+
+- [x] **Step 1:** Add bounded and full Telegram initial-import modes.
+- [x] **Step 2:** Expose full-history opt-in through the localhost API and CLI.
+- [x] **Step 3:** Add per-workflow admission control before claims.
+- [x] **Step 4:** Renew active poll leases and report stale completion.
+- [x] **Step 5:** Add durable per-destination create slots through Flyway and jOOQ.
+- [x] **Step 6:** Apply the create rate gate only to first-post creation.
+- [x] **Step 7:** Document operation, cross-check the pipeline, and run `./mvnw clean verify`.

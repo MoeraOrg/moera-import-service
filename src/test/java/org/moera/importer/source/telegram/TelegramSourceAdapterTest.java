@@ -26,6 +26,7 @@ import org.moera.importer.model.SubscriptionState;
 import org.moera.importer.observability.ImportMetrics;
 import org.moera.importer.source.ChannelResolution;
 import org.moera.importer.source.ChannelSnapshot;
+import org.moera.importer.source.InitialImportMode;
 import org.moera.importer.source.SourcePermanentException;
 import org.moera.importer.source.SourceTemporaryException;
 import org.moera.importer.source.SourceEvent;
@@ -67,7 +68,7 @@ class TelegramSourceAdapterTest {
         client.publicChannel = new TelegramClient.Channel(-1001234567890L, "News");
         client.membership = TelegramClient.Membership.INACTIVE;
 
-        ChannelResolution result = adapter.resolveChannel(URI.create("https://t.me/news"));
+        ChannelResolution result = adapter.resolveChannel(URI.create("https://t.me/news"), InitialImportMode.RECENT);
 
         assertThat(result.sourceId()).isEqualTo("-1001234567890");
         assertThat(result.sourceUri()).isEqualTo(URI.create("https://t.me/news"));
@@ -81,7 +82,7 @@ class TelegramSourceAdapterTest {
         client.publicChannel = new TelegramClient.Channel(-1001234567890L, "News");
         client.membership = TelegramClient.Membership.ACTIVE;
 
-        ChannelResolution result = adapter.resolveChannel(URI.create("https://t.me/news"));
+        ChannelResolution result = adapter.resolveChannel(URI.create("https://t.me/news"), InitialImportMode.RECENT);
 
         assertThat(result.subscriptionState()).isEqualTo(SubscriptionState.ACTIVE);
     }
@@ -91,7 +92,7 @@ class TelegramSourceAdapterTest {
         client.publicChannel = new TelegramClient.Channel(-1001234567890L, "News");
         client.membership = TelegramClient.Membership.INACTIVE;
 
-        ChannelResolution result = adapter.resolveChannel(URI.create("news"));
+        ChannelResolution result = adapter.resolveChannel(URI.create("news"), InitialImportMode.RECENT);
 
         assertThat(client.resolvedUsername).isEqualTo("news");
         assertThat(result.sourceUri()).isEqualTo(URI.create("https://t.me/news"));
@@ -102,7 +103,9 @@ class TelegramSourceAdapterTest {
         client.publicChannel = new TelegramClient.Channel(-1001234567890L, "News");
         client.membership = TelegramClient.Membership.INACTIVE;
 
-        ChannelResolution result = adapter.resolveChannel(URI.create("tg://resolve?domain=news"));
+        ChannelResolution result = adapter.resolveChannel(
+            URI.create("tg://resolve?domain=news"), InitialImportMode.RECENT
+        );
 
         assertThat(client.resolvedUsername).isEqualTo("news");
         assertThat(result.sourceUri()).isEqualTo(URI.create("https://t.me/news"));
@@ -112,7 +115,9 @@ class TelegramSourceAdapterTest {
     void canonicalizesTelegramInviteDeepLinkBeforeInspection() {
         client.invite = new TelegramClient.Invite(0, "Private channel", true);
 
-        ChannelResolution result = adapter.resolveChannel(URI.create("tg://join?invite=secret"));
+        ChannelResolution result = adapter.resolveChannel(
+            URI.create("tg://join?invite=secret"), InitialImportMode.RECENT
+        );
 
         assertThat(client.inspectedInviteLink).isEqualTo("https://t.me/+secret");
         assertThat(result.sourceUri()).isEqualTo(URI.create("https://t.me/+secret"));
@@ -120,7 +125,9 @@ class TelegramSourceAdapterTest {
 
     @Test
     void rejectsNonTelegramHostsWithoutCallingTelegram() {
-        assertThatThrownBy(() -> adapter.resolveChannel(URI.create("https://example.com/news")))
+        assertThatThrownBy(() -> adapter.resolveChannel(
+            URI.create("https://example.com/news"), InitialImportMode.RECENT
+        ))
             .isInstanceOf(SourcePermanentException.class)
             .hasMessageContaining("Invalid Telegram channel URI");
         assertThat(client.resolvedUsername).isNull();
@@ -130,11 +137,25 @@ class TelegramSourceAdapterTest {
     void keepsPrivateInviteUnresolvedWhenTelegramDoesNotExposeChatId() {
         client.invite = new TelegramClient.Invite(0, "Private channel", true);
 
-        ChannelResolution result = adapter.resolveChannel(URI.create("https://t.me/+secret"));
+        ChannelResolution result = adapter.resolveChannel(
+            URI.create("https://t.me/+secret"), InitialImportMode.RECENT
+        );
 
         assertThat(result.sourceId()).isNull();
         assertThat(result.sourceData().path("inviteLink").asText()).isEqualTo("https://t.me/+secret");
         assertThat(result.accessState()).isEqualTo(AccessState.UNKNOWN);
+    }
+
+    @Test
+    void channelResolutionPersistsRequestedInitialImportMode() {
+        client.publicChannel = new TelegramClient.Channel(-1001234567890L, "News");
+        client.membership = TelegramClient.Membership.INACTIVE;
+
+        ChannelResolution result = adapter.resolveChannel(
+            URI.create("https://t.me/news"), InitialImportMode.FULL
+        );
+
+        assertThat(result.sourceData().path("initialImportMode").asText()).isEqualTo("FULL");
     }
 
     @Test

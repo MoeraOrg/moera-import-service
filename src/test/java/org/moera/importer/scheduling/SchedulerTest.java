@@ -9,6 +9,7 @@ import java.util.concurrent.AbstractExecutorService;
 import java.util.concurrent.TimeUnit;
 
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
 import org.moera.importer.application.ChannelProcessor;
 import org.moera.importer.application.PublicationBuilder;
@@ -20,6 +21,7 @@ import org.moera.importer.model.AccessState;
 import org.moera.importer.model.ChannelOperation;
 import org.moera.importer.model.SourceType;
 import org.moera.importer.model.SubscriptionState;
+import org.moera.importer.observability.ImportMetrics;
 import org.moera.importer.persistence.ChannelClaim;
 import org.moera.importer.persistence.ChannelRepository;
 import org.moera.importer.persistence.MirrorRepository;
@@ -47,23 +49,21 @@ class SchedulerTest {
         when(telegramRuntime.channelWorkReady()).thenReturn(true);
         ReflectionTestUtils.setField(channelScheduler, "channelProcessor", channelProcessor);
         ReflectionTestUtils.setField(channelScheduler, "channelRepository", channelRepository);
-        ReflectionTestUtils.setField(channelScheduler, "executorService", new DirectExecutorService());
         ReflectionTestUtils.setField(channelScheduler, "workerProperties", workerProperties);
         ReflectionTestUtils.setField(channelScheduler, "telegramRuntime", telegramRuntime);
+        dispatcher(channelScheduler, workerProperties);
         ready(channelScheduler);
 
         channelScheduler.run();
 
         assertThat(channelRepository.requestedOperations).containsExactly(
             ChannelOperation.ACCESS,
-            ChannelOperation.SUBSCRIPTION,
-            ChannelOperation.POLL
+            ChannelOperation.SUBSCRIPTION
         );
-        assertThat(channelRepository.requestedLimits).containsExactly(3, 2, 1);
+        assertThat(channelRepository.requestedLimits).containsExactly(2, 1);
         assertThat(channelProcessor.processedOperations).containsExactly(
             ChannelOperation.ACCESS,
-            ChannelOperation.SUBSCRIPTION,
-            ChannelOperation.POLL
+            ChannelOperation.SUBSCRIPTION
         );
     }
 
@@ -103,15 +103,16 @@ class SchedulerTest {
         RecordingMirrorRepository mirrorRepository = new RecordingMirrorRepository();
         RecordingPublicationBuilder publicationBuilder = new RecordingPublicationBuilder();
         PublicationBuilderScheduler scheduler = new PublicationBuilderScheduler();
-        ReflectionTestUtils.setField(scheduler, "executorService", new DirectExecutorService());
         ReflectionTestUtils.setField(scheduler, "mirrorRepository", mirrorRepository);
         ReflectionTestUtils.setField(scheduler, "publicationBuilder", publicationBuilder);
-        ReflectionTestUtils.setField(scheduler, "workerProperties", properties());
+        WorkerProperties workerProperties = properties();
+        ReflectionTestUtils.setField(scheduler, "workerProperties", workerProperties);
+        dispatcher(scheduler, workerProperties);
         ready(scheduler);
 
         scheduler.run();
 
-        assertThat(mirrorRepository.requestedLimit).isEqualTo(3);
+        assertThat(mirrorRepository.requestedLimit).isEqualTo(2);
         assertThat(publicationBuilder.mirrorIds).containsExactly(7L, 9L);
     }
 
@@ -124,15 +125,15 @@ class SchedulerTest {
         WorkerProperties workerProperties = properties();
         workerProperties.setPublicationMediaLease(Duration.ofMinutes(7));
         PublicationMediaScheduler scheduler = new PublicationMediaScheduler();
-        ReflectionTestUtils.setField(scheduler, "executorService", new DirectExecutorService());
         ReflectionTestUtils.setField(scheduler, "publicationMediaProcessor", publicationMediaProcessor);
         ReflectionTestUtils.setField(scheduler, "publicationMediaRepository", publicationMediaRepository);
         ReflectionTestUtils.setField(scheduler, "workerProperties", workerProperties);
+        dispatcher(scheduler, workerProperties);
         ready(scheduler);
 
         scheduler.run();
 
-        assertThat(publicationMediaRepository.requestedLimit).isEqualTo(3);
+        assertThat(publicationMediaRepository.requestedLimit).isEqualTo(4);
         assertThat(publicationMediaRepository.requestedLease).isEqualTo(Duration.ofMinutes(7));
         assertThat(publicationMediaProcessor.mediaIds).containsExactly(23L, 29L);
     }
@@ -144,24 +145,55 @@ class SchedulerTest {
         WorkerProperties workerProperties = properties();
         workerProperties.setPublicationLease(Duration.ofMinutes(9));
         PublicationScheduler scheduler = new PublicationScheduler();
-        ReflectionTestUtils.setField(scheduler, "executorService", new DirectExecutorService());
         ReflectionTestUtils.setField(scheduler, "publicationProcessor", publicationProcessor);
         ReflectionTestUtils.setField(scheduler, "publicationRepository", publicationRepository);
         ReflectionTestUtils.setField(scheduler, "workerProperties", workerProperties);
+        dispatcher(scheduler, workerProperties);
         ready(scheduler);
 
         scheduler.run();
 
-        assertThat(publicationRepository.requestedLimit).isEqualTo(3);
+        assertThat(publicationRepository.requestedLimit).isEqualTo(4);
         assertThat(publicationRepository.requestedLease).isEqualTo(Duration.ofMinutes(9));
         assertThat(publicationProcessor.publicationIds).containsExactly(31L, 37L);
     }
 
+    @Test
+    void schedulerDoesNotClaimWorkWhenWorkflowCapacityIsExhausted() {
+        RecordingPublicationRepository publicationRepository = new RecordingPublicationRepository();
+        PublicationScheduler scheduler = new PublicationScheduler();
+        WorkerProperties workerProperties = properties();
+        ReflectionTestUtils.setField(scheduler, "publicationRepository", publicationRepository);
+        ReflectionTestUtils.setField(scheduler, "workerProperties", workerProperties);
+        WorkerDispatcher workerDispatcher = dispatcher(scheduler, workerProperties);
+        ready(scheduler);
+
+        try (WorkerDispatcher.Reservation ignored = workerDispatcher.reserve(
+            WorkerWorkflow.PUBLICATION, workerProperties.getBatchSize()
+        )) {
+            scheduler.run();
+        }
+
+        assertThat(publicationRepository.claimInvocations).isZero();
+    }
+
     private WorkerProperties properties() {
         WorkerProperties properties = new WorkerProperties();
-        properties.setBatchSize(3);
+        properties.setBatchSize(10);
         properties.setChannelLease(Duration.ofMinutes(5));
         return properties;
+    }
+
+    private WorkerDispatcher dispatcher(Object scheduler, WorkerProperties workerProperties) {
+        ImportMetrics importMetrics = new ImportMetrics();
+        ReflectionTestUtils.setField(importMetrics, "meterRegistry", new SimpleMeterRegistry());
+        WorkerDispatcher workerDispatcher = new WorkerDispatcher();
+        ReflectionTestUtils.setField(workerDispatcher, "executorService", new DirectExecutorService());
+        ReflectionTestUtils.setField(workerDispatcher, "workerProperties", workerProperties);
+        ReflectionTestUtils.setField(workerDispatcher, "importMetrics", importMetrics);
+        workerDispatcher.initialize();
+        ReflectionTestUtils.setField(scheduler, "workerDispatcher", workerDispatcher);
+        return workerDispatcher;
     }
 
     private void ready(Object scheduler) {
@@ -280,9 +312,11 @@ class SchedulerTest {
 
         private int requestedLimit;
         private Duration requestedLease;
+        private int claimInvocations;
 
         @Override
         public List<PublicationClaim> claimReady(int limit, Duration lease) {
+            claimInvocations++;
             requestedLimit = limit;
             requestedLease = lease;
             return List.of(

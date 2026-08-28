@@ -26,7 +26,10 @@ import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
 
 import static org.jooq.impl.DSL.coalesce;
+import static org.jooq.impl.DSL.currentOffsetDateTime;
+import static org.jooq.impl.DSL.field;
 import static org.jooq.impl.DSL.trueCondition;
+import static org.jooq.impl.DSL.val;
 import static org.moera.importer.persistence.jooq.tables.Channels.CHANNELS;
 
 @Repository
@@ -142,6 +145,27 @@ public class ChannelRepository {
                 CHANNELS.ACCESS_STATE.eq(org.moera.importer.persistence.jooq.enums.AccessState.GRANTED)
             )
         );
+    }
+
+    public boolean renewPollLease(long channelId, UUID token, Duration lease) {
+        if (lease.isZero() || lease.isNegative()) {
+            throw new IllegalArgumentException("lease must be positive");
+        }
+        int updated = dslContext.update(CHANNELS)
+            .set(CHANNELS.PROCESSING_UNTIL, field(
+                "current_timestamp + ({0} * interval '1 millisecond')",
+                OffsetDateTime.class,
+                val(lease.toMillis())
+            ))
+            .set(CHANNELS.UPDATED_AT, currentOffsetDateTime())
+            .where(CHANNELS.ID.eq(channelId))
+            .and(CHANNELS.PROCESSING_OPERATION.eq(
+                org.moera.importer.persistence.jooq.enums.ChannelOperation.POLL
+            ))
+            .and(CHANNELS.PROCESSING_TOKEN.eq(token))
+            .and(CHANNELS.PROCESSING_UNTIL.gt(currentOffsetDateTime()))
+            .execute();
+        return updated == 1;
     }
 
     public boolean completeAccess(long channelId, UUID token, AccessResult result) {

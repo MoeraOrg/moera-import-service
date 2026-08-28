@@ -8,6 +8,7 @@ import jakarta.inject.Inject;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import org.moera.importer.config.CreateRateProperties;
 import org.moera.importer.moera.CreatedPosting;
 import org.moera.importer.moera.MoeraConfigurationException;
 import org.moera.importer.moera.MoeraOutcomeUnknownException;
@@ -15,6 +16,8 @@ import org.moera.importer.moera.MoeraPermanentException;
 import org.moera.importer.moera.MoeraService;
 import org.moera.importer.moera.MoeraTemporaryException;
 import org.moera.importer.observability.ImportMetrics;
+import org.moera.importer.persistence.DestinationCreateSlot;
+import org.moera.importer.persistence.DestinationRepository;
 import org.moera.importer.persistence.PublicationClaim;
 import org.moera.importer.persistence.PublicationContext;
 import org.moera.importer.persistence.PublicationRepository;
@@ -30,6 +33,12 @@ public class PublicationProcessor {
 
     @Inject
     private Clock clock;
+
+    @Inject
+    private CreateRateProperties createRateProperties;
+
+    @Inject
+    private DestinationRepository destinationRepository;
 
     @Inject
     private MoeraService moeraService;
@@ -95,6 +104,19 @@ public class PublicationProcessor {
                 JsonNodeFactory.instance.objectNode()
             );
             complete(claim, "deleted", completed);
+            return;
+        }
+        DestinationCreateSlot slot = destinationRepository.acquireCreateSlot(
+            context.destination().id(), createRateProperties.interval()
+        );
+        if (slot instanceof DestinationCreateSlot.Deferred(Instant retryAt)) {
+            boolean accepted = publicationRepository.deferCreateRate(
+                claim.publicationId(), claim.processingToken(), retryAt
+            );
+            if (accepted) {
+                importMetrics.publicationRateLimited();
+            }
+            log(claim, accepted ? "rate_limited" : "stale_claim");
             return;
         }
         CreatedPosting created = moeraService.createPost(context.destination(), payload);

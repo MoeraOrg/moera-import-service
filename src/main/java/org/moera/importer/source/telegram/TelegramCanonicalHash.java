@@ -11,6 +11,7 @@ import java.util.Locale;
 import com.fasterxml.jackson.databind.JsonNode;
 import it.tdlight.jni.TdApi;
 import org.moera.importer.application.Sha256;
+import org.springframework.util.ObjectUtils;
 
 public final class TelegramCanonicalHash {
 
@@ -42,7 +43,7 @@ public final class TelegramCanonicalHash {
         return digest(output -> {
             String uniqueId = file != null && file.remote != null ? file.remote.uniqueId : null;
             String remoteId = file != null && file.remote != null ? file.remote.id : null;
-            writeString(output, uniqueId == null || uniqueId.isEmpty() ? remoteId : uniqueId);
+            writeString(output, ObjectUtils.isEmpty(uniqueId) ? remoteId : uniqueId);
             writeJson(output, normalizedSourceData);
         });
     }
@@ -213,7 +214,7 @@ public final class TelegramCanonicalHash {
             writeString(output, null);
             return;
         }
-        writeString(output, file.remote.uniqueId == null || file.remote.uniqueId.isEmpty()
+        writeString(output, ObjectUtils.isEmpty(file.remote.uniqueId)
             ? file.remote.id
             : file.remote.uniqueId);
     }
