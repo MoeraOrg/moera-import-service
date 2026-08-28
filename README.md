@@ -23,3 +23,9 @@ The local server listens on port `8084`; remote debugging listens on port `5006`
 See [Operational guide](doc/operations.md) for production configuration, Telegram login, Moera credentials, database
 provisioning, health checks, and opt-in smoke procedures. The canonical design is in
 [Architecture](doc/architecture/import-service.md).
+
+After the daemon is running, administer channels, Moera destinations, and mirrors through the host-local CLI:
+
+```bash
+./scripts/moera-import-admin --help
+```

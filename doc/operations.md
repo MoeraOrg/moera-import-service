@@ -226,41 +226,15 @@ MOERA_ADMIN_TOKEN=replace-with-the-token-value-not-its-id
 
 ### Create the destination and mirror
 
-There is no management API in the initial implementation. Provision the target Moera node, Telegram source, and their
-mirror in one database transaction. Replace the source URI, registered node name, credential reference, and feed names:
+After starting the normal daemon with Telegram enabled and its saved session ready, use the host-local administration
+CLI. Replace the source URI, registered node name, and credential reference:
 
-```sql
-BEGIN;
-
-WITH new_channel AS (
-    INSERT INTO channels (
-        source_type,
-        source_uri,
-        access_state,
-        access_retry_at,
-        subscription_state,
-        subscription_retry_at,
-        next_poll_at
-    ) VALUES (
-        'TELEGRAM',
-        'https://t.me/example_channel',
-        'UNKNOWN',
-        now(),
-        'INACTIVE',
-        now(),
-        now()
-    )
-    RETURNING id
-), new_destination AS (
-    INSERT INTO destinations (node_name, config)
-    VALUES ('my-node-name', '{"credentialRef":"env:MOERA_ADMIN_TOKEN"}'::jsonb)
-    RETURNING id
-)
-INSERT INTO mirrors (channel_id, destination_id, config)
-SELECT new_channel.id, new_destination.id, '{"feeds":["timeline"]}'::jsonb
-FROM new_channel, new_destination;
-
-COMMIT;
+```bash
+./scripts/moera-import-admin channel add https://t.me/example_channel
+./scripts/moera-import-admin destination add my-node-name env:MOERA_ADMIN_TOKEN
+./scripts/moera-import-admin channel list
+./scripts/moera-import-admin destination list
+./scripts/moera-import-admin mirror add 1 1 --feed timeline
 ```
 
 This creates three related objects:
@@ -275,11 +249,44 @@ single destination may likewise receive several Telegram channels through separa
 `(channel_id, destination_id)` constraint permits only one mirror for a particular pair.
 
 For a private Telegram source, `source_uri` may be a Telegram invite link. Treat it as a secret and do not log or copy
-it into diagnostics.
+it into diagnostics. It will be visible in the local `channel list` output, so run the CLI only in a trusted terminal.
 
-After starting the daemon, use the following query to check resolution, polling, and delivery. `source_id` becomes
-non-null after Telegram resolves the source; a successfully delivered publication has equal revisions and a non-null
-post ID:
+The CLI defaults to `http://127.0.0.1:8084`. A different loopback listener can be selected before the resource command:
+
+```bash
+./scripts/moera-import-admin --url http://127.0.0.1:9084 channel list
+```
+
+The underlying unauthenticated API rejects peers whose socket address is not loopback. Do not expose `/api` through a
+reverse proxy. Binding the whole application to loopback with `SERVER_ADDRESS=127.0.0.1` remains recommended.
+
+The available delete commands are:
+
+```bash
+./scripts/moera-import-admin mirror delete 1 1
+./scripts/moera-import-admin channel delete 1
+./scripts/moera-import-admin destination delete 1
+```
+
+They prompt before deletion; use `--yes` only in trusted automation. Deleting a channel or destination cascades through
+its importer state. Deleting any of these resources does not contact Moera and does not remove postings that were
+already delivered.
+
+For direct integrations, the CLI wraps this JSON API:
+
+```text
+GET    /api/channels
+POST   /api/channels
+DELETE /api/channels/{channelId}
+GET    /api/destinations
+POST   /api/destinations
+DELETE /api/destinations/{destinationId}
+POST   /api/mirrors
+DELETE /api/mirrors/{channelId}/{destinationId}
+```
+
+Use the following query for detailed polling and delivery diagnostics. A successfully delivered publication has equal
+revisions and a non-null post ID:
 
 ```sql
 SELECT

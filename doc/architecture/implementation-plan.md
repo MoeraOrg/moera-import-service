@@ -1532,3 +1532,66 @@ obtain approval rather than silently changing semantics.
 git add README.md doc src/test/java/org/moera/importer/ImportPipelineTest.java
 git commit -m "test: verify complete import pipeline"
 ```
+
+---
+
+### Task 14: Add the host-local administration API and Python CLI
+
+**Files:**
+- Create: `src/main/java/org/moera/importer/admin/*`
+- Modify: `src/main/java/org/moera/importer/persistence/ChannelRepository.java`
+- Modify: `src/main/java/org/moera/importer/persistence/DestinationRepository.java`
+- Modify: `src/main/java/org/moera/importer/persistence/MirrorRepository.java`
+- Create: `src/test/java/org/moera/importer/admin/AdministrationApiTest.java`
+- Create: `scripts/moera-import-admin`
+- Modify: `doc/operations.md`
+
+**Interfaces:**
+- Produces: CRUD-style channel/destination/mirror configuration endpoints described in architecture section 45.
+- Consumes: `SourceAdapterRegistry`, existing concrete repositories, Flyway-defined tables, and Spring MVC.
+
+- [x] **Step 1: Write the end-to-end API test**
+
+Use Spring Boot on a random port with Testcontainers PostgreSQL and a fake `SourceAdapter`. Cover all eight operations,
+canonical channel resolution, scheduler timestamps, destination/mirror JSONB configuration, cascade deletion,
+duplicates, missing resources, invalid requests, and loopback-only request enforcement.
+
+- [x] **Step 2: Run the API test and verify it fails**
+
+```bash
+./mvnw -Dtest=AdministrationApiTest test
+```
+
+Expected: FAIL because the administration endpoints do not exist.
+
+- [x] **Step 3: Implement repository mutations and the application service**
+
+Resolve a channel through its source adapter before repository insertion. Keep the external call outside database
+transactions. Add explicit concrete-repository list/create/delete methods; do not expose jOOQ types outside the
+persistence layer or add repository interfaces.
+
+- [x] **Step 4: Implement the REST boundary and localhost guard**
+
+Use immutable request/response records with validation. Map invalid input to 400, missing rows to 404, duplicates to
+409, and successful deletion to 204. Reject `/api/**` calls from non-loopback peer addresses with 403. Do not log
+request bodies, source URIs, credential references, or secrets.
+
+- [x] **Step 5: Implement the standard-library Python CLI**
+
+Add channel list/add/delete, destination list/add/delete, and mirror add/delete commands. Default to the loopback URL,
+render list output for an operator, and surface structured API errors without printing request bodies.
+
+- [x] **Step 6: Document usage and run verification**
+
+```bash
+./mvnw -Dtest=AdministrationApiTest test
+python3 scripts/moera-import-admin --help
+./mvnw clean verify
+```
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add doc scripts src/main src/test
+git commit -m "feat: add local administration API"
+```

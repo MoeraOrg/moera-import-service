@@ -4,8 +4,10 @@ import java.util.List;
 import java.util.Optional;
 import jakarta.inject.Inject;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import org.jooq.DSLContext;
 import org.moera.importer.model.Mirror;
+import org.moera.importer.persistence.jooq.tables.records.MirrorsRecord;
 import org.springframework.stereotype.Repository;
 
 import static org.jooq.impl.DSL.exists;
@@ -50,6 +52,23 @@ public class MirrorRepository {
             .skipLocked()
             .fetchOptional()
             .map(jooqMappings::mirror);
+    }
+
+    public Mirror create(long channelId, long destinationId, JsonNode config) {
+        MirrorsRecord record = dslContext.insertInto(MIRRORS)
+            .set(MIRRORS.CHANNEL_ID, channelId)
+            .set(MIRRORS.DESTINATION_ID, destinationId)
+            .set(MIRRORS.CONFIG, jooqMappings.json(config))
+            .returning()
+            .fetchSingle();
+        return jooqMappings.mirror(record);
+    }
+
+    public boolean delete(long channelId, long destinationId) {
+        return dslContext.deleteFrom(MIRRORS)
+            .where(MIRRORS.CHANNEL_ID.eq(channelId))
+            .and(MIRRORS.DESTINATION_ID.eq(destinationId))
+            .execute() == 1;
     }
 
 }

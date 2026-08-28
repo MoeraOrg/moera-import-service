@@ -19,6 +19,7 @@ import org.moera.importer.model.SourceType;
 import org.moera.importer.observability.ImportMetrics;
 import org.moera.importer.persistence.jooq.tables.records.ChannelsRecord;
 import org.moera.importer.source.AccessResult;
+import org.moera.importer.source.ChannelResolution;
 import org.moera.importer.source.ChannelSnapshot;
 import org.moera.importer.source.SubscriptionResult;
 import org.springframework.stereotype.Repository;
@@ -57,6 +58,47 @@ public class ChannelRepository {
             .and(CHANNELS.SOURCE_ID.eq(sourceId))
             .fetchOptional()
             .map(jooqMappings::channelSnapshot);
+    }
+
+    public List<ChannelSnapshot> findAll() {
+        return dslContext.selectFrom(CHANNELS)
+            .orderBy(CHANNELS.ID)
+            .fetch(jooqMappings::channelSnapshot);
+    }
+
+    public ChannelSnapshot create(SourceType sourceType, ChannelResolution resolution) {
+        OffsetDateTime now = jooqMappings.offsetDateTime(clock.instant());
+        OffsetDateTime accessRetryAt = resolution.accessState() == org.moera.importer.model.AccessState.GRANTED
+            ? null : now;
+        OffsetDateTime subscriptionRetryAt = switch (resolution.subscriptionState()) {
+            case ACTIVE, UNSUPPORTED -> null;
+            default -> now;
+        };
+        ChannelsRecord record = dslContext.insertInto(CHANNELS)
+            .set(CHANNELS.SOURCE_TYPE,
+                org.moera.importer.persistence.jooq.enums.SourceType.valueOf(sourceType.name()))
+            .set(CHANNELS.SOURCE_ID, resolution.sourceId())
+            .set(CHANNELS.SOURCE_URI, resolution.sourceUri().toString())
+            .set(CHANNELS.SOURCE_DATA, jooqMappings.json(resolution.sourceData()))
+            .set(CHANNELS.ACCESS_STATE,
+                org.moera.importer.persistence.jooq.enums.AccessState.valueOf(resolution.accessState().name()))
+            .set(CHANNELS.ACCESS_RETRY_AT, accessRetryAt)
+            .set(CHANNELS.ACCESS_DATA, jooqMappings.json(resolution.accessData()))
+            .set(CHANNELS.SUBSCRIPTION_STATE, org.moera.importer.persistence.jooq.enums.SubscriptionState.valueOf(
+                resolution.subscriptionState().name()
+            ))
+            .set(CHANNELS.SUBSCRIPTION_RETRY_AT, subscriptionRetryAt)
+            .set(CHANNELS.SUBSCRIPTION_DATA, jooqMappings.json(resolution.subscriptionData()))
+            .set(CHANNELS.NEXT_POLL_AT, now)
+            .returning()
+            .fetchSingle();
+        return jooqMappings.channelSnapshot(record);
+    }
+
+    public boolean delete(long id) {
+        return dslContext.deleteFrom(CHANNELS)
+            .where(CHANNELS.ID.eq(id))
+            .execute() == 1;
     }
 
     @Transactional

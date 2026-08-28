@@ -73,6 +73,37 @@ class TdLightTelegramClientTest {
         verify(clientFactory).close();
     }
 
+    @Test
+    void readsOwnMembershipFromSupergroupWhenMemberListIsInaccessible() {
+        ClientFactory clientFactory = mock(ClientFactory.class);
+        it.tdlight.TelegramClient nativeClient = mock(it.tdlight.TelegramClient.class);
+        when(clientFactory.createClient()).thenReturn(nativeClient);
+        TdApi.Chat chat = new TdApi.Chat();
+        chat.type = new TdApi.ChatTypeSupergroup(77, true);
+        TdApi.Supergroup supergroup = new TdApi.Supergroup();
+        supergroup.status = new TdApi.ChatMemberStatusLeft();
+        TdApi.User self = new TdApi.User();
+        self.id = 11;
+        doReturn(CompletableFuture.completedFuture(chat))
+            .when(nativeClient).sendAsync(isA(TdApi.GetChat.class));
+        doReturn(CompletableFuture.completedFuture(supergroup))
+            .when(nativeClient).sendAsync(isA(TdApi.GetSupergroup.class));
+        doReturn(CompletableFuture.completedFuture(self))
+            .when(nativeClient).sendAsync(isA(TdApi.GetMe.class));
+        doReturn(CompletableFuture.failedFuture(new IllegalStateException("Member list is inaccessible")))
+            .when(nativeClient).sendAsync(isA(TdApi.GetChatMember.class));
+        TdLightTelegramClient client = new TdLightTelegramClient(
+            properties(),
+            false,
+            () -> clientFactory,
+            () -> mock(TdLightLoginPrompt.class)
+        );
+        client.start(ignored -> {
+        });
+
+        assertThat(client.membership(-100_000_000_0077L)).isEqualTo(TelegramClient.Membership.INACTIVE);
+    }
+
     private TelegramProperties properties() {
         TelegramProperties properties = new TelegramProperties();
         properties.setApiId(1);

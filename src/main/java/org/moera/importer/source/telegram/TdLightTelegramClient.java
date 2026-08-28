@@ -174,8 +174,14 @@ public class TdLightTelegramClient implements TelegramClient {
 
     @Override
     public Membership membership(long chatId) {
-        TdApi.ChatMember member = send(new TdApi.GetChatMember(chatId, new TdApi.MessageSenderUser(selfUserId())));
-        return isActive(member.status) ? Membership.ACTIVE : Membership.INACTIVE;
+        TdApi.Chat chat = send(new TdApi.GetChat(chatId));
+        TdApi.ChatMemberStatus status;
+        if (chat.type instanceof TdApi.ChatTypeSupergroup supergroupType) {
+            status = send(new TdApi.GetSupergroup(supergroupType.supergroupId)).status;
+        } else {
+            status = send(new TdApi.GetChatMember(chatId, new TdApi.MessageSenderUser(selfUserId()))).status;
+        }
+        return isActive(status) ? Membership.ACTIVE : Membership.INACTIVE;
     }
 
     private long selfUserId() {

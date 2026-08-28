@@ -1,0 +1,249 @@
+#!/usr/bin/env python3
+
+import argparse
+import ipaddress
+import json
+import socket
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+
+
+DEFAULT_URL = "http://127.0.0.1:8084"
+
+
+class ApiError(Exception):
+    pass
+
+
+class ApiClient:
+
+    def __init__(self, base_url):
+        self.base_url = validate_url(base_url)
+
+    def request(self, method, path, body=None):
+        data = None
+        headers = {"Accept": "application/json"}
+        if body is not None:
+            data = json.dumps(body).encode("utf-8")
+            headers["Content-Type"] = "application/json"
+        request = urllib.request.Request(
+            self.base_url + path,
+            data=data,
+            headers=headers,
+            method=method,
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response:
+                payload = response.read()
+        except urllib.error.HTTPError as failure:
+            raise ApiError(http_error(failure)) from failure
+        except urllib.error.URLError as failure:
+            raise ApiError("Cannot connect to the local administration API") from failure
+        if not payload:
+            return None
+        try:
+            return json.loads(payload)
+        except json.JSONDecodeError as failure:
+            raise ApiError("Administration API returned invalid JSON") from failure
+
+
+def validate_url(value):
+    parsed = urllib.parse.urlsplit(value.rstrip("/"))
+    if parsed.scheme != "http" or parsed.hostname is None or parsed.username is not None:
+        raise argparse.ArgumentTypeError("API URL must be an unauthenticated HTTP loopback URL")
+    if parsed.path not in ("", "/") or parsed.query or parsed.fragment:
+        raise argparse.ArgumentTypeError("API URL must not contain a path, query, or fragment")
+    try:
+        addresses = socket.getaddrinfo(parsed.hostname, parsed.port or 80, type=socket.SOCK_STREAM)
+    except socket.gaierror as failure:
+        raise argparse.ArgumentTypeError("API host cannot be resolved") from failure
+    if not addresses or any(not ipaddress.ip_address(address[4][0]).is_loopback for address in addresses):
+        raise argparse.ArgumentTypeError("API URL host must resolve only to loopback addresses")
+    return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, "", "", ""))
+
+
+def http_error(failure):
+    try:
+        payload = json.loads(failure.read())
+        detail = payload.get("detail") or payload.get("title")
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        detail = None
+    suffix = ": " + detail if isinstance(detail, str) and detail else ""
+    return "Administration API returned HTTP {}{}".format(failure.code, suffix)
+
+
+def print_table(rows, columns):
+    if not rows:
+        return
+    values = [[display(row.get(key)) for key, _ in columns] for row in rows]
+    widths = [len(title) for _, title in columns]
+    for row in values:
+        widths = [max(width, len(value)) for width, value in zip(widths, row)]
+    print("  ".join(title.ljust(width) for (_, title), width in zip(columns, widths)))
+    print("  ".join("-" * width for width in widths))
+    for row in values:
+        print("  ".join(value.ljust(width) for value, width in zip(row, widths)))
+
+
+def display(value):
+    if value is None:
+        return "-"
+    if isinstance(value, list):
+        return ",".join(str(item) for item in value)
+    return str(value)
+
+
+def confirm_delete(args, description):
+    if args.yes:
+        return
+    if not sys.stdin.isatty():
+        raise ApiError("Refusing deletion without --yes in a non-interactive terminal")
+    answer = input("Delete {}? [y/N] ".format(description)).strip().lower()
+    if answer not in ("y", "yes"):
+        raise ApiError("Deletion cancelled")
+
+
+def run(args, client):
+    if args.resource == "channel":
+        return run_channel(args, client)
+    if args.resource == "destination":
+        return run_destination(args, client)
+    return run_mirror(args, client)
+
+
+def run_channel(args, client):
+    if args.action == "list":
+        rows = client.request("GET", "/api/channels")
+        print_table(rows, [
+            ("id", "ID"),
+            ("sourceType", "TYPE"),
+            ("sourceId", "SOURCE ID"),
+            ("sourceUri", "SOURCE URI"),
+            ("accessState", "ACCESS"),
+            ("subscriptionState", "SUBSCRIPTION"),
+        ])
+        return
+    if args.action == "add":
+        created = client.request("POST", "/api/channels", {
+            "sourceType": args.source_type,
+            "sourceUri": args.source_uri,
+        })
+        print_table([created], [("id", "ID"), ("sourceUri", "SOURCE URI")])
+        return
+    confirm_delete(args, "channel {} and all importer state below it".format(args.channel_id))
+    client.request("DELETE", "/api/channels/{}".format(args.channel_id))
+    print("Channel {} deleted.".format(args.channel_id))
+
+
+def run_destination(args, client):
+    if args.action == "list":
+        rows = client.request("GET", "/api/destinations")
+        print_table(rows, [
+            ("id", "ID"),
+            ("nodeName", "NODE NAME"),
+            ("credentialRef", "CREDENTIAL REF"),
+        ])
+        return
+    if args.action == "add":
+        created = client.request("POST", "/api/destinations", {
+            "nodeName": args.node_name,
+            "credentialRef": args.credential_ref,
+        })
+        print_table([created], [("id", "ID"), ("nodeName", "NODE NAME")])
+        return
+    confirm_delete(args, "destination {} and all importer state below it".format(args.destination_id))
+    client.request("DELETE", "/api/destinations/{}".format(args.destination_id))
+    print("Destination {} deleted.".format(args.destination_id))
+
+
+def run_mirror(args, client):
+    path = "/api/mirrors/{}/{}".format(args.channel_id, args.destination_id)
+    if args.action == "add":
+        created = client.request("POST", "/api/mirrors", {
+            "channelId": args.channel_id,
+            "destinationId": args.destination_id,
+            "feeds": args.feeds,
+        })
+        print_table([created], [
+            ("id", "ID"),
+            ("channelId", "CHANNEL"),
+            ("destinationId", "DESTINATION"),
+            ("feeds", "FEEDS"),
+        ])
+        return
+    confirm_delete(args, "mirror from channel {} to destination {}".format(
+        args.channel_id, args.destination_id
+    ))
+    client.request("DELETE", path)
+    print("Mirror deleted.")
+
+
+def positive_id(value):
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("ID must be positive")
+    return parsed
+
+
+def add_delete_confirmation(parser):
+    parser.add_argument("--yes", action="store_true", help="do not prompt for destructive deletion")
+
+
+def parser():
+    root = argparse.ArgumentParser(description="Administer a local Moera Import Service instance")
+    root.add_argument("--url", default=DEFAULT_URL, type=validate_url, help="local API URL (default: %(default)s)")
+    resources = root.add_subparsers(dest="resource", required=True)
+
+    channels = resources.add_parser("channel", help="manage source channels").add_subparsers(
+        dest="action", required=True
+    )
+    channels.add_parser("list", help="list channels")
+    channel_add = channels.add_parser("add", help="resolve and add a channel")
+    channel_add.add_argument("source_uri")
+    channel_add.add_argument("--type", dest="source_type", default="TELEGRAM", choices=("TELEGRAM",))
+    channel_delete = channels.add_parser("delete", help="delete a channel")
+    channel_delete.add_argument("channel_id", type=positive_id)
+    add_delete_confirmation(channel_delete)
+
+    destinations = resources.add_parser("destination", help="manage Moera destinations").add_subparsers(
+        dest="action", required=True
+    )
+    destinations.add_parser("list", help="list destinations")
+    destination_add = destinations.add_parser("add", help="add a destination")
+    destination_add.add_argument("node_name")
+    destination_add.add_argument("credential_ref")
+    destination_delete = destinations.add_parser("delete", help="delete a destination")
+    destination_delete.add_argument("destination_id", type=positive_id)
+    add_delete_confirmation(destination_delete)
+
+    mirrors = resources.add_parser("mirror", help="manage channel-to-destination mirrors").add_subparsers(
+        dest="action", required=True
+    )
+    mirror_add = mirrors.add_parser("add", help="add a mirror")
+    mirror_add.add_argument("channel_id", type=positive_id)
+    mirror_add.add_argument("destination_id", type=positive_id)
+    mirror_add.add_argument("--feed", dest="feeds", action="append", default=None,
+                            help="target feed; repeat for multiple feeds (default: timeline)")
+    mirror_delete = mirrors.add_parser("delete", help="delete a mirror")
+    mirror_delete.add_argument("channel_id", type=positive_id)
+    mirror_delete.add_argument("destination_id", type=positive_id)
+    add_delete_confirmation(mirror_delete)
+    return root
+
+
+def main():
+    arguments = parser().parse_args()
+    if arguments.resource == "mirror" and arguments.action == "add" and arguments.feeds is None:
+        arguments.feeds = ["timeline"]
+    try:
+        run(arguments, ApiClient(arguments.url))
+    except ApiError as failure:
+        print("error: {}".format(failure), file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -2078,3 +2078,47 @@ Schedulers do not execute Telegram work before TDLight is ready.
 Shutdown stops claiming new work, stops source adapters/live intake, allows already-running workers a bounded grace
 period, and then exits. In-flight leases are not forcibly rolled back; after expiry they are safely reclaimed on a
 later run.
+
+## 45. Local administration API and CLI
+
+The service exposes a small unauthenticated administration API under `/api`. It is a host-local interface: requests
+whose peer address is not a loopback address are rejected even if the main HTTP connector is bound to a non-loopback
+interface. Operators must not publish this interface through a reverse proxy. The API never accepts or returns Moera
+credential values; it stores only the `credentialRef` described in section 32.2.
+
+The initial resource operations are:
+
+```text
+GET    /api/channels
+POST   /api/channels
+DELETE /api/channels/{channelId}
+
+GET    /api/destinations
+POST   /api/destinations
+DELETE /api/destinations/{destinationId}
+
+POST   /api/mirrors
+DELETE /api/mirrors/{channelId}/{destinationId}
+```
+
+Channel creation accepts `sourceType` and `sourceUri`. It calls the matching `SourceAdapter.resolveChannel(...)`
+before opening the insertion transaction, then persists the returned canonical URI, identity, JSONB state, access
+state, and subscription state. No PostgreSQL transaction is held across Telegram or another external source call.
+Newly created channels are scheduled immediately for every operation applicable to their resolved states. The initial
+API accepts only `TELEGRAM`, because it is the only implemented source type.
+
+Destination creation accepts a registered Moera `nodeName` and a non-secret `credentialRef`. Mirror creation accepts
+`channelId`, `destinationId`, and an ordered set of target feed names. Repository code builds the corresponding JSONB
+configuration; jOOQ remains confined to persistence classes.
+
+Duplicate channel identities, destination names, and channel/destination mirror pairs return a conflict. References
+to missing resources return not found. Invalid source URIs, names, credential references, and feed sets return a bad
+request without leaking sensitive input into error text or logs.
+
+Deleting a channel, destination, or mirror uses the existing foreign-key cascades for durable importer state. It does
+not make external Moera calls and therefore does not delete postings that were already delivered. Operators who need
+those postings removed must do so before deleting the importer configuration.
+
+A Python command-line client wraps exactly these operations. It uses the Python standard library, defaults to
+`http://127.0.0.1:8084`, and may select another loopback URL for local deployment. It does not implement authentication
+or accept raw Moera credentials.
