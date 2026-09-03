@@ -9,6 +9,7 @@ import java.util.Objects;
 import org.moera.importer.source.MediaSnapshot;
 import org.moera.importer.source.SourcePermanentException;
 import org.moera.importer.source.SourceTemporaryException;
+import org.springframework.util.ObjectUtils;
 
 public class TelegramMediaDownloader {
 
@@ -20,7 +21,10 @@ public class TelegramMediaDownloader {
 
     public void download(MediaSnapshot media, Path destination) {
         String remoteId = media.sourceData().path("remoteId").textValue();
-        String fileType = media.sourceData().path("fileType").textValue();
+        String remoteFileType = media.sourceData().path("remoteFileType").textValue();
+        String fileType = ObjectUtils.isEmpty(remoteFileType)
+            ? media.sourceData().path("fileType").textValue()
+            : remoteFileType;
         if (remoteId == null || fileType == null) {
             throw new SourcePermanentException("Telegram media lacks remote file metadata");
         }

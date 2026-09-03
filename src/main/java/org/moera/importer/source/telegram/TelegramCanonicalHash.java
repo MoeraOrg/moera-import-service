@@ -27,7 +27,6 @@ public final class TelegramCanonicalHash {
             writeString(output, contentType(message.content));
             writeContent(output, message.content);
             writeForward(output, message.forwardInfo);
-            writeString(output, blankToNull(message.authorSignature));
             writeButtons(output, message.replyMarkup);
             TdApi.FormattedText factCheck = message.factCheck == null ? null : message.factCheck.text;
             writeFormattedText(output, factCheck == null || factCheck.text == null || factCheck.text.isBlank()

@@ -21,8 +21,9 @@ import org.moera.importer.source.SourcePermanentException;
 import org.moera.importer.source.SourceTemporaryException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.util.ObjectUtils;
 
-public class TdLightTelegramClient implements TelegramClient {
+public class TdLightTelegramClient implements TelegramClient, TelegramForwardMetadataResolver {
 
     private static final Logger log = LoggerFactory.getLogger(TdLightTelegramClient.class);
 
@@ -132,6 +133,37 @@ public class TdLightTelegramClient implements TelegramClient {
         } catch (SourceTemporaryException e) {
             throw permanentClientInput("Telegram public channel cannot be resolved", e);
         }
+    }
+
+    @Override
+    public Source user(long userId) {
+        TdApi.User user = send(new TdApi.GetUser(userId));
+        String name;
+        if (ObjectUtils.isEmpty(user.firstName)) {
+            name = user.lastName;
+        } else if (ObjectUtils.isEmpty(user.lastName)) {
+            name = user.firstName;
+        } else {
+            name = user.firstName + " " + user.lastName;
+        }
+        return new Source(name, primaryUsername(user.usernames));
+    }
+
+    @Override
+    public Source chat(long chatId) {
+        TdApi.Chat chat = send(new TdApi.GetChat(chatId));
+        String username = null;
+        if (chat.type instanceof TdApi.ChatTypeSupergroup supergroupType) {
+            TdApi.Supergroup supergroup = send(new TdApi.GetSupergroup(supergroupType.supergroupId));
+            username = primaryUsername(supergroup.usernames);
+        }
+        return new Source(chat.title, username);
+    }
+
+    private String primaryUsername(TdApi.Usernames usernames) {
+        return usernames == null || ObjectUtils.isEmpty(usernames.activeUsernames)
+            ? null
+            : usernames.activeUsernames[0];
     }
 
     @Override
@@ -261,7 +293,14 @@ public class TdLightTelegramClient implements TelegramClient {
         try {
             return client.sendAsync(function).join();
         } catch (CompletionException e) {
-            throw new SourceTemporaryException("Telegram request failed", e.getCause());
+            Throwable cause = e.getCause();
+            String result = cause != null && cause.getMessage() != null
+                ? cause.getMessage()
+                : cause != null ? cause.getClass().getSimpleName() : e.getClass().getSimpleName();
+            throw new SourceTemporaryException(
+                "Telegram operation %s failed: %s".formatted(function.getClass().getSimpleName(), result),
+                cause != null ? cause : e
+            );
         }
     }
 
@@ -275,6 +314,7 @@ public class TdLightTelegramClient implements TelegramClient {
             case "videoNote" -> new TdApi.FileTypeVideoNote();
             case "animation" -> new TdApi.FileTypeAnimation();
             case "sticker" -> new TdApi.FileTypeSticker();
+            case "thumbnail" -> new TdApi.FileTypeThumbnail();
             default -> throw new SourcePermanentException("Unsupported Telegram file type: " + name);
         };
     }

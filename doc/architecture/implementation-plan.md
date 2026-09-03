@@ -861,8 +861,8 @@ Test explicit skipping of dice/stake-dice, games, invoices, paid media, stories,
 
 Test source attribution at the start of every forwarded body as
 `<p><a href="source-url">Source name</a></p>`, exact public channel post links when possible, name-only fallback, and
-omission when neither value exists. Test author signature as `<p><i>— Author</i></p>`, safe URL buttons after content,
-ignored Telegram-only buttons, and the final fact-check block
+omission when neither value exists. Test ignored author signatures, safe URL buttons after content, ignored
+Telegram-only buttons, and the final fact-check block
 `<hr><p><b>Fact check</b></p><blockquote>formatted text</blockquote>`. Also cover ignored replies, counters, reactions,
 effects, timers, `canBeSaved`, restrictions, import/bot, and presentation metadata. Test all Moera preview fields,
 image selection priority (largest main photo, otherwise thumbnail/cover), preview image as ordinary media,
@@ -871,9 +871,9 @@ ignored `linkPreviewOptions` and full preview video/audio/document content.
 
 - [ ] **Step 6: Write canonical hash tests**
 
-Assert deterministic SHA-256 over original text, ordered entities plus semantic data, forward attribution, author
-signature, supported buttons, fact-check, poll/checklist state, and link-preview metadata. Relevant semantic
-changes must change the hash; every explicitly ignored source field must not. Hash source values, not generated HTML.
+Assert deterministic SHA-256 over original text, ordered entities plus semantic data, forward attribution, supported
+buttons, fact-check, poll/checklist state, and link-preview metadata. Relevant semantic changes must change the hash;
+every explicitly ignored source field must not. Hash source values, not generated HTML.
 `CustomEmoji` ID remains hash-relevant. Preview file identity belongs to the selected media `source_hash`; preview
 metadata and selected image reference belong to `source_body_hash`.
 

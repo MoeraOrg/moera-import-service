@@ -121,23 +121,23 @@ public class PublicationMediaProcessor {
             publicationMediaRepository.fail(
                 claim.publicationId(), claim.mediaId(), claim.processingToken(), e.getMessage()
             );
-            log(claim, "permanent_failure");
+            log(claim, "permanent_failure", e.getMessage());
             delete(stagingPath);
         } catch (SourceTemporaryException e) {
             retry(claim, e.retryAfter(), e.getMessage());
-            log(claim, "temporary_failure");
+            log(claim, "temporary_failure", e.getMessage());
             if (!uploadStarted) {
                 delete(stagingPath);
             }
         } catch (MoeraTemporaryException | MoeraOutcomeUnknownException e) {
             retry(claim, null, e.getMessage());
-            log(claim, "temporary_failure");
+            log(claim, "temporary_failure", e.getMessage());
             if (!uploadStarted) {
                 delete(stagingPath);
             }
         } catch (IOException | UncheckedIOException e) {
             retry(claim, null, "Cannot access staging file");
-            log(claim, "staging_failure");
+            log(claim, "staging_failure", "Cannot access staging file");
             if (!uploadStarted) {
                 delete(stagingPath);
             }
@@ -154,10 +154,10 @@ public class PublicationMediaProcessor {
             publicationMediaRepository.fail(
                 claim.publicationId(), claim.mediaId(), claim.processingToken(), e.getMessage()
             );
-            log(claim, "permanent_failure");
+            log(claim, "permanent_failure", e.getMessage());
         } catch (MoeraTemporaryException | MoeraOutcomeUnknownException e) {
             retry(claim, null, e.getMessage());
-            log(claim, "temporary_failure");
+            log(claim, "temporary_failure", e.getMessage());
         }
     }
 
@@ -261,14 +261,23 @@ public class PublicationMediaProcessor {
     }
 
     private void log(PublicationMediaClaim claim, String result) {
-        log.atInfo()
-            .addKeyValue("operation", "publication_media")
-            .addKeyValue("publication_id", claim.publicationId())
-            .addKeyValue("media_id", claim.mediaId())
-            .addKeyValue("processing_token", claim.processingToken())
-            .addKeyValue("attempt", claim.attempts())
-            .addKeyValue("result", result)
-            .log("Publication media operation finished");
+        log(claim, result, null);
+    }
+
+    private void log(PublicationMediaClaim claim, String result, String error) {
+        if (error == null) {
+            log.info(
+                "Publication media operation finished: operation=publication_media, publication_id={}, media_id={}, "
+                    + "processing_token={}, attempt={}, result={}",
+                claim.publicationId(), claim.mediaId(), claim.processingToken(), claim.attempts(), result
+            );
+        } else {
+            log.info(
+                "Publication media operation finished: operation=publication_media, publication_id={}, media_id={}, "
+                    + "processing_token={}, attempt={}, result={}, error={}",
+                claim.publicationId(), claim.mediaId(), claim.processingToken(), claim.attempts(), result, error
+            );
+        }
     }
 
 }

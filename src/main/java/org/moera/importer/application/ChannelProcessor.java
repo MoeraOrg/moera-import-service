@@ -49,6 +49,7 @@ public class ChannelProcessor {
     public void process(ChannelClaim claim) {
         Timer.Sample sample = importMetrics.startTimer();
         String result = "unexpected_failure";
+        String error = null;
         SourceAdapter sourceAdapter = sourceAdapterRegistry.get(claim.channel().sourceType());
         try {
             boolean completed = switch (claim.operation()) {
@@ -59,19 +60,27 @@ public class ChannelProcessor {
             result = completed ? "success" : "stale_claim";
         } catch (SourceTemporaryException e) {
             result = "temporary_failure";
+            error = diagnostic(e);
             temporaryFailure(claim, e);
         } catch (SourcePermanentException e) {
             result = "permanent_failure";
+            error = diagnostic(e);
             permanentFailure(claim, e);
         } finally {
             importMetrics.sourceOperation(claim.channel().sourceType(), claim.operation(), result, sample);
-            log.atInfo()
-                .addKeyValue("operation", claim.operation())
-                .addKeyValue("channel_id", claim.channel().id())
-                .addKeyValue("processing_token", claim.processingToken())
-                .addKeyValue("attempt", claim.attempts())
-                .addKeyValue("result", result)
-                .log("Source operation finished");
+            if (error == null) {
+                log.info(
+                    "Source operation finished: operation={}, channel_id={}, processing_token={}, attempt={}, "
+                        + "result={}",
+                    claim.operation(), claim.channel().id(), claim.processingToken(), claim.attempts(), result
+                );
+            } else {
+                log.info(
+                    "Source operation finished: operation={}, channel_id={}, processing_token={}, attempt={}, "
+                        + "result={}, error={}",
+                    claim.operation(), claim.channel().id(), claim.processingToken(), claim.attempts(), result, error
+                );
+            }
         }
     }
 

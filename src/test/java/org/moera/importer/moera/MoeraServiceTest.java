@@ -32,6 +32,7 @@ import org.moera.lib.node.types.SettingInfo;
 import org.moera.lib.node.types.SourceFormat;
 import org.moera.lib.node.types.StoryAttributes;
 import org.moera.lib.node.types.body.Body;
+import org.moera.lib.node.types.principal.Principal;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -39,6 +40,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -191,7 +193,64 @@ class MoeraServiceTest {
         verify(moeraNode).createPosting(posting.capture());
         assertThat(posting.getValue().getBodySrc()).isSameAs(payload.bodySrc());
         assertThat(posting.getValue().getPublications()).isEqualTo(payload.publications());
+        assertThat(posting.getValue().getOperations().getView()).isEqualTo(Principal.PUBLIC);
+        assertThat(posting.getValue().getOperations().getAddComment()).isEqualTo(Principal.SIGNED);
+        assertThat(posting.getValue().getOperations().getAddReaction()).isEqualTo(Principal.SIGNED);
+        assertThat(posting.getValue().getOperations().getAddNegativeReaction()).isEqualTo(Principal.SIGNED);
+        assertThat(posting.getValue().getRejectedReactions().getPositive()).isEmpty();
+        assertThat(posting.getValue().getRejectedReactions().getNegative()).isEqualTo("*");
+        verify(moeraNode).getClientSettings("client.mercy.posting.");
         verify(moeraNode, never()).createRemotePosting(anyString(), any());
+    }
+
+    @Test
+    void reloadsClientPostingSettingsBeforeEveryCreate() throws Exception {
+        PostingInfo created = new PostingInfo();
+        created.setId("posting-id");
+        when(moeraNode.getClientSettings("client.mercy.posting.")).thenReturn(
+            settings(
+                "client.mercy.posting.visibility.default", "friends",
+                "client.mercy.posting.comments.addition.default", "subscribed",
+                "client.mercy.posting.reactions.enabled.default", "false",
+                "client.mercy.posting.reactions.negative.enabled.default", "true",
+                "client.mercy.posting.reactions-disabled.positive.default", "2764",
+                "client.mercy.posting.reactions-disabled.negative.default", "1f44e"
+            ),
+            settings(
+                "client.mercy.posting.visibility.default", "private",
+                "client.mercy.posting.comments.addition.default", "none",
+                "client.mercy.posting.reactions.enabled.default", "true",
+                "client.mercy.posting.reactions.negative.enabled.default", "false",
+                "client.mercy.posting.reactions-disabled.positive.default", "",
+                "client.mercy.posting.reactions-disabled.negative.default", "*"
+            )
+        );
+        when(moeraNode.createPosting(any())).thenReturn(created);
+
+        moeraService.createPost(destination, payload());
+        moeraService.createPost(destination, payload());
+
+        ArgumentCaptor<PostingText> posting = ArgumentCaptor.forClass(PostingText.class);
+        verify(moeraNode, times(2)).createPosting(posting.capture());
+        PostingText first = posting.getAllValues().get(0);
+        PostingText second = posting.getAllValues().get(1);
+        assertThat(first.getOperations().getView()).isEqualTo(new Principal("friends"));
+        assertThat(first.getOperations().getAddComment()).isEqualTo(Principal.SUBSCRIBED);
+        assertThat(first.getOperations().getAddReaction()).isEqualTo(Principal.NONE);
+        assertThat(first.getOperations().getAddNegativeReaction()).isEqualTo(Principal.NONE);
+        assertThat(first.getRejectedReactions().getPositive()).isEqualTo("2764");
+        assertThat(first.getRejectedReactions().getNegative()).isEqualTo("1f44e");
+        assertThat(second.getOperations().getView()).isEqualTo(Principal.PRIVATE);
+        assertThat(second.getOperations().getAddComment()).isEqualTo(Principal.NONE);
+        assertThat(second.getOperations().getAddReaction()).isEqualTo(Principal.SIGNED);
+        assertThat(second.getOperations().getAddNegativeReaction()).isEqualTo(Principal.NONE);
+        assertThat(second.getRejectedReactions().getPositive()).isEmpty();
+        assertThat(second.getRejectedReactions().getNegative()).isEqualTo("*");
+        var order = inOrder(moeraNode);
+        order.verify(moeraNode).getClientSettings("client.mercy.posting.");
+        order.verify(moeraNode).createPosting(any());
+        order.verify(moeraNode).getClientSettings("client.mercy.posting.");
+        order.verify(moeraNode).createPosting(any());
     }
 
     @Test
@@ -257,6 +316,17 @@ class MoeraServiceTest {
             .isInstanceOf(MoeraOutcomeUnknownException.class);
     }
 
+    @Test
+    void doesNotAttemptCreateWhenClientSettingsCannotBeLoaded() throws Exception {
+        when(moeraNode.getClientSettings("client.mercy.posting."))
+            .thenThrow(new MoeraNodeConnectionException(new IOException("connection reset")));
+
+        assertThatThrownBy(() -> moeraService.createPost(destination, payload()))
+            .isInstanceOf(MoeraTemporaryException.class);
+
+        verify(moeraNode, never()).createPosting(any());
+    }
+
     private PublicationPayload payload() {
         Body body = new Body();
         body.setText("text");
@@ -292,6 +362,17 @@ class MoeraServiceTest {
         reference.setFeedName(feedName);
         reference.setStoryId(storyId);
         return reference;
+    }
+
+    private SettingInfo[] settings(String... values) {
+        SettingInfo[] settings = new SettingInfo[values.length / 2];
+        for (int i = 0; i < settings.length; i++) {
+            SettingInfo setting = new SettingInfo();
+            setting.setName(values[i * 2]);
+            setting.setValue(values[i * 2 + 1]);
+            settings[i] = setting;
+        }
+        return settings;
     }
 
 }

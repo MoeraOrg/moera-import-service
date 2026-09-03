@@ -64,7 +64,7 @@ class TelegramCanonicalHashTest {
         assertThat(TelegramCanonicalHash.body(first)).containsExactly(TelegramCanonicalHash.body(second));
 
         second.authorSignature = "Author";
-        assertThat(TelegramCanonicalHash.body(first)).isNotEqualTo(TelegramCanonicalHash.body(second));
+        assertThat(TelegramCanonicalHash.body(first)).containsExactly(TelegramCanonicalHash.body(second));
     }
 
     @Test

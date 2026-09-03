@@ -49,8 +49,8 @@ class TelegramSourceAdapterTest {
         TelegramProperties properties = new TelegramProperties();
         properties.setGroupingThreshold(Duration.ofMinutes(3));
         properties.setSettlingDelay(Duration.ofSeconds(20));
-        properties.setPollingInterval(Duration.ofMinutes(2));
-        properties.setInactivePollingInterval(Duration.ofMinutes(15));
+        properties.setPollingInterval(Duration.ofMinutes(30));
+        properties.setInactivePollingInterval(Duration.ofMinutes(10));
         adapter = new TelegramSourceAdapter(client, new TelegramMessageMapper(), properties);
         meterRegistry = new SimpleMeterRegistry();
         ImportMetrics importMetrics = new ImportMetrics();
@@ -266,9 +266,16 @@ class TelegramSourceAdapterTest {
         assertThat(adapter.groupingThreshold()).isEqualTo(Duration.ofMinutes(3));
         assertThat(adapter.settlingDelay()).isEqualTo(Duration.ofSeconds(20));
         assertThat(adapter.pollingInterval(resolvedChannel(SubscriptionState.ACTIVE)))
-            .isEqualTo(Duration.ofMinutes(2));
-        assertThat(adapter.pollingInterval(resolvedChannel(SubscriptionState.INACTIVE)))
-            .isEqualTo(Duration.ofMinutes(15));
+            .isEqualTo(Duration.ofMinutes(30));
+        for (SubscriptionState state : List.of(
+            SubscriptionState.UNSUPPORTED,
+            SubscriptionState.INACTIVE,
+            SubscriptionState.ACTIVATING,
+            SubscriptionState.FAILED,
+            SubscriptionState.LOST
+        )) {
+            assertThat(adapter.pollingInterval(resolvedChannel(state))).isEqualTo(Duration.ofMinutes(10));
+        }
     }
 
     @Test
@@ -350,7 +357,7 @@ class TelegramSourceAdapterTest {
     }
 
     @Test
-    void downloadsFromTdlibCacheAndDeletesCacheCopy() throws Exception {
+    void downloadsUsingRemoteFileTypeAndDeletesCacheCopy() throws Exception {
         Path cached = temporaryDirectory.resolve("cached.bin");
         Files.writeString(cached, "payload");
         client.remoteFile = new TelegramClient.RemoteFile(123);
@@ -361,7 +368,7 @@ class TelegramSourceAdapterTest {
 
         assertThat(Files.readString(destination)).isEqualTo("payload");
         assertThat(client.reacquiredRemoteId).isEqualTo("remote-1");
-        assertThat(client.reacquiredFileType).isEqualTo("photo");
+        assertThat(client.reacquiredFileType).isEqualTo("thumbnail");
         assertThat(client.deletedFileId).isEqualTo(123);
     }
 
@@ -385,7 +392,10 @@ class TelegramSourceAdapterTest {
 
     private org.moera.importer.source.MediaSnapshot media() {
         return new org.moera.importer.source.MediaSnapshot(1, 2, "unique-1", 0, "image/jpeg", null, 7L,
-            new byte[32], JsonNodeFactory.instance.objectNode().put("remoteId", "remote-1").put("fileType", "photo"));
+            new byte[32], JsonNodeFactory.instance.objectNode()
+                .put("remoteId", "remote-1")
+                .put("fileType", "linkPreviewImage")
+                .put("remoteFileType", "thumbnail"));
     }
 
     private static TdApi.Message message(long chatId, long id, String text) {

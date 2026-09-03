@@ -369,13 +369,11 @@ public class TelegramSourceAdapter implements SourceAdapter {
     private void skipped(TdApi.Message message, TelegramSkipReason reason) {
         String contentFamily = contentFamily(message.content);
         importMetrics.telegramMessageSkipped(contentFamily, reason);
-        log.atInfo()
-            .addKeyValue("operation", "telegram_map")
-            .addKeyValue("channel_id", message.chatId)
-            .addKeyValue("message_id", message.id)
-            .addKeyValue("content_type", contentFamily)
-            .addKeyValue("result", reason)
-            .log("Skipped Telegram message");
+        log.info(
+            "Skipped Telegram message: operation=telegram_map, channel_id={}, message_id={}, content_type={}, "
+                + "result={}",
+            message.chatId, message.id, contentFamily, reason
+        );
     }
 
     private String contentFamily(TdApi.MessageContent content) {

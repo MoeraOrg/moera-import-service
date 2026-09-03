@@ -19,7 +19,7 @@ public class TelegramProperties {
     private Path downloadCacheDirectory = Path.of("var/telegram/cache");
     private Duration groupingThreshold = Duration.ofMinutes(5);
     private Duration settlingDelay = Duration.ofSeconds(30);
-    private Duration pollingInterval = Duration.ofMinutes(1);
+    private Duration pollingInterval = Duration.ofMinutes(30);
     private Duration inactivePollingInterval = Duration.ofMinutes(10);
     private int lookBehindCount = 20;
     private int historyPageSize = 100;

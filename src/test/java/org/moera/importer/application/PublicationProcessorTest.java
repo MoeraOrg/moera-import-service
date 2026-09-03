@@ -137,11 +137,14 @@ class PublicationProcessorTest {
 
         assertThat(moeraService.operations).containsExactly("capabilities");
         assertThat(meterRegistry.find("publication_rate_limited_total").counter()).isNull();
-        assertThat(appender.list).anySatisfy(event -> assertThat(event.getKeyValuePairs())
-            .anySatisfy(pair -> {
-                assertThat(pair.key).isEqualTo("result");
-                assertThat(pair.value).isEqualTo("stale_claim");
-            }));
+        assertThat(appender.list).anySatisfy(event -> assertThat(event.getFormattedMessage())
+            .contains(
+                "operation=publication_delivery",
+                "publication_id=17",
+                "attempt=3",
+                "target_revision=5",
+                "result=stale_claim"
+            ));
     }
 
     @Test

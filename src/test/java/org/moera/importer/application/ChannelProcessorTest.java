@@ -9,6 +9,9 @@ import java.time.ZoneOffset;
 import java.util.List;
 import java.util.UUID;
 
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
@@ -35,6 +38,7 @@ import org.moera.importer.source.SourceMessage;
 import org.moera.importer.source.SourcePermanentException;
 import org.moera.importer.source.SourceTemporaryException;
 import org.moera.importer.source.SubscriptionResult;
+import org.slf4j.LoggerFactory;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -164,12 +168,30 @@ class ChannelProcessorTest {
         SourceTemporaryException failure = new SourceTemporaryException("Telegram unavailable", retryAfter);
         sourceAdapter.failure = failure;
 
-        channelProcessor.process(claim);
+        Logger logger = (Logger) LoggerFactory.getLogger(ChannelProcessor.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+
+        try {
+            channelProcessor.process(claim);
+        } finally {
+            logger.detachAppender(appender);
+            appender.stop();
+        }
 
         assertThat(channelRepository.failedOperation).isEqualTo(ChannelOperation.POLL);
         assertThat(channelRepository.failedToken).isEqualTo(claim.processingToken());
         assertThat(channelRepository.nextAttemptAt).isEqualTo(NOW.plus(Duration.ofMinutes(4)));
         assertThat(channelRepository.error).isEqualTo(failure.getMessage());
+        assertThat(appender.list).anySatisfy(event -> assertThat(event.getFormattedMessage())
+            .contains(
+                "operation=POLL",
+                "channel_id=17",
+                "attempt=3",
+                "result=temporary_failure",
+                "error=Telegram unavailable"
+            ));
     }
 
     @Test

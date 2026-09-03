@@ -11,6 +11,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.mockito.ArgumentCaptor;
 import org.moera.importer.config.TelegramProperties;
+import org.moera.importer.source.SourceTemporaryException;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -74,6 +75,51 @@ class TdLightTelegramClientTest {
     }
 
     @Test
+    void reportsFailedTelegramOperationAndCause() {
+        ClientFactory clientFactory = mock(ClientFactory.class);
+        it.tdlight.TelegramClient nativeClient = mock(it.tdlight.TelegramClient.class);
+        when(clientFactory.createClient()).thenReturn(nativeClient);
+        doReturn(CompletableFuture.failedFuture(new IllegalStateException("remote file not found")))
+            .when(nativeClient).sendAsync(isA(TdApi.GetRemoteFile.class));
+        TdLightTelegramClient client = new TdLightTelegramClient(
+            properties(),
+            false,
+            () -> clientFactory,
+            () -> mock(TdLightLoginPrompt.class)
+        );
+        client.start(ignored -> {
+        });
+
+        assertThatThrownBy(() -> client.reacquire("remote-id", "photo"))
+            .isInstanceOf(SourceTemporaryException.class)
+            .hasMessage("Telegram operation GetRemoteFile failed: remote file not found");
+    }
+
+    @Test
+    void reacquiresThumbnailWithTelegramThumbnailFileType() {
+        ClientFactory clientFactory = mock(ClientFactory.class);
+        it.tdlight.TelegramClient nativeClient = mock(it.tdlight.TelegramClient.class);
+        when(clientFactory.createClient()).thenReturn(nativeClient);
+        TdApi.File file = new TdApi.File();
+        file.id = 123;
+        doReturn(CompletableFuture.completedFuture(file))
+            .when(nativeClient).sendAsync(isA(TdApi.GetRemoteFile.class));
+        TdLightTelegramClient client = new TdLightTelegramClient(
+            properties(),
+            false,
+            () -> clientFactory,
+            () -> mock(TdLightLoginPrompt.class)
+        );
+        client.start(ignored -> {
+        });
+        ArgumentCaptor<TdApi.GetRemoteFile> request = ArgumentCaptor.forClass(TdApi.GetRemoteFile.class);
+
+        assertThat(client.reacquire("remote-id", "thumbnail").fileId()).isEqualTo(123);
+        verify(nativeClient).sendAsync(request.capture());
+        assertThat(request.getValue().fileType).isInstanceOf(TdApi.FileTypeThumbnail.class);
+    }
+
+    @Test
     void readsOwnMembershipFromSupergroupWhenMemberListIsInaccessible() {
         ClientFactory clientFactory = mock(ClientFactory.class);
         it.tdlight.TelegramClient nativeClient = mock(it.tdlight.TelegramClient.class);
@@ -102,6 +148,42 @@ class TdLightTelegramClientTest {
         });
 
         assertThat(client.membership(-100_000_000_0077L)).isEqualTo(TelegramClient.Membership.INACTIVE);
+    }
+
+    @Test
+    void resolvesForwardChannelNameAndPrimaryUsernameByChatId() {
+        ClientFactory clientFactory = mock(ClientFactory.class);
+        it.tdlight.TelegramClient nativeClient = mock(it.tdlight.TelegramClient.class);
+        when(clientFactory.createClient()).thenReturn(nativeClient);
+        TdApi.Chat chat = new TdApi.Chat();
+        chat.id = -1_001_809_632_446L;
+        chat.title = "Example channel";
+        chat.type = new TdApi.ChatTypeSupergroup(1_809_632_446L, true);
+        TdApi.Supergroup supergroup = new TdApi.Supergroup();
+        supergroup.usernames = new TdApi.Usernames(
+            new String[] {"example_channel", "secondary_name"}, new String[0], "", new String[0]
+        );
+        doReturn(CompletableFuture.completedFuture(chat))
+            .when(nativeClient).sendAsync(isA(TdApi.GetChat.class));
+        doReturn(CompletableFuture.completedFuture(supergroup))
+            .when(nativeClient).sendAsync(isA(TdApi.GetSupergroup.class));
+        TdLightTelegramClient client = new TdLightTelegramClient(
+            properties(),
+            false,
+            () -> clientFactory,
+            () -> mock(TdLightLoginPrompt.class)
+        );
+        client.start(ignored -> {
+        });
+        ArgumentCaptor<TdApi.GetChat> chatRequest = ArgumentCaptor.forClass(TdApi.GetChat.class);
+        ArgumentCaptor<TdApi.GetSupergroup> supergroupRequest = ArgumentCaptor.forClass(TdApi.GetSupergroup.class);
+
+        assertThat(client.chat(-1_001_809_632_446L))
+            .isEqualTo(new TelegramForwardMetadataResolver.Source("Example channel", "example_channel"));
+        verify(nativeClient).sendAsync(chatRequest.capture());
+        verify(nativeClient).sendAsync(supergroupRequest.capture());
+        assertThat(chatRequest.getValue().chatId).isEqualTo(-1_001_809_632_446L);
+        assertThat(supergroupRequest.getValue().supergroupId).isEqualTo(1_809_632_446L);
     }
 
     private TelegramProperties properties() {

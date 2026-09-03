@@ -181,7 +181,9 @@ public class TelegramMessageMapper {
             return List.of();
         }
         try {
-            return List.of(sourceMedia(image.file(), image.mimeType(), null, "linkPreviewImage", 0));
+            return List.of(sourceMedia(
+                image.file(), image.mimeType(), null, "linkPreviewImage", image.remoteFileType(), 0
+            ));
         } catch (InvalidContentException e) {
             return List.of();
         }
@@ -200,9 +202,6 @@ public class TelegramMessageMapper {
             body.append("</p>");
         }
         body.append(content);
-        if (!blank(message.authorSignature)) {
-            body.append("<p><i>— ").append(escape(message.authorSignature)).append("</i></p>");
-        }
         appendButtons(body, message.replyMarkup);
         if (message.factCheck != null && message.factCheck.text != null
             && !blank(message.factCheck.text.text)) {
@@ -412,6 +411,17 @@ public class TelegramMessageMapper {
     }
 
     private SourceMedia sourceMedia(TdApi.File file, String mimeType, String fileName, String fileType, int position) {
+        return sourceMedia(file, mimeType, fileName, fileType, null, position);
+    }
+
+    private SourceMedia sourceMedia(
+        TdApi.File file,
+        String mimeType,
+        String fileName,
+        String fileType,
+        String remoteFileType,
+        int position
+    ) {
         if (file == null || file.remote == null || blank(file.remote.uniqueId) && blank(file.remote.id)
             || blank(file.remote.id) || blank(mimeType)) {
             throw new InvalidContentException();
@@ -420,6 +430,9 @@ public class TelegramMessageMapper {
         ObjectNode sourceData = JsonNodeFactory.instance.objectNode()
             .put("remoteId", file.remote.id)
             .put("fileType", fileType);
+        if (!blank(remoteFileType)) {
+            sourceData.put("remoteFileType", remoteFileType);
+        }
         Long size = file.size > 0 ? file.size : null;
         return new SourceMedia(sourceId, position, mimeType, blank(fileName) ? null : fileName, size,
             TelegramCanonicalHash.media(file, mediaHashData(mimeType, fileName, fileType)), sourceData);

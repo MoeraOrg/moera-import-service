@@ -4,6 +4,7 @@ import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
@@ -21,9 +22,12 @@ import org.moera.lib.node.exception.MoeraNodeException;
 import org.moera.lib.node.types.Features;
 import org.moera.lib.node.types.FeedReference;
 import org.moera.lib.node.types.PostingText;
+import org.moera.lib.node.types.PostingOperations;
 import org.moera.lib.node.types.PrivateMediaFileInfo;
+import org.moera.lib.node.types.RejectedReactions;
 import org.moera.lib.node.types.SettingInfo;
 import org.moera.lib.node.types.StoryAttributes;
+import org.moera.lib.node.types.principal.Principal;
 import org.springframework.stereotype.Service;
 
 @Service
@@ -31,6 +35,16 @@ public class MoeraService {
 
     private static final Duration CAPABILITIES_TTL = Duration.ofMinutes(5);
     private static final String MEDIA_MAX_SIZE = "media.max-size";
+    private static final String CLIENT_POSTING_PREFIX = "client.mercy.posting.";
+    private static final String VISIBILITY_DEFAULT = CLIENT_POSTING_PREFIX + "visibility.default";
+    private static final String COMMENT_ADDITION_DEFAULT = CLIENT_POSTING_PREFIX + "comments.addition.default";
+    private static final String REACTIONS_ENABLED_DEFAULT = CLIENT_POSTING_PREFIX + "reactions.enabled.default";
+    private static final String NEGATIVE_REACTIONS_ENABLED_DEFAULT =
+        CLIENT_POSTING_PREFIX + "reactions.negative.enabled.default";
+    private static final String POSITIVE_REACTIONS_DISABLED_DEFAULT =
+        CLIENT_POSTING_PREFIX + "reactions-disabled.positive.default";
+    private static final String NEGATIVE_REACTIONS_DISABLED_DEFAULT =
+        CLIENT_POSTING_PREFIX + "reactions-disabled.negative.default";
     private static final Set<String> TEMPORARY_ERROR_CODES = Set.of(
         "media.download-failed",
         "media.storage-error",
@@ -83,8 +97,10 @@ public class MoeraService {
 
     public CreatedPosting createPost(Destination destination, PublicationPayload payload) {
         MoeraNode moeraNode = moeraClientFactory.create(destination);
+        PostingText posting = posting(payload, true);
+        applyClientPostingSettings(posting, loadClientPostingSettings(moeraNode));
         try {
-            var created = moeraNode.createPosting(posting(payload, true));
+            var created = moeraNode.createPosting(posting);
             Map<String, String> storyIds = new LinkedHashMap<>();
             if (created.getFeedReferences() != null) {
                 for (FeedReference reference : created.getFeedReferences()) {
@@ -97,6 +113,49 @@ public class MoeraService {
         } catch (MoeraNodeException e) {
             throw mutatingFailure("Moera posting creation outcome is unknown", e);
         }
+    }
+
+    private Map<String, String> loadClientPostingSettings(MoeraNode moeraNode) {
+        Map<String, String> values = new HashMap<>();
+        values.put(VISIBILITY_DEFAULT, "public");
+        values.put(COMMENT_ADDITION_DEFAULT, "signed");
+        values.put(REACTIONS_ENABLED_DEFAULT, "true");
+        values.put(NEGATIVE_REACTIONS_ENABLED_DEFAULT, "true");
+        values.put(POSITIVE_REACTIONS_DISABLED_DEFAULT, "");
+        values.put(NEGATIVE_REACTIONS_DISABLED_DEFAULT, "*");
+        try {
+            SettingInfo[] settings = moeraNode.getClientSettings(CLIENT_POSTING_PREFIX);
+            if (settings != null) {
+                for (SettingInfo setting : settings) {
+                    if (setting != null && values.containsKey(setting.getName()) && setting.getValue() != null) {
+                        values.put(setting.getName(), setting.getValue());
+                    }
+                }
+            }
+            return values;
+        } catch (MoeraNodeException e) {
+            throw externalFailure("Cannot load Moera client posting settings", e);
+        }
+    }
+
+    private void applyClientPostingSettings(PostingText posting, Map<String, String> settings) {
+        boolean reactionsEnabled = booleanSetting(settings.get(REACTIONS_ENABLED_DEFAULT));
+        boolean negativeReactionsEnabled = reactionsEnabled
+            && booleanSetting(settings.get(NEGATIVE_REACTIONS_ENABLED_DEFAULT));
+        PostingOperations operations = new PostingOperations();
+        operations.setView(new Principal(settings.get(VISIBILITY_DEFAULT)));
+        operations.setAddComment(new Principal(settings.get(COMMENT_ADDITION_DEFAULT)));
+        operations.setAddReaction(reactionsEnabled ? Principal.SIGNED : Principal.NONE);
+        operations.setAddNegativeReaction(negativeReactionsEnabled ? Principal.SIGNED : Principal.NONE);
+        posting.setOperations(operations);
+        RejectedReactions rejectedReactions = new RejectedReactions();
+        rejectedReactions.setPositive(settings.get(POSITIVE_REACTIONS_DISABLED_DEFAULT));
+        rejectedReactions.setNegative(settings.get(NEGATIVE_REACTIONS_DISABLED_DEFAULT));
+        posting.setRejectedReactions(rejectedReactions);
+    }
+
+    private boolean booleanSetting(String value) {
+        return "true".equalsIgnoreCase(value) || "yes".equalsIgnoreCase(value) || "1".equals(value);
     }
 
     public void updatePost(Destination destination, String postingId, PublicationPayload payload) {

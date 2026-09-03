@@ -76,15 +76,15 @@ public class PublicationProcessor {
         } catch (MoeraOutcomeUnknownException e) {
             importMetrics.publicationUnknownOutcome();
             importMetrics.publicationFailure("outcome_unknown");
-            log(claim, "outcome_unknown");
+            log(claim, "outcome_unknown", e.getMessage());
             retry(claim, e.getMessage());
         } catch (MoeraTemporaryException e) {
             importMetrics.publicationFailure("temporary");
-            log(claim, "temporary_failure");
+            log(claim, "temporary_failure", e.getMessage());
             retry(claim, e.getMessage());
         } catch (MoeraPermanentException | MoeraConfigurationException e) {
             importMetrics.publicationFailure("permanent");
-            log(claim, "permanent_failure");
+            log(claim, "permanent_failure", e.getMessage());
             publicationRepository.fail(
                 claim.publicationId(), claim.processingToken(), e.getMessage()
             );
@@ -198,14 +198,23 @@ public class PublicationProcessor {
     }
 
     private void log(PublicationClaim claim, String result) {
-        logger.atInfo()
-            .addKeyValue("operation", "publication_delivery")
-            .addKeyValue("publication_id", claim.publicationId())
-            .addKeyValue("processing_token", claim.processingToken())
-            .addKeyValue("attempt", claim.attempts())
-            .addKeyValue("target_revision", claim.targetRevision())
-            .addKeyValue("result", result)
-            .log("Publication operation finished");
+        log(claim, result, null);
+    }
+
+    private void log(PublicationClaim claim, String result, String error) {
+        if (error == null) {
+            logger.info(
+                "Publication operation finished: operation=publication_delivery, publication_id={}, "
+                    + "processing_token={}, attempt={}, target_revision={}, result={}",
+                claim.publicationId(), claim.processingToken(), claim.attempts(), claim.targetRevision(), result
+            );
+        } else {
+            logger.info(
+                "Publication operation finished: operation=publication_delivery, publication_id={}, "
+                    + "processing_token={}, attempt={}, target_revision={}, result={}, error={}",
+                claim.publicationId(), claim.processingToken(), claim.attempts(), claim.targetRevision(), result, error
+            );
+        }
     }
 
 }

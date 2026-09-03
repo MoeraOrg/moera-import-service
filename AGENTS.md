@@ -71,6 +71,8 @@ the user explicitly changes scope.
 ## Security and observability
 
 - Do not log message bodies, Telegram invite links, verification codes, 2FA passwords, tokens, or Moera credentials.
+- Put diagnostic fields directly in the log message text. Do not rely on structured key-values that may be omitted by
+  the configured log format.
 - Do not store Moera credentials directly in PostgreSQL JSONB; store a credential reference and resolve the secret from
   deployment secret storage.
 - TDLight authorization/session state is persistent filesystem state and is credential-equivalent.

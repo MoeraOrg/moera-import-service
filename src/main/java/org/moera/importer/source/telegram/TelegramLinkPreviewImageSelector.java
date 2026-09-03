@@ -11,60 +11,44 @@ final class TelegramLinkPreviewImageSelector {
     }
 
     static SelectedImage select(TdApi.LinkPreviewType type) {
-        if (type instanceof TdApi.LinkPreviewTypeAlbum album) {
-            return album(album.media);
-        } else if (type instanceof TdApi.LinkPreviewTypeAnimation animation) {
-            return thumbnail(animation.animation == null ? null : animation.animation.thumbnail);
-        } else if (type instanceof TdApi.LinkPreviewTypeApp app) {
-            return photo(app.photo);
-        } else if (type instanceof TdApi.LinkPreviewTypeArticle article) {
-            return photo(article.photo);
-        } else if (type instanceof TdApi.LinkPreviewTypeAudio audio) {
-            return thumbnail(audio.audio == null ? null : audio.audio.albumCoverThumbnail);
-        } else if (type instanceof TdApi.LinkPreviewTypeBackground background) {
-            return document(background.document);
-        } else if (type instanceof TdApi.LinkPreviewTypeChannelBoost boost) {
-            return chatPhoto(boost.photo);
-        } else if (type instanceof TdApi.LinkPreviewTypeChat chat) {
-            return chatPhoto(chat.photo);
-        } else if (type instanceof TdApi.LinkPreviewTypeDirectMessagesChat chat) {
-            return chatPhoto(chat.photo);
-        } else if (type instanceof TdApi.LinkPreviewTypeDocument document) {
-            return document(document.document);
-        } else if (type instanceof TdApi.LinkPreviewTypeEmbeddedAnimationPlayer animation) {
-            return first(photo(animation.thumbnail),
-                thumbnail(animation.animation == null ? null : animation.animation.thumbnail));
-        } else if (type instanceof TdApi.LinkPreviewTypeEmbeddedAudioPlayer audio) {
-            return first(photo(audio.thumbnail),
-                thumbnail(audio.audio == null ? null : audio.audio.albumCoverThumbnail));
-        } else if (type instanceof TdApi.LinkPreviewTypeEmbeddedVideoPlayer video) {
-            return first(photo(video.thumbnail), video(video.video));
-        } else if (type instanceof TdApi.LinkPreviewTypeGiftCollection collection) {
-            return stickers(collection.icons);
-        } else if (type instanceof TdApi.LinkPreviewTypePhoto photo) {
-            return photo(photo.photo);
-        } else if (type instanceof TdApi.LinkPreviewTypeSticker sticker) {
-            return sticker(sticker.sticker);
-        } else if (type instanceof TdApi.LinkPreviewTypeStickerSet stickerSet) {
-            return stickers(stickerSet.stickers);
-        } else if (type instanceof TdApi.LinkPreviewTypeStoryAlbum album) {
-            return first(photo(album.photoIcon), video(album.videoIcon));
-        } else if (type instanceof TdApi.LinkPreviewTypeSupergroupBoost boost) {
-            return chatPhoto(boost.photo);
-        } else if (type instanceof TdApi.LinkPreviewTypeTheme theme) {
-            return documents(theme.documents);
-        } else if (type instanceof TdApi.LinkPreviewTypeUser user) {
-            return chatPhoto(user.photo);
-        } else if (type instanceof TdApi.LinkPreviewTypeVideo video) {
-            return first(photo(video.cover), video(video.video));
-        } else if (type instanceof TdApi.LinkPreviewTypeVideoChat chat) {
-            return chatPhoto(chat.photo);
-        } else if (type instanceof TdApi.LinkPreviewTypeVideoNote videoNote) {
-            return thumbnail(videoNote.videoNote == null ? null : videoNote.videoNote.thumbnail);
-        } else if (type instanceof TdApi.LinkPreviewTypeWebApp webApp) {
-            return photo(webApp.photo);
-        }
-        return null;
+        return switch (type) {
+            case TdApi.LinkPreviewTypeAlbum album -> album(album.media);
+            case TdApi.LinkPreviewTypeAnimation animation ->
+                thumbnail(animation.animation == null ? null : animation.animation.thumbnail);
+            case TdApi.LinkPreviewTypeApp app -> photo(app.photo);
+            case TdApi.LinkPreviewTypeArticle article -> photo(article.photo);
+            case TdApi.LinkPreviewTypeAudio audio ->
+                thumbnail(audio.audio == null ? null : audio.audio.albumCoverThumbnail);
+            case TdApi.LinkPreviewTypeBackground background -> document(background.document);
+            case TdApi.LinkPreviewTypeChannelBoost boost -> chatPhoto(boost.photo);
+            case TdApi.LinkPreviewTypeChat chat -> chatPhoto(chat.photo);
+            case TdApi.LinkPreviewTypeDirectMessagesChat chat -> chatPhoto(chat.photo);
+            case TdApi.LinkPreviewTypeDocument document -> document(document.document);
+            case TdApi.LinkPreviewTypeEmbeddedAnimationPlayer animation -> first(
+                photo(animation.thumbnail),
+                thumbnail(animation.animation == null ? null : animation.animation.thumbnail)
+            );
+            case TdApi.LinkPreviewTypeEmbeddedAudioPlayer audio -> first(
+                photo(audio.thumbnail),
+                thumbnail(audio.audio == null ? null : audio.audio.albumCoverThumbnail)
+            );
+            case TdApi.LinkPreviewTypeEmbeddedVideoPlayer video ->
+                first(photo(video.thumbnail), video(video.video));
+            case TdApi.LinkPreviewTypeGiftCollection collection -> stickers(collection.icons);
+            case TdApi.LinkPreviewTypePhoto photo -> photo(photo.photo);
+            case TdApi.LinkPreviewTypeSticker sticker -> sticker(sticker.sticker);
+            case TdApi.LinkPreviewTypeStickerSet stickerSet -> stickers(stickerSet.stickers);
+            case TdApi.LinkPreviewTypeStoryAlbum album -> first(photo(album.photoIcon), video(album.videoIcon));
+            case TdApi.LinkPreviewTypeSupergroupBoost boost -> chatPhoto(boost.photo);
+            case TdApi.LinkPreviewTypeTheme theme -> documents(theme.documents);
+            case TdApi.LinkPreviewTypeUser user -> chatPhoto(user.photo);
+            case TdApi.LinkPreviewTypeVideo video -> first(photo(video.cover), video(video.video));
+            case TdApi.LinkPreviewTypeVideoChat chat -> chatPhoto(chat.photo);
+            case TdApi.LinkPreviewTypeVideoNote videoNote ->
+                thumbnail(videoNote.videoNote == null ? null : videoNote.videoNote.thumbnail);
+            case TdApi.LinkPreviewTypeWebApp webApp -> photo(webApp.photo);
+            case null, default -> null;
+        };
     }
 
     private static SelectedImage album(TdApi.LinkPreviewAlbumMedia[] media) {
@@ -145,18 +129,16 @@ final class TelegramLinkPreviewImageSelector {
             return null;
         }
         String mimeType;
-        if (thumbnail.format instanceof TdApi.ThumbnailFormatJpeg) {
-            mimeType = "image/jpeg";
-        } else if (thumbnail.format instanceof TdApi.ThumbnailFormatPng) {
-            mimeType = "image/png";
-        } else if (thumbnail.format instanceof TdApi.ThumbnailFormatWebp) {
-            mimeType = "image/webp";
-        } else if (thumbnail.format instanceof TdApi.ThumbnailFormatGif) {
-            mimeType = "image/gif";
-        } else {
-            return null;
+        switch (thumbnail.format) {
+            case TdApi.ThumbnailFormatJpeg _ -> mimeType = "image/jpeg";
+            case TdApi.ThumbnailFormatPng _ -> mimeType = "image/png";
+            case TdApi.ThumbnailFormatWebp _ -> mimeType = "image/webp";
+            case TdApi.ThumbnailFormatGif _ -> mimeType = "image/gif";
+            case null, default -> {
+                return null;
+            }
         }
-        return new SelectedImage(thumbnail.file, mimeType);
+        return new SelectedImage(thumbnail.file, mimeType, "thumbnail");
     }
 
     private static SelectedImage video(TdApi.Video video) {
@@ -164,7 +146,7 @@ final class TelegramLinkPreviewImageSelector {
     }
 
     private static SelectedImage jpeg(TdApi.File file) {
-        return file == null ? null : new SelectedImage(file, "image/jpeg");
+        return file == null ? null : new SelectedImage(file, "image/jpeg", "photo");
     }
 
     private static TdApi.File largestFile(TdApi.PhotoSize[] sizes) {
@@ -191,7 +173,7 @@ final class TelegramLinkPreviewImageSelector {
         return (long) size.width * size.height;
     }
 
-    record SelectedImage(TdApi.File file, String mimeType) {
+    record SelectedImage(TdApi.File file, String mimeType, String remoteFileType) {
     }
 
 }

@@ -10,7 +10,7 @@ import org.springframework.context.annotation.Configuration;
 public class TelegramConfiguration {
 
     @Bean
-    public TelegramClient telegramClient(TelegramProperties properties) {
+    public TdLightTelegramClient telegramClient(TelegramProperties properties) {
         return new TdLightTelegramClient(properties, properties.isLogin());
     }
 

@@ -132,7 +132,7 @@ public class PollLeaseHeartbeat {
                 if (closed.get()) {
                     return;
                 }
-                record("failed");
+                record("failed", diagnostic(e));
                 if (!clock.instant().isBefore(localExpiry)) {
                     markLost();
                 }
@@ -147,13 +147,28 @@ public class PollLeaseHeartbeat {
         }
 
         private void record(String result) {
+            record(result, null);
+        }
+
+        private void record(String result, String error) {
             importMetrics.leaseRenewal(result);
-            log.atInfo()
-                .addKeyValue("operation", "channel_poll_lease_renewal")
-                .addKeyValue("channel_id", claim.channel().id())
-                .addKeyValue("processing_token", claim.processingToken())
-                .addKeyValue("result", result)
-                .log("Channel poll lease renewal finished");
+            if (error == null) {
+                log.info(
+                    "Channel poll lease renewal finished: operation=channel_poll_lease_renewal, channel_id={}, "
+                        + "processing_token={}, result={}",
+                    claim.channel().id(), claim.processingToken(), result
+                );
+            } else {
+                log.info(
+                    "Channel poll lease renewal finished: operation=channel_poll_lease_renewal, channel_id={}, "
+                        + "processing_token={}, result={}, error={}",
+                    claim.channel().id(), claim.processingToken(), result, error
+                );
+            }
+        }
+
+        private String diagnostic(RuntimeException exception) {
+            return exception.getMessage() != null ? exception.getMessage() : exception.getClass().getSimpleName();
         }
 
         @Override

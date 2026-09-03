@@ -192,7 +192,7 @@ class TelegramMessageMapperTest {
     }
 
     @Test
-    void decoratesBodyWithForwardAttributionSignatureButtonsAndFactCheck() {
+    void decoratesBodyWithForwardAttributionButtonsAndFactCheckAndIgnoresAuthorSignature() {
         TdApi.Message telegram = message(new TdApi.MessageText(text("Content"), null, null));
         telegram.forwardInfo = new TdApi.MessageForwardInfo(new TdApi.MessageOriginHiddenUser("Source <name>"),
             0, null, "ignored");
@@ -209,7 +209,6 @@ class TelegramMessageMapperTest {
         var mapped = mapped(telegram);
 
         assertThat(mapped.body()).isEqualTo("<p>Source &lt;name&gt;</p><p>Content</p>"
-            + "<p><i>— Editor &amp; Co</i></p>"
             + "<p><a href=\"https://example.org/a?x=1&amp;y=2\">Open</a></p>"
             + "<hr><p><b>Fact check</b></p><blockquote>Verified &lt;fact&gt;</blockquote>");
         assertThat(mapped.sourceData().path("forwardAttribution").path("name").asText())
@@ -231,7 +230,7 @@ class TelegramMessageMapperTest {
             }
 
         });
-        long tdlibMessageId = 123L << 20;
+        long tdlibMessageId = 6660L << 20;
         TdApi.Message telegram = message(new TdApi.MessageText(text("News"), null, null));
         telegram.forwardInfo = new TdApi.MessageForwardInfo(
             new TdApi.MessageOriginChannel(-1001, tdlibMessageId, ""), 0, null, ""
@@ -240,10 +239,10 @@ class TelegramMessageMapperTest {
         var mapped = ((TelegramMappingResult.Mapped) mapper.map(telegram)).message();
 
         assertThat(mapped.body()).startsWith(
-            "<p><a href=\"https://t.me/moera_news/123\">Moera News</a></p>"
+            "<p><a href=\"https://t.me/moera_news/6660\">Moera News</a></p>"
         );
         assertThat(mapped.sourceData().path("forwardAttribution").path("url").asText())
-            .isEqualTo("https://t.me/moera_news/123");
+            .isEqualTo("https://t.me/moera_news/6660");
     }
 
     @Test
@@ -270,6 +269,9 @@ class TelegramMessageMapperTest {
         assertThat(mapped.linkPreviews().getFirst().imageSourceMediaId()).isEqualTo("preview-large");
         assertThat(mapped.media()).extracting(org.moera.importer.source.SourceMedia::sourceId)
             .containsExactly("preview-large");
+        assertThat(mapped.media().getFirst().sourceData().path("fileType").asText())
+            .isEqualTo("linkPreviewImage");
+        assertThat(mapped.media().getFirst().sourceData().path("remoteFileType").asText()).isEqualTo("photo");
     }
 
     @Test
@@ -303,6 +305,9 @@ class TelegramMessageMapperTest {
         var mapped = mapped(message(new TdApi.MessageText(text("Read"), preview, null)));
 
         assertThat(mapped.media().getFirst().mimeType()).isEqualTo("image/png");
+        assertThat(mapped.media().getFirst().sourceData().path("fileType").asText())
+            .isEqualTo("linkPreviewImage");
+        assertThat(mapped.media().getFirst().sourceData().path("remoteFileType").asText()).isEqualTo("thumbnail");
     }
 
     @ParameterizedTest

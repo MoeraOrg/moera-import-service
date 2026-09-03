@@ -11,6 +11,9 @@ import java.time.ZoneOffset;
 import java.util.List;
 import java.util.UUID;
 
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -49,6 +52,7 @@ import org.moera.importer.source.SourceMessage;
 import org.moera.importer.source.SubscriptionResult;
 import org.moera.importer.staging.StagingFileManager;
 import org.moera.lib.node.types.SourceFormat;
+import org.slf4j.LoggerFactory;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -215,11 +219,30 @@ class PublicationMediaProcessorTest {
         moeraService.failure = new MoeraTemporaryException("temporary", null);
         Path path = stagingPath();
 
-        publicationMediaProcessor.process(claim());
+        Logger logger = (Logger) LoggerFactory.getLogger(PublicationMediaProcessor.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+
+        try {
+            publicationMediaProcessor.process(claim());
+        } finally {
+            logger.detachAppender(appender);
+            appender.stop();
+        }
 
         assertThat(publicationMediaRepository.nextAttemptAt).isEqualTo(NOW.plus(Duration.ofMinutes(4)));
         assertThat(publicationMediaRepository.error).isEqualTo("temporary");
         assertThat(path).exists();
+        assertThat(appender.list).anySatisfy(event -> assertThat(event.getFormattedMessage())
+            .contains(
+                "operation=publication_media",
+                "publication_id=17",
+                "media_id=23",
+                "attempt=3",
+                "result=temporary_failure",
+                "error=temporary"
+            ));
     }
 
     @Test

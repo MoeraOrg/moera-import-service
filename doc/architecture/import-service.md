@@ -217,6 +217,9 @@ access not GRANTED
     -> contents cannot be polled
 ```
 
+For Telegram, infrequent polling with an active subscription runs every 30 minutes. More frequent polling for every
+other subscription state runs every 10 minutes.
+
 Persistent scheduling state is:
 
 ```text
@@ -341,8 +344,8 @@ only visible characters. Thus a formatting-only edit is detected.
 The source adapter defines the canonical source representation; the project standardizes the hash algorithm/size.
 
 The canonical body representation also includes normalized structured values that affect the destination body, such as
-link-preview metadata, forward attribution, author signatures, supported buttons, and fact-checks. Source fields that
-the mapping rules explicitly ignore are not included.
+link-preview metadata, forward attribution, supported buttons, and fact-checks. Source fields that the mapping rules
+explicitly ignore, including `authorSignature`, are not included.
 
 When messages with different body formats are combined into a publication, the publication-building/destination path
 converts them to a common representation acceptable to Moera.
@@ -760,6 +763,11 @@ posting.sourceFormats from /features
 ```
 
 Capabilities may be cached in memory for a short TTL, but PostgreSQL is not their source of truth.
+
+Immediately before every posting creation, `MoeraService` fetches client settings with the
+`client.mercy.posting.` prefix. It applies the same defaults and derivation as `moera-client-react` for posting view,
+comment addition, positive and negative reaction addition, and rejected reactions. These settings are never cached,
+so a change affects the next created posting. Posting updates preserve the existing posting-level values.
 
 For each source media item:
 
@@ -1488,8 +1496,8 @@ in `<p>`.
 
 The `source_body_hash` is calculated from a canonical representation of every source value that affects normalized body
 or link-preview output, not from generated HTML. This includes original Telegram text, ordered formatting entities and
-their semantic data, forward attribution, author signature, supported URL buttons, fact-checks, and link-preview
-metadata. Explicitly ignored fields are excluded.
+their semantic data, forward attribution, supported URL buttons, fact-checks, and link-preview metadata. Explicitly
+ignored fields, including `authorSignature`, are excluded.
 
 Formatting-only edits therefore increment `Message.revision`.
 
@@ -1596,13 +1604,16 @@ message ID is available, otherwise to the channel; a public user links to their 
 <p><a href="source-url">Source name</a></p>
 ```
 
+The adapter resolves a channel origin by its TDLib chat ID. It uses `GetChat.title` as the source name and the first
+active username from `GetSupergroup` to build the public link.
+
 When only a source name is available, it is emitted without a link; when neither is available, attribution is omitted.
 Attribution is repeated for every forwarded message. When grouped Telegram messages change attribution, `<hr>` is
 inserted before the differently attributed message.
 
-An `authorSignature` is appended after the message content as `<p><i>— Author</i></p>`. Ordinary safe-URL inline buttons
-are then appended as links; callbacks, Web Apps, login, payment, and other Telegram-only buttons are ignored. A Telegram
-fact-check follows buttons as:
+`authorSignature` is ignored because the standard Telegram client does not display it. Ordinary safe-URL inline
+buttons are appended as links; callbacks, Web Apps, login, payment, and other Telegram-only buttons are ignored. A
+Telegram fact-check follows buttons as:
 
 ```html
 <hr>
