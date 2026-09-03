@@ -197,6 +197,7 @@ class MoeraServiceTest {
         verify(moeraNode).createPosting(posting.capture());
         assertThat(posting.getValue().getBodySrc()).isSameAs(payload.bodySrc());
         assertThat(posting.getValue().getPublications()).isEqualTo(payload.publications());
+        assertThat(posting.getValue().getExternalSourceUri()).isEqualTo(payload.externalSourceUri());
         assertThat(posting.getValue().getOperations().getView()).isEqualTo(Principal.PUBLIC);
         assertThat(posting.getValue().getOperations().getAddComment()).isEqualTo(Principal.SIGNED);
         assertThat(posting.getValue().getOperations().getAddReaction()).isEqualTo(Principal.SIGNED);
@@ -343,6 +344,7 @@ class MoeraServiceTest {
         verify(moeraNode).updatePosting(anyString(), posting.capture());
         assertThat(posting.getValue().getBodySrc()).isSameAs(payload.bodySrc());
         assertThat(posting.getValue().getMedia()).isEqualTo(payload.media());
+        assertThat(posting.getValue().getExternalSourceUri()).isEqualTo(payload.externalSourceUri());
         assertThat(posting.getValue().getPublications()).isNull();
         verify(moeraNode, never()).updateRemotePosting(anyString(), anyString(), any());
     }
@@ -417,7 +419,8 @@ class MoeraServiceTest {
         publication.setPublishAt(NOW.getEpochSecond());
         publication.setPinned(true);
         return new PublicationPayload(
-            body, SourceFormat.HTML, List.of(media), List.of(publication), true
+            body, SourceFormat.HTML, List.of(media), List.of(publication), true,
+            List.of("https://t.me/news/10", "https://t.me/news/11")
         );
     }
 

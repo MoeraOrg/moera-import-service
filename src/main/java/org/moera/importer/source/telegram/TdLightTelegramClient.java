@@ -161,6 +161,16 @@ public class TdLightTelegramClient implements TelegramClient, TelegramForwardMet
         return new Source(chat.title, username);
     }
 
+    @Override
+    public String messageLink(long chatId, long messageId) {
+        String publicLink = TelegramForwardMetadataResolver.super.messageLink(chatId, messageId);
+        if (!ObjectUtils.isEmpty(publicLink)) {
+            return publicLink;
+        }
+        TdApi.MessageLink link = send(new TdApi.GetMessageLink(chatId, messageId, 0, 0, "", false, false));
+        return link == null ? null : link.link;
+    }
+
     private String primaryUsername(TdApi.Usernames usernames) {
         return usernames == null || ObjectUtils.isEmpty(usernames.activeUsernames)
             ? null

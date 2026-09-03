@@ -333,6 +333,7 @@ public class MoeraService {
         posting.setBodySrc(payload.bodySrc());
         posting.setBodySrcFormat(payload.bodySrcFormat());
         posting.setMedia(payload.media());
+        posting.setExternalSourceUri(payload.externalSourceUri());
         if (create) {
             posting.setPublications(payload.publications());
         }

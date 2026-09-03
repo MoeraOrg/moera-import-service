@@ -53,8 +53,18 @@ public class PublicationPayloadBuilder {
             .map(Message::publishedAt).min(Instant::compareTo).orElse(null);
 
         return new PublicationPayload(
-            body, format, media, publications(context.mirrorConfig(), publishedAt, pinned), pinned
+            body, format, media, publications(context.mirrorConfig(), publishedAt, pinned), pinned,
+            externalSourceUri(members)
         );
+    }
+
+    private List<String> externalSourceUri(List<PublicationContext.Member> members) {
+        return members.stream()
+            .map(member -> member.message().sourceData().path("externalSourceUri"))
+            .filter(JsonNode::isTextual)
+            .map(JsonNode::textValue)
+            .filter(uri -> !uri.isBlank())
+            .toList();
     }
 
     private SourceFormat selectFormat(List<PublicationContext.Member> members, DestinationCapabilities capabilities) {

@@ -115,6 +115,27 @@ class PublicationPayloadBuilderTest {
     }
 
     @Test
+    void collectsOrderedSourceLinksFromNonDeletedMembers() {
+        ObjectNode firstSource = objectNode().put("externalSourceUri", "https://t.me/news/10");
+        ObjectNode secondSource = objectNode().put("externalSourceUri", "https://t.me/news/11");
+        ObjectNode deletedSource = objectNode().put("externalSourceUri", "https://t.me/news/12");
+        PublicationContext context = context(
+            config("timeline"),
+            List.of(
+                member(message(1, "first", BodyFormat.HTML, NOW, false, false, firstSource)),
+                member(message(2, "", BodyFormat.HTML, NOW, false, false, secondSource)),
+                member(message(3, "deleted", BodyFormat.HTML, NOW, false, true, deletedSource))
+            ),
+            List.of()
+        );
+
+        PublicationPayload payload = publicationPayloadBuilder.build(context, capabilities(HTML));
+
+        assertThat(payload.externalSourceUri())
+            .containsExactly("https://t.me/news/10", "https://t.me/news/11");
+    }
+
+    @Test
     void insertsRuleBetweenDifferentForwardAttributions() {
         ObjectNode firstSource = objectNode();
         firstSource.putObject("forwardAttribution").put("name", "First");

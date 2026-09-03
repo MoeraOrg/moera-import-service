@@ -212,6 +212,36 @@ class TdLightTelegramClientTest {
     }
 
     @Test
+    void requestsPrivateMessageLinkFromTelegram() {
+        ClientFactory clientFactory = mock(ClientFactory.class);
+        it.tdlight.TelegramClient nativeClient = mock(it.tdlight.TelegramClient.class);
+        when(clientFactory.createClient()).thenReturn(nativeClient);
+        TdApi.Chat chat = new TdApi.Chat();
+        chat.id = -1_000_000_001_001L;
+        chat.title = "Private channel";
+        doReturn(CompletableFuture.completedFuture(chat))
+            .when(nativeClient).sendAsync(isA(TdApi.GetChat.class));
+        doReturn(CompletableFuture.completedFuture(new TdApi.MessageLink(
+            "https://t.me/c/1001/6660", false
+        ))).when(nativeClient).sendAsync(isA(TdApi.GetMessageLink.class));
+        TdLightTelegramClient client = new TdLightTelegramClient(
+            properties(),
+            false,
+            () -> clientFactory,
+            () -> mock(TdLightLoginPrompt.class)
+        );
+        client.start(ignored -> {
+        });
+        long messageId = 6660L << 20;
+        ArgumentCaptor<TdApi.GetMessageLink> request = ArgumentCaptor.forClass(TdApi.GetMessageLink.class);
+
+        assertThat(client.messageLink(chat.id, messageId)).isEqualTo("https://t.me/c/1001/6660");
+        verify(nativeClient).sendAsync(request.capture());
+        assertThat(request.getValue().chatId).isEqualTo(chat.id);
+        assertThat(request.getValue().messageId).isEqualTo(messageId);
+    }
+
+    @Test
     void readsCompleteChannelMetadataAndLargePhotoIdentity() {
         ClientFactory clientFactory = mock(ClientFactory.class);
         it.tdlight.TelegramClient nativeClient = mock(it.tdlight.TelegramClient.class);

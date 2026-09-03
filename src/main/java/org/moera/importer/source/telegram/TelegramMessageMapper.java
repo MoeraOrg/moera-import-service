@@ -88,6 +88,10 @@ public class TelegramMessageMapper {
             if (message.mediaAlbumId != 0) {
                 sourceData.put("mediaAlbumId", message.mediaAlbumId);
             }
+            String externalSourceUri = metadataResolver.messageLink(message.chatId, message.id);
+            if (externalSourceUri != null && !externalSourceUri.isBlank()) {
+                sourceData.put("externalSourceUri", externalSourceUri);
+            }
             if (attribution != null) {
                 ObjectNode node = sourceData.putObject("forwardAttribution").put("name", attribution.name());
                 if (attribution.url() != null) {

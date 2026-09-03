@@ -13,7 +13,8 @@ public record PublicationPayload(
     SourceFormat bodySrcFormat,
     List<MediaToAttach> media,
     List<StoryAttributes> publications,
-    boolean pinned
+    boolean pinned,
+    List<String> externalSourceUri
 ) {
 
     public PublicationPayload {
@@ -21,6 +22,7 @@ public record PublicationPayload(
         Objects.requireNonNull(bodySrcFormat, "bodySrcFormat");
         media = List.copyOf(Objects.requireNonNull(media, "media"));
         publications = List.copyOf(Objects.requireNonNull(publications, "publications"));
+        externalSourceUri = List.copyOf(Objects.requireNonNull(externalSourceUri, "externalSourceUri"));
     }
 
     public boolean empty() {

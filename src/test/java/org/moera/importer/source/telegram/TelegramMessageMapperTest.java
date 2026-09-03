@@ -246,6 +246,61 @@ class TelegramMessageMapperTest {
     }
 
     @Test
+    void storesPublicChannelMessageLink() {
+        TelegramMessageMapper mapper = new TelegramMessageMapper(new TelegramForwardMetadataResolver() {
+
+            @Override
+            public Source user(long userId) {
+                return null;
+            }
+
+            @Override
+            public Source chat(long chatId) {
+                return new Source("Moera News", "moera_news");
+            }
+
+        });
+        TdApi.Message telegram = message(new TdApi.MessageText(text("News"), null, null));
+        telegram.chatId = -1001;
+        telegram.id = 6660L << 20;
+
+        var mapped = ((TelegramMappingResult.Mapped) mapper.map(telegram)).message();
+
+        assertThat(mapped.sourceData().path("externalSourceUri").asText())
+            .isEqualTo("https://t.me/moera_news/6660");
+    }
+
+    @Test
+    void storesResolvedPrivateChannelMessageLink() {
+        TelegramMessageMapper mapper = new TelegramMessageMapper(new TelegramForwardMetadataResolver() {
+
+            @Override
+            public Source user(long userId) {
+                return null;
+            }
+
+            @Override
+            public Source chat(long chatId) {
+                return new Source("Private channel", null);
+            }
+
+            @Override
+            public String messageLink(long chatId, long messageId) {
+                return "https://t.me/c/1001/6660";
+            }
+
+        });
+        TdApi.Message telegram = message(new TdApi.MessageText(text("News"), null, null));
+        telegram.chatId = -1001;
+        telegram.id = 6660L << 20;
+
+        var mapped = ((TelegramMappingResult.Mapped) mapper.map(telegram)).message();
+
+        assertThat(mapped.sourceData().path("externalSourceUri").asText())
+            .isEqualTo("https://t.me/c/1001/6660");
+    }
+
+    @Test
     void mapsLinkPreviewAndAttachesItsLargestPhoto() {
         TdApi.Photo photo = new TdApi.Photo(false, null, new TdApi.PhotoSize[] {
             new TdApi.PhotoSize("m", file("preview-small", "small-id", 30), 100, 100, new int[0]),

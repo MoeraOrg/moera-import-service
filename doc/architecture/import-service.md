@@ -774,6 +774,9 @@ Immediately before every posting creation, `MoeraService` fetches client setting
 comment addition, positive and negative reaction addition, and rejected reactions. These settings are never cached,
 so a change affects the next created posting. Posting updates preserve the existing posting-level values.
 
+Every posting create and update sets `PostingText.externalSourceUri` to the ordered links of all non-deleted source
+messages that currently compose the publication. Empty or unavailable links are omitted.
+
 For each source media item:
 
 1. If an exact source size is already known and exceeds `mediaMaxSize`, mark it `SKIPPED / TOO_LARGE` without
@@ -1508,6 +1511,11 @@ Formatting-only edits therefore increment `Message.revision`.
 
 Telegram entity offsets are interpreted according to TDLib semantics inside the Telegram mapper and do not leak into
 the universal model.
+
+The Telegram mapper stores the canonical message link in message `source_data`. Public-channel links are formed from
+the channel username and Telegram's public message identifier. For channels without a public username, the adapter
+uses TDLib `GetMessageLink`. This link participates in the canonical body hash because it affects the delivered
+`PostingText.externalSourceUri` value.
 
 The mapper uses an explicit allowlist. Its result is either `Mapped(SourceMessage)` or `Skipped(reason)`; it never uses
 `null` to represent a deliberate skip. Known skip reasons are low-cardinality values such as `UNSUPPORTED_CONTENT`,

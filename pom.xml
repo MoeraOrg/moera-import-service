@@ -23,7 +23,8 @@
         <checkstyle.version>13.9.0</checkstyle.version>
         <flexmark.version>0.64.8</flexmark.version>
         <jsoup.version>1.23.1</jsoup.version>
-        <moeralib.version>0.19.0</moeralib.version>
+        <moeralib.version>0.19.1-SNAPSHOT</moeralib.version>
+        <moeralib.compatible.version>0.19.0</moeralib.compatible.version>
         <tdlight.version>3.5.4+td.1.8.66</tdlight.version>
     </properties>
 
@@ -110,7 +111,7 @@
         <dependency>
             <groupId>org.moera</groupId>
             <artifactId>moeralib-jvm</artifactId>
-            <version>${moeralib.version}</version>
+            <version>${moeralib.compatible.version}</version>
         </dependency>
         <dependency>
             <groupId>org.jsoup</groupId>

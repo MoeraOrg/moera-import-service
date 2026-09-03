@@ -1645,3 +1645,13 @@ tasks in order:
 - [x] Render retained entities as links in the Moera profile while leaving hashtags as plain text.
 - [x] Cover TDLib filtering, metadata persistence, and profile HTML rendering with tests.
 - [x] Run the full Maven verification suite.
+
+---
+
+### Task 19: Attach Telegram source-message links to Moera postings
+
+- [x] Resolve and persist a canonical link for every mapped Telegram message.
+- [x] Collect ordered links from all non-deleted publication members.
+- [x] Set `PostingText.externalSourceUri` on posting creation and update.
+- [x] Cover public/private link resolution, grouped publications, and Moera request mapping with tests.
+- [x] Run the full Maven verification suite.
