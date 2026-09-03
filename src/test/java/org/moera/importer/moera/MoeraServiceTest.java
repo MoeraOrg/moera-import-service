@@ -22,12 +22,16 @@ import org.moera.lib.node.exception.MoeraNodeApiOperationException;
 import org.moera.lib.node.exception.MoeraNodeApiValidationException;
 import org.moera.lib.node.exception.MoeraNodeConnectionException;
 import org.moera.lib.node.types.Features;
+import org.moera.lib.node.types.AvatarAttributes;
+import org.moera.lib.node.types.AvatarInfo;
 import org.moera.lib.node.types.FeedReference;
 import org.moera.lib.node.types.MediaToAttach;
 import org.moera.lib.node.types.PostingFeatures;
 import org.moera.lib.node.types.PostingInfo;
 import org.moera.lib.node.types.PostingText;
 import org.moera.lib.node.types.PrivateMediaFileInfo;
+import org.moera.lib.node.types.ProfileAttributes;
+import org.moera.lib.node.types.PublicMediaFileInfo;
 import org.moera.lib.node.types.SettingInfo;
 import org.moera.lib.node.types.SourceFormat;
 import org.moera.lib.node.types.StoryAttributes;
@@ -201,6 +205,82 @@ class MoeraServiceTest {
         assertThat(posting.getValue().getRejectedReactions().getNegative()).isEqualTo("*");
         verify(moeraNode).getClientSettings("client.mercy.posting.");
         verify(moeraNode, never()).createRemotePosting(anyString(), any());
+    }
+
+    @Test
+    void createsGlobalAvatarAndUpdatesProfileFromChannelMetadata() throws Exception {
+        Path emblem = temporaryDirectory.resolve("emblem.jpg");
+        PublicMediaFileInfo media = new PublicMediaFileInfo();
+        media.setId("public-media-id");
+        media.setWidth(640);
+        media.setHeight(480);
+        AvatarInfo avatar = new AvatarInfo();
+        avatar.setId("avatar-id");
+        avatar.setMediaId("avatar-media-id");
+        avatar.setShape("circle");
+        when(moeraNode.uploadPublicMedia(emblem, "image/jpeg")).thenReturn(media);
+        when(moeraNode.createAvatar(any())).thenReturn(avatar);
+
+        MoeraProfileAvatar result = moeraService.updateProfile(destination, new MoeraProfileUpdate(
+            "Telegram News", "<p>Channel description</p><p>Mirror attribution</p>", emblem,
+            "image/jpeg", null, null, true
+        ));
+
+        assertThat(result).isEqualTo(new MoeraProfileAvatar("avatar-id", "avatar-media-id", "circle"));
+        ArgumentCaptor<AvatarAttributes> avatarAttributes = ArgumentCaptor.forClass(AvatarAttributes.class);
+        verify(moeraNode).createAvatar(avatarAttributes.capture());
+        assertThat(avatarAttributes.getValue().getMediaId()).isEqualTo("public-media-id");
+        assertThat(avatarAttributes.getValue().getClipX()).isEqualTo(80);
+        assertThat(avatarAttributes.getValue().getClipY()).isZero();
+        assertThat(avatarAttributes.getValue().getClipSize()).isEqualTo(480);
+        assertThat(avatarAttributes.getValue().getAvatarSize()).isEqualTo(200);
+        assertThat(avatarAttributes.getValue().getShape()).isEqualTo("circle");
+        ArgumentCaptor<ProfileAttributes> profile = ArgumentCaptor.forClass(ProfileAttributes.class);
+        verify(moeraNode).updateProfile(profile.capture());
+        assertThat(profile.getValue().getFullName()).isEqualTo("Telegram News");
+        assertThat(profile.getValue().getBioSrc()).isEqualTo(
+            "<p>Channel description</p><p>Mirror attribution</p>"
+        );
+        assertThat(profile.getValue().getBioSrcFormat()).isEqualTo(SourceFormat.HTML);
+        assertThat(profile.getValue().getAvatarId()).isEqualTo("avatar-id");
+    }
+
+    @Test
+    void removesGlobalAvatarWhenChannelEmblemDisappears() throws Exception {
+        MoeraProfileAvatar result = moeraService.updateProfile(destination, new MoeraProfileUpdate(
+            "Telegram News", "<p>Mirror attribution</p>", null, null,
+            "avatar-id", "avatar-media-id", false
+        ));
+
+        assertThat(result).isEqualTo(new MoeraProfileAvatar("", null, null));
+        ArgumentCaptor<ProfileAttributes> profile = ArgumentCaptor.forClass(ProfileAttributes.class);
+        var calls = inOrder(moeraNode);
+        calls.verify(moeraNode).updateProfile(profile.capture());
+        calls.verify(moeraNode).deleteAvatar("avatar-id");
+        assertThat(profile.getValue().getAvatarId()).isNull();
+    }
+
+    @Test
+    void putsSynchronizedAvatarIntoEveryCreatedPosting() throws Exception {
+        PostingInfo created = new PostingInfo();
+        created.setId("posting-id");
+        when(moeraNode.createPosting(any())).thenReturn(created);
+        var data = JsonNodeFactory.instance.objectNode();
+        data.putObject("profile")
+            .put("avatarMediaId", "avatar-media-id")
+            .put("avatarShape", "circle");
+        Destination destinationWithAvatar = new Destination(
+            1, "alice", JsonNodeFactory.instance.objectNode(), data, NOW, NOW
+        );
+        when(moeraClientFactory.create(destinationWithAvatar)).thenReturn(moeraNode);
+
+        moeraService.createPost(destinationWithAvatar, payload());
+
+        ArgumentCaptor<PostingText> posting = ArgumentCaptor.forClass(PostingText.class);
+        verify(moeraNode).createPosting(posting.capture());
+        assertThat(posting.getValue().getOwnerAvatar().getMediaId()).isEqualTo("avatar-media-id");
+        assertThat(posting.getValue().getOwnerAvatar().getShape()).isEqualTo("circle");
+        assertThat(posting.getValue().getOwnerAvatar().getOptional()).isTrue();
     }
 
     @Test

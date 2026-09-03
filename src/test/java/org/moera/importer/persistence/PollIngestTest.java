@@ -15,6 +15,7 @@ import org.junit.jupiter.api.Test;
 import org.moera.importer.model.BodyFormat;
 import org.moera.importer.model.SourceType;
 import org.moera.importer.source.ChannelSnapshot;
+import org.moera.importer.source.ChannelMetadata;
 import org.moera.importer.source.PollResult;
 import org.moera.importer.source.SourceLinkPreview;
 import org.moera.importer.source.SourceMedia;
@@ -76,7 +77,16 @@ class PollIngestTest extends PostgresIntegrationTest {
         Instant nextPollAt = Instant.parse("2026-08-25T10:30:00Z");
         PollResult result = new PollResult(
             List.of(sourceMessage()),
-            JsonNodeFactory.instance.objectNode().put("cursor", "advanced-waterline")
+            JsonNodeFactory.instance.objectNode().put("cursor", "advanced-waterline"),
+            new ChannelMetadata(
+                "Updated title",
+                "Updated https://example.org",
+                List.of(new ChannelMetadata.DescriptionEntity(
+                    8, 19, ChannelMetadata.DescriptionEntityType.URL
+                )),
+                "updated_channel",
+                new ChannelMetadata.Emblem("remote-photo", "unique-photo", "image/jpeg")
+            )
         );
 
         boolean completed = messageRepository.ingestPoll(channelId, processingToken, result, nextPollAt);
@@ -95,6 +105,13 @@ class PollIngestTest extends PostgresIntegrationTest {
         assertThat(channel.getProcessingOperation()).isNull();
         assertThat(channel.getProcessingToken()).isNull();
         assertThat(channel.getProcessingUntil()).isNull();
+        assertThat(jooqMappings.jsonNode(channel.getSourceData()))
+            .isEqualTo(JsonNodeFactory.instance.objectNode().put("source", "data"));
+        var metadata = jooqMappings.jsonNode(channel.getMetadata());
+        assertThat(metadata.path("title").asText()).isEqualTo("Updated title");
+        assertThat(metadata.path("emblem").path("uniqueId").asText())
+            .isEqualTo("unique-photo");
+        assertThat(metadata.path("descriptionEntities").path(0).path("type").asText()).isEqualTo("URL");
     }
 
     @Test

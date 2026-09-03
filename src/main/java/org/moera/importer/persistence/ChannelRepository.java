@@ -13,6 +13,7 @@ import jakarta.inject.Inject;
 import com.fasterxml.jackson.databind.JsonNode;
 import org.jooq.Condition;
 import org.jooq.DSLContext;
+import org.jooq.JSON;
 import org.jooq.TableField;
 import org.moera.importer.model.ChannelOperation;
 import org.moera.importer.model.SourceType;
@@ -20,6 +21,8 @@ import org.moera.importer.observability.ImportMetrics;
 import org.moera.importer.persistence.jooq.tables.records.ChannelsRecord;
 import org.moera.importer.source.AccessResult;
 import org.moera.importer.source.ChannelResolution;
+import org.moera.importer.source.ChannelMetadata;
+import org.moera.importer.source.ChannelMetadataJson;
 import org.moera.importer.source.ChannelSnapshot;
 import org.moera.importer.source.SubscriptionResult;
 import org.springframework.stereotype.Repository;
@@ -69,6 +72,16 @@ public class ChannelRepository {
             .fetch(jooqMappings::channelSnapshot);
     }
 
+    public boolean updateMetadata(SourceType sourceType, String sourceId, ChannelMetadata metadata) {
+        var generatedSourceType = org.moera.importer.persistence.jooq.enums.SourceType.valueOf(sourceType.name());
+        return dslContext.update(CHANNELS)
+            .set(CHANNELS.METADATA, jooqMappings.json(ChannelMetadataJson.write(metadata)))
+            .set(CHANNELS.UPDATED_AT, currentOffsetDateTime())
+            .where(CHANNELS.SOURCE_TYPE.eq(generatedSourceType))
+            .and(CHANNELS.SOURCE_ID.eq(sourceId))
+            .execute() == 1;
+    }
+
     public ChannelSnapshot create(SourceType sourceType, ChannelResolution resolution) {
         OffsetDateTime now = jooqMappings.offsetDateTime(clock.instant());
         OffsetDateTime accessRetryAt = resolution.accessState() == org.moera.importer.model.AccessState.GRANTED
@@ -83,6 +96,9 @@ public class ChannelRepository {
             .set(CHANNELS.SOURCE_ID, resolution.sourceId())
             .set(CHANNELS.SOURCE_URI, resolution.sourceUri().toString())
             .set(CHANNELS.SOURCE_DATA, jooqMappings.json(resolution.sourceData()))
+            .set(CHANNELS.METADATA, jooqMappings.json(resolution.metadata() != null
+                ? ChannelMetadataJson.write(resolution.metadata())
+                : com.fasterxml.jackson.databind.node.JsonNodeFactory.instance.objectNode()))
             .set(CHANNELS.ACCESS_STATE,
                 org.moera.importer.persistence.jooq.enums.AccessState.valueOf(resolution.accessState().name()))
             .set(CHANNELS.ACCESS_RETRY_AT, accessRetryAt)
@@ -174,8 +190,12 @@ public class ChannelRepository {
         var sourceIdentityMatches = result.resolvedSourceId() == null
             ? trueCondition()
             : CHANNELS.SOURCE_ID.isNull().or(CHANNELS.SOURCE_ID.eq(result.resolvedSourceId()));
+        org.jooq.Field<JSON> metadata = result.metadata() == null
+            ? CHANNELS.METADATA
+            : val(jooqMappings.json(ChannelMetadataJson.write(result.metadata())));
         int updated = dslContext.update(CHANNELS)
             .set(CHANNELS.SOURCE_ID, coalesce(CHANNELS.SOURCE_ID, result.resolvedSourceId()))
+            .set(CHANNELS.METADATA, metadata)
             .set(CHANNELS.ACCESS_STATE, state)
             .set(CHANNELS.ACCESS_ATTEMPTS, 0)
             .setNull(CHANNELS.ACCESS_RETRY_AT)

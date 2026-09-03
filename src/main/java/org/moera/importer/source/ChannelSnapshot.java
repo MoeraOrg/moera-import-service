@@ -14,12 +14,29 @@ public record ChannelSnapshot(
     String sourceId,
     URI sourceUri,
     JsonNode sourceData,
+    ChannelMetadata metadata,
     AccessState accessState,
     JsonNode accessData,
     SubscriptionState subscriptionState,
     JsonNode subscriptionData,
     JsonNode waterline
 ) {
+
+    public ChannelSnapshot(
+        long id,
+        SourceType sourceType,
+        String sourceId,
+        URI sourceUri,
+        JsonNode sourceData,
+        AccessState accessState,
+        JsonNode accessData,
+        SubscriptionState subscriptionState,
+        JsonNode subscriptionData,
+        JsonNode waterline
+    ) {
+        this(id, sourceType, sourceId, sourceUri, sourceData, null, accessState, accessData, subscriptionState,
+            subscriptionData, waterline);
+    }
 
     public ChannelSnapshot {
         Objects.requireNonNull(sourceType, "sourceType");

@@ -29,6 +29,20 @@ public sealed interface SourceEvent {
 
     }
 
+    record ChannelMetadataChanged(
+        SourceType sourceType,
+        String channelSourceId,
+        ChannelMetadata metadata
+    ) implements SourceEvent {
+
+        public ChannelMetadataChanged {
+            Objects.requireNonNull(sourceType, "sourceType");
+            Objects.requireNonNull(channelSourceId, "channelSourceId");
+            Objects.requireNonNull(metadata, "metadata");
+        }
+
+    }
+
     record AccessLost(SourceType sourceType, String channelSourceId, JsonNode data) implements SourceEvent {
 
         public AccessLost {

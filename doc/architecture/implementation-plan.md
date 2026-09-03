@@ -1614,3 +1614,34 @@ tasks in order:
 - [x] **Step 5:** Add durable per-destination create slots through Flyway and jOOQ.
 - [x] **Step 6:** Apply the create rate gate only to first-post creation.
 - [x] **Step 7:** Document operation, cross-check the pipeline, and run `./mvnw clean verify`.
+
+---
+
+### Task 16: Synchronize Telegram channel metadata with Moera profiles
+
+- [x] Read and persist Telegram title, description, public username, and emblem at resolution/access, poll, and live
+      update time.
+- [x] Add destination-level profile synchronization configuration and reject ambiguous profile ownership.
+- [x] Reconcile the Moera full name, HTML bio, global avatar, and durable destination synchronization state.
+- [x] Put the synchronized avatar media ID into every newly created posting.
+- [x] Cover metadata mapping/persistence, live update handling, profile rendering/avatar lifecycle, administration API,
+      CLI, and end-to-end behavior with tests.
+- [x] Document the configuration and run the full Maven verification suite.
+
+---
+
+### Task 17: Separate channel metadata from adapter source state
+
+- [x] Add a dedicated `channels.metadata` JSONB column and migrate existing `source_data.profile` values.
+- [x] Expose typed metadata separately in channel resolution/snapshots and persistence mappings.
+- [x] Persist access, poll, and live metadata without mutating `source_data`.
+- [x] Update profile synchronization, tests, and documentation, then run full verification.
+
+---
+
+### Task 18: Preserve Telegram links in channel profile descriptions
+
+- [x] Detect description entities through TDLib and retain URL, e-mail, and mention ranges in channel metadata.
+- [x] Render retained entities as links in the Moera profile while leaving hashtags as plain text.
+- [x] Cover TDLib filtering, metadata persistence, and profile HTML rendering with tests.
+- [x] Run the full Maven verification suite.

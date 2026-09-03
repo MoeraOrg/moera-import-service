@@ -22,6 +22,9 @@ public class SourceEventProcessor implements SourceEventSink {
     @Inject
     private ImportMetrics importMetrics;
 
+    @Inject
+    private ProfileSynchronizer profileSynchronizer;
+
     @Override
     public void accept(SourceEvent event) {
         switch (event) {
@@ -31,6 +34,7 @@ public class SourceEventProcessor implements SourceEventSink {
             case SourceEvent.MessageDeleted deleted -> channelRepository.find(
                 deleted.sourceType(), deleted.channelSourceId()
             ).ifPresent(channel -> delete(channel.id(), deleted));
+            case SourceEvent.ChannelMetadataChanged metadataChanged -> metadata(metadataChanged);
             case SourceEvent.AccessLost accessLost -> channelRepository.markAccessLost(
                 accessLost.sourceType(), accessLost.channelSourceId(), accessLost.data()
             );
@@ -38,6 +42,16 @@ public class SourceEventProcessor implements SourceEventSink {
                 subscriptionLost.sourceType(), subscriptionLost.channelSourceId(), subscriptionLost.data()
             );
         }
+    }
+
+    private void metadata(SourceEvent.ChannelMetadataChanged changed) {
+        channelRepository.find(changed.sourceType(), changed.channelSourceId()).ifPresent(channel -> {
+            if (channelRepository.updateMetadata(
+                changed.sourceType(), changed.channelSourceId(), changed.metadata()
+            )) {
+                profileSynchronizer.synchronize(channel.id());
+            }
+        });
     }
 
     private void ingest(long channelId, SourceEvent.MessageChanged changed) {

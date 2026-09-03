@@ -28,6 +28,14 @@ public interface SourceAdapter {
 
     void downloadMedia(ChannelSnapshot channel, MediaSnapshot media, Path destination);
 
+    default void downloadChannelEmblem(
+        ChannelSnapshot channel,
+        ChannelMetadata.Emblem emblem,
+        Path destination
+    ) {
+        throw new UnsupportedOperationException("Channel emblems are not supported");
+    }
+
     void start(SourceEventSink sink);
 
     void stop();

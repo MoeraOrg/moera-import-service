@@ -7,6 +7,8 @@ import java.util.Optional;
 import jakarta.inject.Inject;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.JsonNodeFactory;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.jooq.DSLContext;
 import org.moera.importer.model.Destination;
 import org.moera.importer.persistence.jooq.tables.records.DestinationsRecord;
@@ -50,6 +52,27 @@ public class DestinationRepository {
     public boolean delete(long id) {
         return dslContext.deleteFrom(DESTINATIONS)
             .where(DESTINATIONS.ID.eq(id))
+            .execute() == 1;
+    }
+
+    @Transactional
+    public boolean saveProfileState(long destinationId, ObjectNode profileState) {
+        DestinationsRecord record = dslContext.selectFrom(DESTINATIONS)
+            .where(DESTINATIONS.ID.eq(destinationId))
+            .forUpdate()
+            .fetchOne();
+        if (record == null) {
+            return false;
+        }
+        JsonNode stored = jooqMappings.jsonNode(record.getData());
+        ObjectNode data = stored instanceof ObjectNode objectNode
+            ? objectNode.deepCopy()
+            : JsonNodeFactory.instance.objectNode();
+        data.set("profile", profileState.deepCopy());
+        return dslContext.update(DESTINATIONS)
+            .set(DESTINATIONS.DATA, jooqMappings.json(data))
+            .set(DESTINATIONS.UPDATED_AT, currentOffsetDateTime())
+            .where(DESTINATIONS.ID.eq(destinationId))
             .execute() == 1;
     }
 

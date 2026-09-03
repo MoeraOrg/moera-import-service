@@ -22,6 +22,7 @@ import org.moera.importer.model.SourceType;
 import org.moera.importer.model.SubscriptionState;
 import org.moera.importer.persistence.PostgresIntegrationTest;
 import org.moera.importer.source.AccessResult;
+import org.moera.importer.source.ChannelMetadata;
 import org.moera.importer.source.ChannelResolution;
 import org.moera.importer.source.ChannelSnapshot;
 import org.moera.importer.source.GroupingRelation;
@@ -85,6 +86,12 @@ class AdministrationApiTest extends PostgresIntegrationTest {
         assertThat(channel.path("subscriptionState").asText()).isEqualTo("INACTIVE");
         assertThat(fakeSourceAdapter.resolvedOutsideTransaction).isTrue();
         assertThat(fakeSourceAdapter.resolvedOnVirtualThread).isTrue();
+        var channelData = dslContext.select(CHANNELS.SOURCE_DATA, CHANNELS.METADATA).from(CHANNELS).fetchSingle();
+        assertThat(objectMapper.readTree(channelData.value1().data()).path("adapterState").asText())
+            .isEqualTo("kept-separate");
+        assertThat(objectMapper.readTree(channelData.value1().data()).has("profile")).isFalse();
+        assertThat(objectMapper.readTree(channelData.value2().data()).path("title").asText())
+            .isEqualTo("Canonical channel");
         assertThat(dslContext.select(CHANNELS.ACCESS_RETRY_AT, CHANNELS.SUBSCRIPTION_RETRY_AT,
                 CHANNELS.NEXT_POLL_AT)
             .from(CHANNELS)
@@ -108,6 +115,7 @@ class AdministrationApiTest extends PostgresIntegrationTest {
         assertThat(destination.path("id").asLong()).isEqualTo(1);
         assertThat(destination.path("nodeName").asText()).isEqualTo("destination-node");
         assertThat(destination.path("credentialRef").asText()).isEqualTo("env:MOERA_ADMIN_TOKEN");
+        assertThat(destination.path("profileSync").asBoolean()).isTrue();
 
         HttpResponse<String> destinations = request("GET", "/api/destinations", null);
         assertThat(destinations.statusCode()).isEqualTo(200);
@@ -161,6 +169,21 @@ class AdministrationApiTest extends PostgresIntegrationTest {
 
         assertThat(response.statusCode()).isEqualTo(201);
         assertThat(fakeSourceAdapter.resolvedMode).isEqualTo(InitialImportMode.FULL);
+    }
+
+    @Test
+    void destinationCanDisableProfileSynchronization() throws Exception {
+        HttpResponse<String> response = request("POST", "/api/destinations", objectNode()
+            .put("nodeName", "multi-channel-node")
+            .put("credentialRef", "env:MOERA_ADMIN_TOKEN")
+            .put("profileSync", false));
+
+        assertThat(response.statusCode()).isEqualTo(201);
+        assertThat(json(response).path("profileSync").asBoolean()).isFalse();
+        JsonNode config = objectMapper.readTree(
+            dslContext.select(DESTINATIONS.CONFIG).from(DESTINATIONS).fetchSingle(DESTINATIONS.CONFIG).data()
+        );
+        assertThat(config.path("profileSync").asBoolean()).isFalse();
     }
 
     @Test
@@ -284,11 +307,12 @@ class AdministrationApiTest extends PostgresIntegrationTest {
             return new ChannelResolution(
                 "telegram-42",
                 URI.create("https://t.me/canonical"),
-                objectNode().put("title", "Canonical channel"),
+                objectNode().put("adapterState", "kept-separate"),
                 AccessState.GRANTED,
                 objectNode(),
                 SubscriptionState.INACTIVE,
-                objectNode()
+                objectNode(),
+                new ChannelMetadata("Canonical channel", "Description", "canonical", null)
             );
         }
 

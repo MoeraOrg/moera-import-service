@@ -6,6 +6,7 @@ import java.util.List;
 import java.util.function.Consumer;
 
 import it.tdlight.jni.TdApi;
+import org.moera.importer.source.ChannelMetadata;
 
 public interface TelegramClient extends AutoCloseable {
 
@@ -54,6 +55,8 @@ public interface TelegramClient extends AutoCloseable {
     JoinResult join(String sourceId, String inviteLink);
 
     Membership membership(long chatId);
+
+    ChannelMetadata channelMetadata(long chatId);
 
     HistoryPage history(long chatId, long fromMessageId, int limit);
 

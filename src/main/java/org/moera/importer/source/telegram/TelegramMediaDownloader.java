@@ -28,6 +28,13 @@ public class TelegramMediaDownloader {
         if (remoteId == null || fileType == null) {
             throw new SourcePermanentException("Telegram media lacks remote file metadata");
         }
+        download(remoteId, fileType, destination);
+    }
+
+    public void download(String remoteId, String fileType, Path destination) {
+        if (ObjectUtils.isEmpty(remoteId) || ObjectUtils.isEmpty(fileType)) {
+            throw new SourcePermanentException("Telegram media lacks remote file metadata");
+        }
         TelegramClient.RemoteFile remoteFile = client.reacquire(remoteId, fileType);
         TelegramClient.DownloadedFile downloaded = client.download(remoteFile.fileId());
         try {

@@ -17,6 +17,7 @@ import it.tdlight.client.TDLibSettings;
 import it.tdlight.client.TelegramError;
 import it.tdlight.jni.TdApi;
 import org.moera.importer.config.TelegramProperties;
+import org.moera.importer.source.ChannelMetadata;
 import org.moera.importer.source.SourcePermanentException;
 import org.moera.importer.source.SourceTemporaryException;
 import org.slf4j.Logger;
@@ -216,6 +217,59 @@ public class TdLightTelegramClient implements TelegramClient, TelegramForwardMet
         return isActive(status) ? Membership.ACTIVE : Membership.INACTIVE;
     }
 
+    @Override
+    public ChannelMetadata channelMetadata(long chatId) {
+        TdApi.Chat chat = send(new TdApi.GetChat(chatId));
+        String username = null;
+        String description = "";
+        if (chat.type instanceof TdApi.ChatTypeSupergroup supergroupType) {
+            TdApi.Supergroup supergroup = send(new TdApi.GetSupergroup(supergroupType.supergroupId));
+            username = primaryUsername(supergroup.usernames);
+            TdApi.SupergroupFullInfo fullInfo = send(new TdApi.GetSupergroupFullInfo(supergroupType.supergroupId));
+            description = fullInfo.description;
+        }
+        ChannelMetadata.Emblem emblem = emblem(chat.photo);
+        return new ChannelMetadata(
+            ObjectUtils.isEmpty(chat.title) ? "" : chat.title,
+            ObjectUtils.isEmpty(description) ? "" : description,
+            descriptionEntities(description),
+            username,
+            emblem
+        );
+    }
+
+    private List<ChannelMetadata.DescriptionEntity> descriptionEntities(String description) {
+        if (ObjectUtils.isEmpty(description)) {
+            return List.of();
+        }
+        TdApi.TextEntities detected = send(new TdApi.GetTextEntities(description));
+        if (detected == null || detected.entities == null) {
+            return List.of();
+        }
+        return Arrays.stream(detected.entities)
+            .map(this::descriptionEntity)
+            .filter(Objects::nonNull)
+            .toList();
+    }
+
+    private ChannelMetadata.DescriptionEntity descriptionEntity(TdApi.TextEntity entity) {
+        ChannelMetadata.DescriptionEntityType type = switch (entity.type) {
+            case TdApi.TextEntityTypeUrl ignored -> ChannelMetadata.DescriptionEntityType.URL;
+            case TdApi.TextEntityTypeEmailAddress ignored -> ChannelMetadata.DescriptionEntityType.EMAIL;
+            case TdApi.TextEntityTypeMention ignored -> ChannelMetadata.DescriptionEntityType.MENTION;
+            default -> null;
+        };
+        return type != null ? new ChannelMetadata.DescriptionEntity(entity.offset, entity.length, type) : null;
+    }
+
+    private ChannelMetadata.Emblem emblem(TdApi.ChatPhotoInfo photo) {
+        if (photo == null || photo.big == null || photo.big.remote == null
+            || ObjectUtils.isEmpty(photo.big.remote.id) || ObjectUtils.isEmpty(photo.big.remote.uniqueId)) {
+            return null;
+        }
+        return new ChannelMetadata.Emblem(photo.big.remote.id, photo.big.remote.uniqueId, "image/jpeg");
+    }
+
     private long selfUserId() {
         long current = selfUserId;
         if (current == 0) {
@@ -307,6 +361,7 @@ public class TdLightTelegramClient implements TelegramClient, TelegramForwardMet
     private TdApi.FileType fileType(String name) {
         return switch (name) {
             case "photo", "linkPreviewImage" -> new TdApi.FileTypePhoto();
+            case "profilePhoto" -> new TdApi.FileTypeProfilePhoto();
             case "video" -> new TdApi.FileTypeVideo();
             case "document" -> new TdApi.FileTypeDocument();
             case "audio" -> new TdApi.FileTypeAudio();

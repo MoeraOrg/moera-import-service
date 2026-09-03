@@ -19,6 +19,7 @@ import org.moera.importer.persistence.DestinationRepository;
 import org.moera.importer.persistence.MirrorRepository;
 import org.moera.importer.source.ChannelResolution;
 import org.moera.importer.source.ChannelSnapshot;
+import org.moera.importer.application.ProfileSynchronizer;
 import org.moera.importer.source.InitialImportMode;
 import org.moera.importer.source.SourceAdapter;
 import org.moera.importer.source.SourceAdapterRegistry;
@@ -48,6 +49,9 @@ public class AdministrationService {
 
     @Inject
     private MirrorRepository mirrorRepository;
+
+    @Inject
+    private ProfileSynchronizer profileSynchronizer;
 
     @Inject
     private SourceAdapterRegistry sourceAdapterRegistry;
@@ -110,7 +114,9 @@ public class AdministrationService {
 
     public DestinationView createDestination(DestinationCreate request) {
         validateDestination(request);
-        ObjectNode config = objectNode().put("credentialRef", request.credentialRef());
+        ObjectNode config = objectNode()
+            .put("credentialRef", request.credentialRef())
+            .put("profileSync", request.profileSync());
         try {
             return destinationView(destinationRepository.create(request.nodeName(), config));
         } catch (RuntimeException e) {
@@ -133,13 +139,21 @@ public class AdministrationService {
         if (channelRepository.find(request.channelId()).isEmpty()) {
             throw notFound("Channel does not exist");
         }
-        if (destinationRepository.find(request.destinationId()).isEmpty()) {
+        Destination destination = destinationRepository.find(request.destinationId()).orElse(null);
+        if (destination == null) {
             throw notFound("Destination does not exist");
+        }
+        if (profileSyncEnabled(destination) && mirrorRepository.hasMirror(request.destinationId())) {
+            throw conflict("Profile-synchronized destination already has a mirror");
         }
         ObjectNode config = objectNode();
         feeds.forEach(config.putArray("feeds")::add);
         try {
-            return mirrorView(mirrorRepository.create(request.channelId(), request.destinationId(), config));
+            MirrorView mirror = mirrorView(mirrorRepository.create(
+                request.channelId(), request.destinationId(), config
+            ));
+            profileSynchronizer.synchronize(request.channelId());
+            return mirror;
         } catch (RuntimeException e) {
             if (isIntegrityViolation(e)) {
                 throw conflict("Mirror already exists or its resources were removed");
@@ -171,8 +185,14 @@ public class AdministrationService {
         return new DestinationView(
             destination.id(),
             destination.nodeName(),
-            destination.config().path("credentialRef").textValue()
+            destination.config().path("credentialRef").textValue(),
+            profileSyncEnabled(destination)
         );
+    }
+
+    private boolean profileSyncEnabled(Destination destination) {
+        JsonNode setting = destination.config().get("profileSync");
+        return setting == null || !setting.isBoolean() || setting.booleanValue();
     }
 
     private MirrorView mirrorView(Mirror mirror) {

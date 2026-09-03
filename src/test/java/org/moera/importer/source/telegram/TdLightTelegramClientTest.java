@@ -11,6 +11,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.mockito.ArgumentCaptor;
 import org.moera.importer.config.TelegramProperties;
+import org.moera.importer.source.ChannelMetadata;
 import org.moera.importer.source.SourceTemporaryException;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -120,6 +121,30 @@ class TdLightTelegramClientTest {
     }
 
     @Test
+    void reacquiresChannelEmblemWithTelegramProfilePhotoFileType() {
+        ClientFactory clientFactory = mock(ClientFactory.class);
+        it.tdlight.TelegramClient nativeClient = mock(it.tdlight.TelegramClient.class);
+        when(clientFactory.createClient()).thenReturn(nativeClient);
+        TdApi.File file = new TdApi.File();
+        file.id = 123;
+        doReturn(CompletableFuture.completedFuture(file))
+            .when(nativeClient).sendAsync(isA(TdApi.GetRemoteFile.class));
+        TdLightTelegramClient client = new TdLightTelegramClient(
+            properties(),
+            false,
+            () -> clientFactory,
+            () -> mock(TdLightLoginPrompt.class)
+        );
+        client.start(ignored -> {
+        });
+        ArgumentCaptor<TdApi.GetRemoteFile> request = ArgumentCaptor.forClass(TdApi.GetRemoteFile.class);
+
+        assertThat(client.reacquire("remote-id", "profilePhoto").fileId()).isEqualTo(123);
+        verify(nativeClient).sendAsync(request.capture());
+        assertThat(request.getValue().fileType).isInstanceOf(TdApi.FileTypeProfilePhoto.class);
+    }
+
+    @Test
     void readsOwnMembershipFromSupergroupWhenMemberListIsInaccessible() {
         ClientFactory clientFactory = mock(ClientFactory.class);
         it.tdlight.TelegramClient nativeClient = mock(it.tdlight.TelegramClient.class);
@@ -184,6 +209,62 @@ class TdLightTelegramClientTest {
         verify(nativeClient).sendAsync(supergroupRequest.capture());
         assertThat(chatRequest.getValue().chatId).isEqualTo(-1_001_809_632_446L);
         assertThat(supergroupRequest.getValue().supergroupId).isEqualTo(1_809_632_446L);
+    }
+
+    @Test
+    void readsCompleteChannelMetadataAndLargePhotoIdentity() {
+        ClientFactory clientFactory = mock(ClientFactory.class);
+        it.tdlight.TelegramClient nativeClient = mock(it.tdlight.TelegramClient.class);
+        when(clientFactory.createClient()).thenReturn(nativeClient);
+        TdApi.Chat chat = new TdApi.Chat();
+        chat.id = -1_000_000_000_077L;
+        chat.title = "News";
+        chat.type = new TdApi.ChatTypeSupergroup(77, true);
+        TdApi.File big = new TdApi.File();
+        big.remote = new TdApi.RemoteFile();
+        big.remote.id = "remote-photo";
+        big.remote.uniqueId = "unique-photo";
+        chat.photo = new TdApi.ChatPhotoInfo();
+        chat.photo.big = big;
+        TdApi.Supergroup supergroup = new TdApi.Supergroup();
+        supergroup.usernames = new TdApi.Usernames(new String[] {"news"}, new String[0], "", new String[0]);
+        TdApi.SupergroupFullInfo fullInfo = new TdApi.SupergroupFullInfo();
+        fullInfo.description = "Visit https://example.org, mail news@example.org, ask @admin and #ignored";
+        doReturn(CompletableFuture.completedFuture(chat))
+            .when(nativeClient).sendAsync(isA(TdApi.GetChat.class));
+        doReturn(CompletableFuture.completedFuture(supergroup))
+            .when(nativeClient).sendAsync(isA(TdApi.GetSupergroup.class));
+        doReturn(CompletableFuture.completedFuture(fullInfo))
+            .when(nativeClient).sendAsync(isA(TdApi.GetSupergroupFullInfo.class));
+        doReturn(CompletableFuture.completedFuture(new TdApi.TextEntities(new TdApi.TextEntity[] {
+            textEntity(fullInfo.description, "https://example.org", new TdApi.TextEntityTypeUrl()),
+            textEntity(fullInfo.description, "news@example.org", new TdApi.TextEntityTypeEmailAddress()),
+            textEntity(fullInfo.description, "@admin", new TdApi.TextEntityTypeMention()),
+            textEntity(fullInfo.description, "#ignored", new TdApi.TextEntityTypeHashtag())
+        }))).when(nativeClient).sendAsync(isA(TdApi.GetTextEntities.class));
+        TdLightTelegramClient client = new TdLightTelegramClient(
+            properties(), false, () -> clientFactory, () -> mock(TdLightLoginPrompt.class)
+        );
+        client.start(ignored -> {
+        });
+
+        var metadata = client.channelMetadata(chat.id);
+
+        assertThat(metadata.title()).isEqualTo("News");
+        assertThat(metadata.description()).isEqualTo(fullInfo.description);
+        assertThat(metadata.descriptionEntities()).extracting(ChannelMetadata.DescriptionEntity::type)
+            .containsExactly(
+                ChannelMetadata.DescriptionEntityType.URL,
+                ChannelMetadata.DescriptionEntityType.EMAIL,
+                ChannelMetadata.DescriptionEntityType.MENTION
+            );
+        assertThat(metadata.publicUsername()).isEqualTo("news");
+        assertThat(metadata.emblem().remoteId()).isEqualTo("remote-photo");
+        assertThat(metadata.emblem().uniqueId()).isEqualTo("unique-photo");
+    }
+
+    private static TdApi.TextEntity textEntity(String text, String value, TdApi.TextEntityType type) {
+        return new TdApi.TextEntity(text.indexOf(value), value.length(), type);
     }
 
     private TelegramProperties properties() {

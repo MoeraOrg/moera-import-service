@@ -18,6 +18,7 @@ import org.junit.jupiter.api.Test;
 import org.moera.importer.model.AccessState;
 import org.moera.importer.model.SubscriptionState;
 import org.moera.importer.source.AccessResult;
+import org.moera.importer.source.ChannelMetadata;
 import org.moera.importer.source.SubscriptionResult;
 import org.springframework.boot.test.context.SpringBootTest;
 
@@ -43,6 +44,9 @@ class LeaseConcurrencyTest extends PostgresIntegrationTest {
 
     @Inject
     private DSLContext dslContext;
+
+    @Inject
+    private JooqMappings jooqMappings;
 
     @BeforeEach
     void clearDatabase() {
@@ -106,7 +110,8 @@ class LeaseConcurrencyTest extends PostgresIntegrationTest {
         AccessResult result = new AccessResult(
             AccessState.GRANTED,
             "resolved-channel",
-            JsonNodeFactory.instance.objectNode().put("member", true)
+            JsonNodeFactory.instance.objectNode().put("member", true),
+            new ChannelMetadata("Channel title", "Description", "channel", null)
         );
 
         boolean completed = channelRepository.completeAccess(channelId, claim.processingToken(), result);
@@ -118,6 +123,9 @@ class LeaseConcurrencyTest extends PostgresIntegrationTest {
         assertThat(channel.getAccessAttempts()).isZero();
         assertThat(channel.getAccessRetryAt()).isNull();
         assertThat(channel.getProcessingToken()).isNull();
+        assertThat(jooqMappings.jsonNode(channel.getSourceData()).path("adapterState").asText()).isEqualTo("kept");
+        assertThat(jooqMappings.jsonNode(channel.getSourceData()).has("profile")).isFalse();
+        assertThat(jooqMappings.jsonNode(channel.getMetadata()).path("title").asText()).isEqualTo("Channel title");
     }
 
     @Test
@@ -324,6 +332,9 @@ class LeaseConcurrencyTest extends PostgresIntegrationTest {
         return dslContext.insertInto(CHANNELS)
             .set(CHANNELS.SOURCE_TYPE, TELEGRAM)
             .set(CHANNELS.SOURCE_URI, "https://t.me/invite")
+            .set(CHANNELS.SOURCE_DATA, jooqMappings.json(
+                JsonNodeFactory.instance.objectNode().put("adapterState", "kept")
+            ))
             .set(CHANNELS.ACCESS_STATE, UNKNOWN)
             .set(CHANNELS.ACCESS_ATTEMPTS, 2)
             .set(CHANNELS.ACCESS_RETRY_AT, OffsetDateTime.now(ZoneOffset.UTC).minusMinutes(2))

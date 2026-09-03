@@ -18,6 +18,7 @@ import org.moera.importer.model.Message;
 import org.moera.importer.persistence.jooq.tables.records.MediaRecord;
 import org.moera.importer.persistence.jooq.tables.records.MessagesRecord;
 import org.moera.importer.source.PollResult;
+import org.moera.importer.source.ChannelMetadataJson;
 import org.moera.importer.source.SourceLinkPreview;
 import org.moera.importer.source.SourceMedia;
 import org.moera.importer.source.SourceMessage;
@@ -168,7 +169,11 @@ public class MessageRepository {
         }
 
         result.messages().forEach(message -> ingest(channelId, message));
+        org.jooq.Field<org.jooq.JSON> metadata = result.metadata() == null
+            ? CHANNELS.METADATA
+            : org.jooq.impl.DSL.val(jooqMappings.json(ChannelMetadataJson.write(result.metadata())));
         int updated = dslContext.update(CHANNELS)
+            .set(CHANNELS.METADATA, metadata)
             .set(CHANNELS.WATERLINE, jooqMappings.json(result.waterline()))
             .set(CHANNELS.LAST_POLL_AT, jooqMappings.offsetDateTime(Instant.now()))
             .set(CHANNELS.NEXT_POLL_AT, jooqMappings.offsetDateTime(nextPollAt))

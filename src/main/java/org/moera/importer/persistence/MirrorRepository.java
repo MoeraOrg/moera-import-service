@@ -7,16 +7,21 @@ import jakarta.inject.Inject;
 import com.fasterxml.jackson.databind.JsonNode;
 import org.jooq.DSLContext;
 import org.moera.importer.model.Mirror;
+import org.moera.importer.model.Destination;
+import org.moera.importer.persistence.jooq.tables.Mirrors;
 import org.moera.importer.persistence.jooq.tables.records.MirrorsRecord;
 import org.springframework.stereotype.Repository;
 
 import static org.jooq.impl.DSL.exists;
+import static org.jooq.impl.DSL.condition;
+import static org.jooq.impl.DSL.min;
 import static org.jooq.impl.DSL.notExists;
 import static org.jooq.impl.DSL.selectOne;
 import static org.moera.importer.persistence.jooq.tables.Messages.MESSAGES;
 import static org.moera.importer.persistence.jooq.tables.Mirrors.MIRRORS;
 import static org.moera.importer.persistence.jooq.tables.PublicationMessages.PUBLICATION_MESSAGES;
 import static org.moera.importer.persistence.jooq.tables.Publications.PUBLICATIONS;
+import static org.moera.importer.persistence.jooq.tables.Destinations.DESTINATIONS;
 
 @Repository
 public class MirrorRepository {
@@ -52,6 +57,28 @@ public class MirrorRepository {
             .skipLocked()
             .fetchOptional()
             .map(jooqMappings::mirror);
+    }
+
+    public List<Destination> findProfileDestinations(long channelId) {
+        Mirrors profileOwner = MIRRORS.as("profile_owner");
+        return dslContext.select(DESTINATIONS)
+            .from(MIRRORS)
+            .join(DESTINATIONS).on(DESTINATIONS.ID.eq(MIRRORS.DESTINATION_ID))
+            .where(MIRRORS.CHANNEL_ID.eq(channelId))
+            .and(MIRRORS.ENABLED.isTrue())
+            .and(condition("coalesce(({0}->>'profileSync')::boolean, true)", DESTINATIONS.CONFIG))
+            .and(MIRRORS.ID.eq(dslContext.select(min(profileOwner.ID))
+                .from(profileOwner)
+                .where(profileOwner.DESTINATION_ID.eq(MIRRORS.DESTINATION_ID))
+                .and(profileOwner.ENABLED.isTrue())))
+            .orderBy(DESTINATIONS.ID)
+            .fetch(record -> jooqMappings.destination(record.value1()));
+    }
+
+    public boolean hasMirror(long destinationId) {
+        return dslContext.fetchExists(
+            dslContext.selectOne().from(MIRRORS).where(MIRRORS.DESTINATION_ID.eq(destinationId))
+        );
     }
 
     public Mirror create(long channelId, long destinationId, JsonNode config) {

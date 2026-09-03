@@ -106,6 +106,7 @@ source_type
 source_id
 source_uri
 source_data JSONB
+metadata JSONB
 
 access_state
 access_attempts
@@ -143,6 +144,10 @@ A `(source_type, source_id)` pair is unique for non-null IDs. PostgreSQL natural
 `source_id = NULL`.
 
 A channel owns many messages and may have many mirrors.
+
+`metadata` stores the latest normalized channel title, description, public identity, and emblem identity separately
+from `source_data`. `source_data` remains exclusively adapter-owned operational state. Channel metadata is updated at
+access, poll, and live-event boundaries without mixing profile content into adapter state.
 
 ## 7. Access lifecycle
 
@@ -1730,6 +1735,42 @@ RSS primarily exercises polling, bounded feed history, weak deletion information
 
 Mastodon should fit the same universal `Channel` / `Message` / `Media` / `SourceAdapter` model with source-specific
 IDs/cursors/data kept behind the adapter.
+
+## 35.4 Telegram channel profile synchronization
+
+The Telegram adapter reads the channel title, description, public username, and current large channel photo when
+access is first obtained. It stores this metadata in the dedicated `channels.metadata` JSONB column. Every poll reads
+the same metadata before history and persists it atomically with the successful poll batch. Live TDLib chat
+title/photo/full-info
+updates and service messages that announce title/photo changes update the stored metadata without advancing the
+waterline. A Telegram photo is identified durably by its remote and unique file identifiers; the cached local TDLib
+file identifier is not durable state.
+
+TDLib exposes the channel description as plain text. The adapter calls `GetTextEntities` and stores normalized URL,
+e-mail, and mention ranges with the description so profile rendering matches Telegram's automatic link detection.
+Hashtag entities are intentionally ignored and remain plain text.
+
+A destination has `profileSync` in `destinations.config`; absence means `true` for compatibility. When enabled, its
+single mirror owns the Moera profile. Creating another mirror for the same destination is rejected while profile
+synchronization is enabled, because two source channels cannot deterministically own one profile. Destinations with
+profile synchronization disabled may have multiple mirrors.
+
+After persisted channel metadata changes, and after a mirror is created, the service reconciles the corresponding
+Moera profile. Failures do not roll back source ingestion or mirror creation; a later poll retries reconciliation. The
+profile full name is the Telegram channel title. The profile bio is the channel description followed by a configurable
+English HTML paragraph that identifies the Telegram mirror and gives a configurable contact e-mail address. Private
+invite links must not be exposed in the profile; only an active public Telegram username may produce a public link.
+
+When the Telegram emblem changes, the service reacquires and downloads the large JPEG through TDLib, uploads it as
+public Moera media, creates a circular 200-pixel avatar, and sets it as the global profile avatar. It stores the source
+emblem identity, Moera avatar ID, and Moera media ID in `destinations.destination_data`. The stored media ID and shape
+are put into `PostingText.ownerAvatar` for every newly created posting. Old avatar media is retained because existing
+postings may refer to its media ID. Removing the Telegram emblem clears the global profile avatar and the stored
+per-post avatar while retaining the public media referenced by existing posts.
+
+Profile reconciliation uses a fingerprint of all rendered profile input, including the configured attribution text.
+An unchanged fingerprint causes no Moera mutation. No PostgreSQL transaction is held while downloading the Telegram
+photo or calling Moera.
 
 ## 36. Design principles
 

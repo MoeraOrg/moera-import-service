@@ -41,6 +41,9 @@ public class ChannelProcessor {
     private PollLeaseHeartbeat pollLeaseHeartbeat;
 
     @Inject
+    private ProfileSynchronizer profileSynchronizer;
+
+    @Inject
     private RetryPolicy retryPolicy;
 
     @Inject
@@ -91,7 +94,11 @@ public class ChannelProcessor {
             && !claim.channel().sourceId().equals(result.resolvedSourceId())) {
             throw new SourcePermanentException("Resolved source identity conflicts with the stored identity");
         }
-        return channelRepository.completeAccess(claim.channel().id(), claim.processingToken(), result);
+        boolean completed = channelRepository.completeAccess(claim.channel().id(), claim.processingToken(), result);
+        if (completed) {
+            profileSynchronizer.synchronize(claim.channel().id());
+        }
+        return completed;
     }
 
     private boolean refreshSubscription(ChannelClaim claim, SourceAdapter sourceAdapter) {
@@ -100,6 +107,7 @@ public class ChannelProcessor {
     }
 
     private boolean poll(ChannelClaim claim, SourceAdapter sourceAdapter) {
+        boolean completed;
         try (PollLeaseHeartbeat.Guard guard = pollLeaseHeartbeat.start(claim)) {
             PollResult result;
             try {
@@ -116,10 +124,14 @@ public class ChannelProcessor {
             importMetrics.pollMessagesFound(result.messages().size());
             Duration pollingInterval = sourceAdapter.pollingInterval(claim.channel());
             Instant nextPollAt = clock.instant().plus(pollingInterval);
-            return messageRepository.ingestPoll(
+            completed = messageRepository.ingestPoll(
                 claim.channel().id(), claim.processingToken(), result, nextPollAt
             );
         }
+        if (completed) {
+            profileSynchronizer.synchronize(claim.channel().id());
+        }
+        return completed;
     }
 
     private void temporaryFailure(ChannelClaim claim, SourceTemporaryException exception) {

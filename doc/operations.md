@@ -237,6 +237,26 @@ CLI. Replace the source URI, registered node name, and credential reference:
 ./scripts/moera-import-admin mirror add 1 1 --feed timeline
 ```
 
+By default, the mirror also keeps the Moera profile synchronized with the Telegram channel. Configure the English
+attribution paragraph and its contact address before starting the daemon:
+
+```dotenv
+MOERA_PROFILE_CONTACT_EMAIL=balu@moera.org
+MOERA_PROFILE_ATTRIBUTION_HTML=<p>This profile mirrors {channelLink}. To import another channel, or your own channel \
+into your Moera account, contact {contactLink}.</p>
+```
+
+`{channelLink}` becomes a safe link to a public Telegram channel, or unlinked text for a private channel.
+`{contactLink}` becomes a `mailto:` link. The Telegram title is used as the Moera full name; the description and the
+configured paragraph form the HTML bio. The large Telegram channel photo becomes the global Moera avatar and is
+captured in each newly created posting.
+
+Disable profile synchronization when a destination is intended to aggregate several channels:
+
+```bash
+./scripts/moera-import-admin destination add aggregate-node env:MOERA_ADMIN_TOKEN --no-profile-sync
+```
+
 Without additional options, a newly added Telegram channel imports at most the newest 20 unique messages before
 establishing its waterline. To import all available Telegram history for a new channel, opt in explicitly:
 
@@ -256,8 +276,9 @@ This creates three related objects:
   `timeline` publishes it to the node's timeline.
 
 One Telegram channel may be connected to several Moera nodes by creating a destination and mirror for each node. A
-single destination may likewise receive several Telegram channels through separate mirrors. The unique
-`(channel_id, destination_id)` constraint permits only one mirror for a particular pair.
+profile-synchronized destination accepts one mirror, because that channel owns its profile. A destination created with
+`--no-profile-sync` may receive several Telegram channels through separate mirrors. The unique `(channel_id,
+destination_id)` constraint permits only one mirror for a particular pair.
 
 For a private Telegram source, `source_uri` may be a Telegram invite link. Treat it as a secret and do not log or copy
 it into diagnostics. It will be visible in the local `channel list` output, so run the CLI only in a trusted terminal.

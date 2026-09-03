@@ -25,6 +25,7 @@ import org.moera.importer.model.SourceType;
 import org.moera.importer.model.SubscriptionState;
 import org.moera.importer.observability.ImportMetrics;
 import org.moera.importer.source.ChannelResolution;
+import org.moera.importer.source.ChannelMetadata;
 import org.moera.importer.source.ChannelSnapshot;
 import org.moera.importer.source.InitialImportMode;
 import org.moera.importer.source.SourcePermanentException;
@@ -66,6 +67,7 @@ class TelegramSourceAdapterTest {
     @Test
     void resolvesPublicChannelToStableDecimalChatId() {
         client.publicChannel = new TelegramClient.Channel(-1001234567890L, "News");
+        client.channelMetadata = metadata("News", "Channel description", "news", "photo-1");
         client.membership = TelegramClient.Membership.INACTIVE;
 
         ChannelResolution result = adapter.resolveChannel(URI.create("https://t.me/news"), InitialImportMode.RECENT);
@@ -73,6 +75,9 @@ class TelegramSourceAdapterTest {
         assertThat(result.sourceId()).isEqualTo("-1001234567890");
         assertThat(result.sourceUri()).isEqualTo(URI.create("https://t.me/news"));
         assertThat(result.sourceData().path("username").asText()).isEqualTo("news");
+        assertThat(result.sourceData().has("profile")).isFalse();
+        assertThat(result.metadata().description()).isEqualTo("Channel description");
+        assertThat(result.metadata().emblem().uniqueId()).isEqualTo("photo-1");
         assertThat(result.accessState()).isEqualTo(AccessState.GRANTED);
         assertThat(result.subscriptionState()).isEqualTo(SubscriptionState.INACTIVE);
     }
@@ -171,11 +176,51 @@ class TelegramSourceAdapterTest {
     @Test
     void grantsAccessAndReturnsResolvedIdAfterJoiningPrivateChannel() {
         client.joinResult = new TelegramClient.JoinResult.Joined(-10077L);
+        client.channelMetadata = metadata("Private news", "Private description", null, "photo-2");
 
         var result = adapter.refreshAccess(unresolvedPrivateChannel());
 
         assertThat(result.state()).isEqualTo(AccessState.GRANTED);
         assertThat(result.resolvedSourceId()).isEqualTo("-10077");
+        assertThat(result.metadata()).isEqualTo(client.channelMetadata);
+    }
+
+    @Test
+    void emitsCompleteMetadataWhenChatTitleChanges() throws Exception {
+        client.channelMetadata = metadata("Renamed", "Updated description", "renamed", "photo-3");
+        List<SourceEvent> events = new ArrayList<>();
+        CountDownLatch delivered = new CountDownLatch(1);
+        adapter.start(event -> {
+            events.add(event);
+            delivered.countDown();
+        });
+
+        client.emit(new TdApi.UpdateChatTitle(-10077, "Renamed"));
+
+        assertThat(delivered.await(5, TimeUnit.SECONDS)).isTrue();
+        assertThat(events).containsExactly(new SourceEvent.ChannelMetadataChanged(
+            SourceType.TELEGRAM, "-10077", client.channelMetadata
+        ));
+    }
+
+    @Test
+    void treatsChannelChangeServiceMessageAsMetadataUpdate() throws Exception {
+        client.channelMetadata = metadata("Renamed", "Description", "news", null);
+        List<SourceEvent> events = new ArrayList<>();
+        CountDownLatch delivered = new CountDownLatch(1);
+        adapter.start(event -> {
+            events.add(event);
+            delivered.countDown();
+        });
+        TdApi.Message serviceMessage = message(-10077, 20, null);
+        serviceMessage.content = new TdApi.MessageChatChangeTitle("Renamed");
+
+        client.emit(new TdApi.UpdateNewMessage(serviceMessage));
+
+        assertThat(delivered.await(5, TimeUnit.SECONDS)).isTrue();
+        assertThat(events).containsExactly(new SourceEvent.ChannelMetadataChanged(
+            SourceType.TELEGRAM, "-10077", client.channelMetadata
+        ));
     }
 
     @Test
@@ -373,6 +418,26 @@ class TelegramSourceAdapterTest {
     }
 
     @Test
+    void downloadsChannelEmblemAsTelegramProfilePhoto() throws Exception {
+        Path cached = temporaryDirectory.resolve("cached-emblem.jpg");
+        Files.writeString(cached, "emblem");
+        client.remoteFile = new TelegramClient.RemoteFile(124);
+        client.downloadedFile = new TelegramClient.DownloadedFile(124, cached);
+        Path destination = temporaryDirectory.resolve("emblem.jpg");
+
+        adapter.downloadChannelEmblem(
+            resolvedChannel(SubscriptionState.ACTIVE),
+            new ChannelMetadata.Emblem("remote-emblem", "unique-emblem", "image/jpeg"),
+            destination
+        );
+
+        assertThat(Files.readString(destination)).isEqualTo("emblem");
+        assertThat(client.reacquiredRemoteId).isEqualTo("remote-emblem");
+        assertThat(client.reacquiredFileType).isEqualTo("profilePhoto");
+        assertThat(client.deletedFileId).isEqualTo(124);
+    }
+
+    @Test
     void keepsDaemonAliveButUnreadyWhenTelegramSessionIsNotReadyYet() {
         client.ready = false;
         TelegramAdapterLifecycle lifecycle = new TelegramAdapterLifecycle(adapter, client, event -> {
@@ -418,6 +483,15 @@ class TelegramSourceAdapterTest {
         return new TdApi.UpdateSupergroup(supergroup);
     }
 
+    private static ChannelMetadata metadata(String title, String description, String username, String emblemId) {
+        return new ChannelMetadata(
+            title,
+            description,
+            username,
+            emblemId == null ? null : new ChannelMetadata.Emblem("remote-" + emblemId, emblemId, "image/jpeg")
+        );
+    }
+
     private ChannelSnapshot unresolvedPrivateChannel() {
         return new ChannelSnapshot(1, SourceType.TELEGRAM, null, URI.create("https://t.me/+secret"),
             JsonNodeFactory.instance.objectNode().put("inviteLink", "https://t.me/+secret"), AccessState.UNKNOWN,
@@ -457,6 +531,7 @@ class TelegramSourceAdapterTest {
         private String reacquiredFileType;
         private int deletedFileId;
         private boolean ready = true;
+        private ChannelMetadata channelMetadata = metadata("News", "", "news", null);
 
         @Override
         public Channel resolvePublicChannel(String username) {
@@ -484,6 +559,11 @@ class TelegramSourceAdapterTest {
                 throw membershipFailure;
             }
             return membership;
+        }
+
+        @Override
+        public ChannelMetadata channelMetadata(long chatId) {
+            return channelMetadata;
         }
 
         @Override

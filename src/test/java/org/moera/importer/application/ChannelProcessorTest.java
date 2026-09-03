@@ -42,6 +42,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
 
 class ChannelProcessorTest {
 
@@ -77,6 +78,7 @@ class ChannelProcessorTest {
         ReflectionTestUtils.setField(channelProcessor, "messageRepository", messageRepository);
         ReflectionTestUtils.setField(channelProcessor, "importMetrics", importMetrics);
         ReflectionTestUtils.setField(channelProcessor, "pollLeaseHeartbeat", pollLeaseHeartbeat);
+        ReflectionTestUtils.setField(channelProcessor, "profileSynchronizer", mock(ProfileSynchronizer.class));
         ReflectionTestUtils.setField(channelProcessor, "retryPolicy", retryPolicy);
         ReflectionTestUtils.setField(
             channelProcessor,

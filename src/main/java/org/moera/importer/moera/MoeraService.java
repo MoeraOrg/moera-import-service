@@ -12,6 +12,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import jakarta.inject.Inject;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import org.moera.importer.application.PublicationPayload;
 import org.moera.importer.model.Destination;
 import org.moera.importer.model.Media;
@@ -20,15 +21,21 @@ import org.moera.lib.node.exception.MoeraNodeApiException;
 import org.moera.lib.node.exception.MoeraNodeApiNotFoundException;
 import org.moera.lib.node.exception.MoeraNodeException;
 import org.moera.lib.node.types.Features;
+import org.moera.lib.node.types.AvatarAttributes;
+import org.moera.lib.node.types.AvatarDescription;
+import org.moera.lib.node.types.AvatarInfo;
 import org.moera.lib.node.types.FeedReference;
 import org.moera.lib.node.types.PostingText;
 import org.moera.lib.node.types.PostingOperations;
 import org.moera.lib.node.types.PrivateMediaFileInfo;
+import org.moera.lib.node.types.ProfileAttributes;
+import org.moera.lib.node.types.PublicMediaFileInfo;
 import org.moera.lib.node.types.RejectedReactions;
 import org.moera.lib.node.types.SettingInfo;
 import org.moera.lib.node.types.StoryAttributes;
 import org.moera.lib.node.types.principal.Principal;
 import org.springframework.stereotype.Service;
+import org.springframework.util.ObjectUtils;
 
 @Service
 public class MoeraService {
@@ -98,6 +105,7 @@ public class MoeraService {
     public CreatedPosting createPost(Destination destination, PublicationPayload payload) {
         MoeraNode moeraNode = moeraClientFactory.create(destination);
         PostingText posting = posting(payload, true);
+        applyProfileAvatar(posting, destination);
         applyClientPostingSettings(posting, loadClientPostingSettings(moeraNode));
         try {
             var created = moeraNode.createPosting(posting);
@@ -113,6 +121,84 @@ public class MoeraService {
         } catch (MoeraNodeException e) {
             throw mutatingFailure("Moera posting creation outcome is unknown", e);
         }
+    }
+
+    public MoeraProfileAvatar updateProfile(Destination destination, MoeraProfileUpdate update) {
+        MoeraNode moeraNode = moeraClientFactory.create(destination);
+        try {
+            MoeraProfileAvatar avatar = profileAvatar(moeraNode, update);
+            ProfileAttributes profile = new ProfileAttributes();
+            profile.setFullName(update.fullName());
+            profile.setBioSrc(update.bioHtml());
+            profile.setBioSrcFormat(org.moera.lib.node.types.SourceFormat.HTML);
+            if (update.hasEmblem()) {
+                profile.setAvatarId(avatar.avatarId());
+            }
+            moeraNode.updateProfile(profile);
+            if (!update.hasEmblem() && !ObjectUtils.isEmpty(update.avatarId())) {
+                deleteAvatar(moeraNode, update.avatarId());
+            }
+            return avatar;
+        } catch (MoeraNodeException e) {
+            throw mutatingFailure("Moera profile update outcome is unknown", e);
+        }
+    }
+
+    private MoeraProfileAvatar profileAvatar(MoeraNode moeraNode, MoeraProfileUpdate update)
+        throws MoeraNodeException {
+        if (update.newEmblem() != null) {
+            PublicMediaFileInfo media = moeraNode.uploadPublicMedia(update.newEmblem(), update.emblemMimeType());
+            if (media == null || ObjectUtils.isEmpty(media.getId()) || media.getWidth() == null
+                || media.getHeight() == null || media.getWidth() <= 0 || media.getHeight() <= 0) {
+                throw new MoeraConfigurationException("Moera returned incomplete public emblem information");
+            }
+            int clipSize = Math.min(media.getWidth(), media.getHeight());
+            AvatarAttributes attributes = new AvatarAttributes();
+            attributes.setMediaId(media.getId());
+            attributes.setClipX((media.getWidth() - clipSize) / 2);
+            attributes.setClipY((media.getHeight() - clipSize) / 2);
+            attributes.setClipSize(clipSize);
+            attributes.setAvatarSize(200);
+            attributes.setRotate(0);
+            attributes.setShape("circle");
+            AvatarInfo avatar = moeraNode.createAvatar(attributes);
+            if (avatar == null || ObjectUtils.isEmpty(avatar.getId()) || ObjectUtils.isEmpty(avatar.getMediaId())) {
+                throw new MoeraConfigurationException("Moera returned incomplete avatar information");
+            }
+            return new MoeraProfileAvatar(
+                avatar.getId(),
+                avatar.getMediaId(),
+                ObjectUtils.isEmpty(avatar.getShape()) ? "circle" : avatar.getShape()
+            );
+        }
+        if (update.hasEmblem()) {
+            if (ObjectUtils.isEmpty(update.avatarId()) || ObjectUtils.isEmpty(update.avatarMediaId())) {
+                throw new MoeraConfigurationException("Stored Moera avatar information is incomplete");
+            }
+            return new MoeraProfileAvatar(update.avatarId(), update.avatarMediaId(), "circle");
+        }
+        return new MoeraProfileAvatar("", null, null);
+    }
+
+    private void deleteAvatar(MoeraNode moeraNode, String avatarId) throws MoeraNodeException {
+        try {
+            moeraNode.deleteAvatar(avatarId);
+        } catch (MoeraNodeApiNotFoundException ignored) {
+            // A retry may observe an avatar deleted by the previous attempt.
+        }
+    }
+
+    private void applyProfileAvatar(PostingText posting, Destination destination) {
+        JsonNode profile = destination.data().path("profile");
+        String mediaId = profile.path("avatarMediaId").textValue();
+        if (ObjectUtils.isEmpty(mediaId)) {
+            return;
+        }
+        AvatarDescription avatar = new AvatarDescription();
+        avatar.setMediaId(mediaId);
+        avatar.setShape(profile.path("avatarShape").asText("circle"));
+        avatar.setOptional(true);
+        posting.setOwnerAvatar(avatar);
     }
 
     private Map<String, String> loadClientPostingSettings(MoeraNode moeraNode) {

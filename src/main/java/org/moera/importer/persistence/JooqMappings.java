@@ -20,6 +20,7 @@ import org.moera.importer.persistence.jooq.tables.records.MessagesRecord;
 import org.moera.importer.persistence.jooq.tables.records.MediaRecord;
 import org.moera.importer.persistence.jooq.tables.records.MirrorsRecord;
 import org.moera.importer.source.ChannelSnapshot;
+import org.moera.importer.source.ChannelMetadataJson;
 import org.springframework.stereotype.Component;
 
 @Component
@@ -61,6 +62,7 @@ public class JooqMappings {
             record.getSourceId(),
             URI.create(record.getSourceUri()),
             jsonNode(record.getSourceData()),
+            ChannelMetadataJson.read(jsonNode(record.getMetadata())),
             org.moera.importer.model.AccessState.valueOf(record.getAccessState().getLiteral()),
             jsonNode(record.getAccessData()),
             org.moera.importer.model.SubscriptionState.valueOf(record.getSubscriptionState().getLiteral()),

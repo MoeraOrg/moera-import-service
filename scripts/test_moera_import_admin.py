@@ -56,6 +56,25 @@ class MoeraImportAdminTest(unittest.TestCase):
             },
         )])
 
+    def test_destination_add_can_disable_profile_sync(self):
+        arguments = MODULE.parser().parse_args([
+            "destination", "add", "news", "env:TOKEN", "--no-profile-sync"
+        ])
+        client = RecordingClient()
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            MODULE.run(arguments, client)
+
+        self.assertEqual(client.requests, [(
+            "POST",
+            "/api/destinations",
+            {
+                "nodeName": "news",
+                "credentialRef": "env:TOKEN",
+                "profileSync": False,
+            },
+        )])
+
 
 if __name__ == "__main__":
     unittest.main()

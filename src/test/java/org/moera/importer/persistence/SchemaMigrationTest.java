@@ -6,7 +6,10 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.HashSet;
 import java.util.Set;
+import java.util.UUID;
 
+import org.flywaydb.core.Flyway;
+import org.flywaydb.core.api.MigrationVersion;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
 
@@ -91,6 +94,56 @@ class SchemaMigrationTest extends PostgresIntegrationTest {
     }
 
     @Test
+    void channelMetadataIsDedicatedNonNullJsonb() throws SQLException {
+        Set<String> column = queryStrings("""
+            SELECT data_type || ':' || is_nullable || ':' || column_default
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'channels'
+              AND column_name = 'metadata'
+            """);
+
+        assertThat(column).containsExactly("jsonb:NO:'{}'::jsonb");
+    }
+
+    @Test
+    void channelMetadataMigrationSeparatesLegacyProfileFromSourceData() throws SQLException {
+        String schema = "metadata_" + UUID.randomUUID().toString().replace("-", "");
+        try {
+            flyway(schema, MigrationVersion.fromVersion("3")).migrate();
+            try (Connection connection = openConnection();
+                 var statement = connection.prepareStatement("""
+                     INSERT INTO %s.channels (
+                         source_type, source_id, source_uri, source_data, access_state, subscription_state
+                     ) VALUES ('TELEGRAM', 'channel-1', 'https://t.me/channel-1', ?::jsonb, 'GRANTED', 'ACTIVE')
+                     """.formatted(schema))) {
+                statement.setString(1, """
+                    {"initialImportMode":"FULL","profile":{"title":"News","description":"Description"}}
+                    """);
+                statement.executeUpdate();
+            }
+
+            flyway(schema, null).migrate();
+
+            try (Connection connection = openConnection();
+                 var statement = connection.createStatement();
+                 ResultSet resultSet = statement.executeQuery("""
+                     SELECT metadata ->> 'title', source_data ->> 'initialImportMode', source_data ? 'profile'
+                     FROM %s.channels
+                     """.formatted(schema))) {
+                assertThat(resultSet.next()).isTrue();
+                assertThat(resultSet.getString(1)).isEqualTo("News");
+                assertThat(resultSet.getString(2)).isEqualTo("FULL");
+                assertThat(resultSet.getBoolean(3)).isFalse();
+            }
+        } finally {
+            try (Connection connection = openConnection(); var statement = connection.createStatement()) {
+                statement.execute("DROP SCHEMA IF EXISTS " + schema + " CASCADE");
+            }
+        }
+    }
+
+    @Test
     void migrationAllowsUnresolvedChannelWithoutSourceId() throws SQLException {
         try (Connection connection = openConnection();
              var statement = connection.prepareStatement("""
@@ -126,6 +179,18 @@ class SchemaMigrationTest extends PostgresIntegrationTest {
             postgres().getUsername(),
             postgres().getPassword()
         );
+    }
+
+    private static Flyway flyway(String schema, MigrationVersion target) {
+        var configuration = Flyway.configure()
+            .dataSource(jdbcUrl(), postgres().getUsername(), postgres().getPassword())
+            .schemas(schema)
+            .defaultSchema(schema)
+            .locations("classpath:db/migration");
+        if (target != null) {
+            configuration.target(target);
+        }
+        return configuration.load();
     }
 
 }

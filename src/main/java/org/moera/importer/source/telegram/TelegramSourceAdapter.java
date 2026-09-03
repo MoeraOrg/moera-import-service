@@ -25,6 +25,7 @@ import org.moera.importer.model.SubscriptionState;
 import org.moera.importer.observability.ImportMetrics;
 import org.moera.importer.source.AccessResult;
 import org.moera.importer.source.ChannelResolution;
+import org.moera.importer.source.ChannelMetadata;
 import org.moera.importer.source.ChannelSnapshot;
 import org.moera.importer.source.GroupingRelation;
 import org.moera.importer.source.InitialImportMode;
@@ -75,30 +76,31 @@ public class TelegramSourceAdapter implements SourceAdapter {
         Objects.requireNonNull(initialImportMode, "initialImportMode");
         TelegramReference reference = TelegramReference.parse(sourceUri);
         ObjectNode sourceData = objectNode().put("initialImportMode", initialImportMode.name());
-        if (reference instanceof TelegramReference.Invite inviteReference) {
-            TelegramClient.Invite invite = client.inspectInvite(inviteReference.inviteLink());
-            sourceData.put("inviteLink", inviteReference.inviteLink());
-            sourceData.put("title", invite.title());
+        if (reference instanceof TelegramReference.Invite(String inviteLink, URI canonicalUri)) {
+            TelegramClient.Invite invite = client.inspectInvite(inviteLink);
+            sourceData.put("inviteLink", inviteLink);
             String sourceId = invite.chatId() == 0 ? null : Long.toString(invite.chatId());
             AccessState access = sourceId == null ? AccessState.UNKNOWN : AccessState.GRANTED;
-            SubscriptionState subscription = sourceId == null ? SubscriptionState.INACTIVE
+            SubscriptionState subscription = sourceId == null
+                ? SubscriptionState.INACTIVE
                 : subscriptionState(invite.chatId());
-            return resolution(sourceId, inviteReference.canonicalUri(), sourceData, access, subscription);
+            ChannelMetadata metadata = sourceId != null ? client.channelMetadata(invite.chatId()) : null;
+            return resolution(sourceId, canonicalUri, sourceData, access, subscription, metadata);
         }
         TelegramReference.Public publicReference = (TelegramReference.Public) reference;
         TelegramClient.Channel channel = client.resolvePublicChannel(publicReference.username());
         if (channel == null || channel.id() == 0) {
             throw new SourcePermanentException("Telegram channel cannot be resolved");
         }
-        sourceData.put("username", publicReference.username()).put("title", channel.title());
+        sourceData.put("username", publicReference.username());
         return resolution(Long.toString(channel.id()), publicReference.canonicalUri(), sourceData,
-            AccessState.GRANTED, subscriptionState(channel.id()));
+            AccessState.GRANTED, subscriptionState(channel.id()), client.channelMetadata(channel.id()));
     }
 
     private ChannelResolution resolution(String sourceId, URI uri, ObjectNode sourceData, AccessState access,
-                                         SubscriptionState subscription) {
+                                         SubscriptionState subscription, ChannelMetadata metadata) {
         return new ChannelResolution(sourceId, uri, sourceData, access, objectNode(), subscription,
-            objectNode());
+            objectNode(), metadata);
     }
 
     private SubscriptionState subscriptionState(long chatId) {
@@ -143,7 +145,7 @@ public class TelegramSourceAdapter implements SourceAdapter {
 
         long chatId = requiredChatId(channel);
         if (client.membership(chatId) == TelegramClient.Membership.ACTIVE) {
-            return new AccessResult(AccessState.GRANTED, null, objectNode());
+            return new AccessResult(AccessState.GRANTED, null, objectNode(), client.channelMetadata(chatId));
         }
 
         String inviteLink = channel.sourceData().path("inviteLink").textValue();
@@ -160,7 +162,12 @@ public class TelegramSourceAdapter implements SourceAdapter {
             if (resolved == null || resolved.id() == 0) {
                 return new AccessResult(AccessState.DENIED, null, objectNode());
             }
-            return new AccessResult(AccessState.GRANTED, Long.toString(resolved.id()), objectNode());
+            return new AccessResult(
+                AccessState.GRANTED,
+                Long.toString(resolved.id()),
+                objectNode(),
+                client.channelMetadata(resolved.id())
+            );
         } catch (SourcePermanentException e) {
             return new AccessResult(AccessState.DENIED, null, objectNode());
         }
@@ -169,11 +176,17 @@ public class TelegramSourceAdapter implements SourceAdapter {
     private AccessResult accessResult(TelegramClient.JoinResult result) {
         return switch (result) {
             case TelegramClient.JoinResult.Joined joined -> new AccessResult(
-                AccessState.GRANTED, Long.toString(joined.chatId()), objectNode());
+                AccessState.GRANTED,
+                Long.toString(joined.chatId()),
+                objectNode(),
+                client.channelMetadata(joined.chatId())
+            );
             case TelegramClient.JoinResult.Requested ignored -> new AccessResult(
-                AccessState.REQUESTED, null, objectNode());
+                AccessState.REQUESTED, null, objectNode()
+            );
             case TelegramClient.JoinResult.Declined ignored -> new AccessResult(
-                AccessState.DENIED, null, objectNode());
+                AccessState.DENIED, null, objectNode()
+            );
         };
     }
 
@@ -199,6 +212,7 @@ public class TelegramSourceAdapter implements SourceAdapter {
     @Override
     public PollResult poll(ChannelSnapshot channel) {
         long chatId = requiredChatId(channel);
+        ChannelMetadata metadata = client.channelMetadata(chatId);
         long previousWaterline = channel.waterline() == null ? 0 : channel.waterline().path("messageId").asLong(0);
         long fromMessageId = 0;
         long newestScannedId = previousWaterline;
@@ -207,9 +221,9 @@ public class TelegramSourceAdapter implements SourceAdapter {
             : Integer.MAX_VALUE;
         int lookBehindRead = 0;
         int noProgressPages = 0;
-        boolean complete = false;
         Map<Long, TdApi.Message> scanned = new LinkedHashMap<>();
-        while (!complete) {
+        polling:
+        while (true) {
             int remaining = initialLimit - scanned.size();
             if (remaining <= 0) {
                 break;
@@ -232,20 +246,15 @@ public class TelegramSourceAdapter implements SourceAdapter {
                 if (previousWaterline != 0 && message.id < previousWaterline) {
                     lookBehindRead++;
                     if (lookBehindRead > properties.getLookBehindCount()) {
-                        complete = true;
-                        break;
+                        break polling;
                     }
                 }
                 if (scanned.putIfAbsent(message.id, message) == null) {
                     newestScannedId = Math.max(newestScannedId, message.id);
                     if (scanned.size() == initialLimit) {
-                        complete = true;
-                        break;
+                        break polling;
                     }
                 }
-            }
-            if (complete) {
-                break;
             }
             if (!progressed) {
                 if (historyPage.totalCount() <= scanned.size()) {
@@ -264,13 +273,13 @@ public class TelegramSourceAdapter implements SourceAdapter {
         List<SourceMessage> messages = new ArrayList<>();
         scanned.values().stream().sorted(Comparator.comparingLong(message -> message.id)).forEach(message -> {
             TelegramMappingResult result = mapper.map(message);
-            if (result instanceof TelegramMappingResult.Mapped mapped) {
-                messages.add(mapped.message());
-            } else if (result instanceof TelegramMappingResult.Skipped skipped) {
-                skipped(message, skipped.reason());
+            if (result instanceof TelegramMappingResult.Mapped(SourceMessage sourceMessage)) {
+                messages.add(sourceMessage);
+            } else if (result instanceof TelegramMappingResult.Skipped(TelegramSkipReason reason)) {
+                skipped(message, reason);
             }
         });
-        return new PollResult(messages, objectNode().put("messageId", newestScannedId));
+        return new PollResult(messages, objectNode().put("messageId", newestScannedId), metadata);
     }
 
     private boolean isFullInitialImport(ChannelSnapshot channel) {
@@ -281,6 +290,16 @@ public class TelegramSourceAdapter implements SourceAdapter {
     public void downloadMedia(ChannelSnapshot channel, MediaSnapshot media, Path destination) {
         requiredChatId(channel);
         mediaDownloader.download(media, destination);
+    }
+
+    @Override
+    public void downloadChannelEmblem(
+        ChannelSnapshot channel,
+        ChannelMetadata.Emblem emblem,
+        Path destination
+    ) {
+        requiredChatId(channel);
+        mediaDownloader.download(emblem.remoteId(), "profilePhoto", destination);
     }
 
     @Override
@@ -335,21 +354,47 @@ public class TelegramSourceAdapter implements SourceAdapter {
     }
 
     private void handleUpdate(TdApi.Update update, SourceEventSink sink) {
-        if (update instanceof TdApi.UpdateNewMessage changed) {
-            emitMapped(changed.message, sink);
-        } else if (update instanceof TdApi.UpdateMessageContent changed) {
-            emitMapped(client.message(changed.chatId, changed.messageId), sink);
-        } else if (update instanceof TdApi.UpdateMessageIsPinned changed) {
-            emitMapped(client.message(changed.chatId, changed.messageId), sink);
-        } else if (update instanceof TdApi.UpdateDeleteMessages deleted && deleted.isPermanent && !deleted.fromCache) {
-            for (long messageId : deleted.messageIds) {
-                sink.accept(new SourceEvent.MessageDeleted(
-                    SourceType.TELEGRAM, Long.toString(deleted.chatId), Long.toString(messageId)
-                ));
+        switch (update) {
+            case TdApi.UpdateNewMessage changed -> {
+                if (isMetadataMessage(changed.message)) {
+                    emitMetadata(changed.message.chatId, sink);
+                } else {
+                    emitMapped(changed.message, sink);
+                }
             }
-        } else if (update instanceof TdApi.UpdateSupergroup changed) {
-            handleSupergroup(changed.supergroup, sink);
+            case TdApi.UpdateMessageContent changed ->
+                emitMapped(client.message(changed.chatId, changed.messageId), sink);
+            case TdApi.UpdateMessageIsPinned changed ->
+                emitMapped(client.message(changed.chatId, changed.messageId), sink);
+            case TdApi.UpdateDeleteMessages deleted when deleted.isPermanent && !deleted.fromCache -> {
+                for (long messageId : deleted.messageIds) {
+                    sink.accept(new SourceEvent.MessageDeleted(
+                        SourceType.TELEGRAM, Long.toString(deleted.chatId), Long.toString(messageId)
+                    ));
+                }
+            }
+            case TdApi.UpdateSupergroup changed -> handleSupergroup(changed.supergroup, sink);
+            case TdApi.UpdateChatTitle changed -> emitMetadata(changed.chatId, sink);
+            case TdApi.UpdateChatPhoto changed -> emitMetadata(changed.chatId, sink);
+            case TdApi.UpdateSupergroupFullInfo changed ->
+                emitMetadata(-1_000_000_000_000L - changed.supergroupId, sink);
+            case null, default -> {
+            }
         }
+    }
+
+    private boolean isMetadataMessage(TdApi.Message message) {
+        return message != null && (message.content instanceof TdApi.MessageChatChangeTitle
+            || message.content instanceof TdApi.MessageChatChangePhoto
+            || message.content instanceof TdApi.MessageChatDeletePhoto);
+    }
+
+    private void emitMetadata(long chatId, SourceEventSink sink) {
+        sink.accept(new SourceEvent.ChannelMetadataChanged(
+            SourceType.TELEGRAM,
+            Long.toString(chatId),
+            client.channelMetadata(chatId)
+        ));
     }
 
     private void emitMapped(TdApi.Message message, SourceEventSink sink) {
@@ -357,12 +402,12 @@ public class TelegramSourceAdapter implements SourceAdapter {
             return;
         }
         TelegramMappingResult result = mapper.map(message);
-        if (result instanceof TelegramMappingResult.Mapped mapped) {
+        if (result instanceof TelegramMappingResult.Mapped(SourceMessage sourceMessage)) {
             sink.accept(new SourceEvent.MessageChanged(
-                SourceType.TELEGRAM, Long.toString(message.chatId), mapped.message()
+                SourceType.TELEGRAM, Long.toString(message.chatId), sourceMessage
             ));
-        } else if (result instanceof TelegramMappingResult.Skipped skipped) {
-            skipped(message, skipped.reason());
+        } else if (result instanceof TelegramMappingResult.Skipped(TelegramSkipReason reason)) {
+            skipped(message, reason);
         }
     }
 

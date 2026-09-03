@@ -20,6 +20,7 @@ import org.moera.importer.model.SourceType;
 import org.moera.importer.model.SubscriptionState;
 import org.moera.importer.observability.ImportMetrics;
 import org.moera.importer.source.ChannelSnapshot;
+import org.moera.importer.source.ChannelMetadata;
 import org.moera.importer.source.SourceMessage;
 import org.springframework.test.util.ReflectionTestUtils;
 
@@ -51,6 +52,7 @@ class TelegramPollingTest {
             .containsExactly("1", "2", "3", "4", "5");
         assertThat(result.waterline().path("messageId").asLong()).isEqualTo(5);
         assertThat(client.fromIds).containsExactly(0L, 4L, 3L, 1L);
+        assertThat(result.metadata().title()).isEqualTo("News");
     }
 
     @Test
@@ -220,6 +222,11 @@ class TelegramPollingTest {
             fromIds.add(fromMessageId);
             requestedLimits.add(limit);
             return pages.remove();
+        }
+
+        @Override
+        public ChannelMetadata channelMetadata(long chatId) {
+            return new ChannelMetadata("News", "Description", "news", null);
         }
 
         @Override

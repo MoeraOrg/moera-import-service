@@ -14,8 +14,21 @@ public record ChannelResolution(
     AccessState accessState,
     JsonNode accessData,
     SubscriptionState subscriptionState,
-    JsonNode subscriptionData
+    JsonNode subscriptionData,
+    ChannelMetadata metadata
 ) {
+
+    public ChannelResolution(
+        String sourceId,
+        URI sourceUri,
+        JsonNode sourceData,
+        AccessState accessState,
+        JsonNode accessData,
+        SubscriptionState subscriptionState,
+        JsonNode subscriptionData
+    ) {
+        this(sourceId, sourceUri, sourceData, accessState, accessData, subscriptionState, subscriptionData, null);
+    }
 
     public ChannelResolution {
         Objects.requireNonNull(sourceUri, "sourceUri");

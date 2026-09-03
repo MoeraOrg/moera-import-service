@@ -145,12 +145,14 @@ def run_destination(args, client):
             ("id", "ID"),
             ("nodeName", "NODE NAME"),
             ("credentialRef", "CREDENTIAL REF"),
+            ("profileSync", "PROFILE SYNC"),
         ])
         return
     if args.action == "add":
         created = client.request("POST", "/api/destinations", {
             "nodeName": args.node_name,
             "credentialRef": args.credential_ref,
+            "profileSync": args.profile_sync,
         })
         print_table([created], [("id", "ID"), ("nodeName", "NODE NAME")])
         return
@@ -216,6 +218,8 @@ def parser():
     destination_add = destinations.add_parser("add", help="add a destination")
     destination_add.add_argument("node_name")
     destination_add.add_argument("credential_ref")
+    destination_add.add_argument("--no-profile-sync", dest="profile_sync", action="store_false",
+                                 help="do not synchronize the Telegram channel with the Moera profile")
     destination_delete = destinations.add_parser("delete", help="delete a destination")
     destination_delete.add_argument("destination_id", type=positive_id)
     add_delete_confirmation(destination_delete)

@@ -18,11 +18,14 @@ import org.moera.importer.persistence.ChannelRepository;
 import org.moera.importer.persistence.IngestResult;
 import org.moera.importer.persistence.MessageRepository;
 import org.moera.importer.source.ChannelSnapshot;
+import org.moera.importer.source.ChannelMetadata;
 import org.moera.importer.source.SourceEvent;
 import org.moera.importer.source.SourceMessage;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 
 class SourceEventProcessorTest {
 
@@ -30,6 +33,7 @@ class SourceEventProcessorTest {
     private RecordingChannelRepository channelRepository;
     private RecordingMessageRepository messageRepository;
     private SimpleMeterRegistry meterRegistry;
+    private ProfileSynchronizer profileSynchronizer;
 
     @BeforeEach
     void configureProcessor() {
@@ -42,6 +46,8 @@ class SourceEventProcessorTest {
         ReflectionTestUtils.setField(sourceEventProcessor, "channelRepository", channelRepository);
         ReflectionTestUtils.setField(sourceEventProcessor, "messageRepository", messageRepository);
         ReflectionTestUtils.setField(sourceEventProcessor, "importMetrics", importMetrics);
+        profileSynchronizer = mock(ProfileSynchronizer.class);
+        ReflectionTestUtils.setField(sourceEventProcessor, "profileSynchronizer", profileSynchronizer);
     }
 
     @Test
@@ -88,6 +94,18 @@ class SourceEventProcessorTest {
     }
 
     @Test
+    void persistsLiveMetadataAndSynchronizesProfile() {
+        ChannelMetadata metadata = new ChannelMetadata("Renamed", "Description", "news", null);
+
+        sourceEventProcessor.accept(new SourceEvent.ChannelMetadataChanged(
+            SourceType.TELEGRAM, "channel-1", metadata
+        ));
+
+        assertThat(channelRepository.metadata).isEqualTo(metadata);
+        verify(profileSynchronizer).synchronize(17);
+    }
+
+    @Test
     void ignoresEventsForUnknownChannel() {
         channelRepository.known = false;
 
@@ -118,6 +136,7 @@ class SourceEventProcessorTest {
         private boolean known = true;
         private JsonNode accessLostData;
         private JsonNode subscriptionLostData;
+        private ChannelMetadata metadata;
 
         @Override
         public java.util.Optional<ChannelSnapshot> find(SourceType sourceType, String sourceId) {
@@ -133,6 +152,12 @@ class SourceEventProcessorTest {
         @Override
         public boolean markSubscriptionLost(SourceType sourceType, String sourceId, JsonNode data) {
             subscriptionLostData = data;
+            return known;
+        }
+
+        @Override
+        public boolean updateMetadata(SourceType sourceType, String sourceId, ChannelMetadata metadata) {
+            this.metadata = metadata;
             return known;
         }
 
