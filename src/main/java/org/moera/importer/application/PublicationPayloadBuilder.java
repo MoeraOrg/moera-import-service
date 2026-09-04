@@ -215,6 +215,8 @@ public class PublicationPayloadBuilder {
             publication.setFeedName(feed);
             publication.setPublishAt(publishedAt.getEpochSecond());
             publication.setPinned(pinned);
+            publication.setViewed(true);
+            publication.setRead(true);
             publications.add(publication);
         }
         return List.copyOf(publications);

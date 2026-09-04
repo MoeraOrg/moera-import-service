@@ -15,12 +15,16 @@ LOADER.exec_module(MODULE)
 
 class RecordingClient:
 
-    def __init__(self):
+    def __init__(self, response=None):
         self.requests = []
+        self.response = (
+            {"id": 1, "sourceUri": "https://t.me/news"}
+            if response is None else response
+        )
 
     def request(self, method, path, body=None):
         self.requests.append((method, path, body))
-        return {"id": 1, "sourceUri": "https://t.me/news"}
+        return self.response
 
 
 class MoeraImportAdminTest(unittest.TestCase):
@@ -58,7 +62,7 @@ class MoeraImportAdminTest(unittest.TestCase):
 
     def test_destination_add_can_disable_profile_sync(self):
         arguments = MODULE.parser().parse_args([
-            "destination", "add", "news", "env:TOKEN", "--no-profile-sync"
+            "destination", "add", "news", "--no-profile-sync"
         ])
         client = RecordingClient()
 
@@ -70,10 +74,47 @@ class MoeraImportAdminTest(unittest.TestCase):
             "/api/destinations",
             {
                 "nodeName": "news",
-                "credentialRef": "env:TOKEN",
                 "profileSync": False,
             },
         )])
+
+    def test_destination_list_does_not_print_credentials(self):
+        arguments = MODULE.parser().parse_args(["destination", "list"])
+        client = RecordingClient()
+        client.request = lambda method, path, body=None: [{
+            "id": 1,
+            "nodeName": "news",
+            "profileSync": True,
+        }]
+
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            MODULE.run(arguments, client)
+
+        self.assertNotIn("CREDENTIAL", output.getvalue())
+
+    def test_mirror_list_requests_and_prints_mirrors(self):
+        try:
+            arguments = MODULE.parser().parse_args(["mirror", "list"])
+        except SystemExit:
+            self.fail("mirror list should be accepted")
+        client = RecordingClient([{
+            "id": 7,
+            "channelId": 2,
+            "destinationId": 3,
+            "feeds": ["timeline", "news"],
+        }])
+
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            MODULE.run(arguments, client)
+
+        self.assertEqual(client.requests, [("GET", "/api/mirrors", None)])
+        self.assertEqual(output.getvalue(), (
+            "ID  CHANNEL  DESTINATION  FEEDS        \n"
+            "--  -------  -----------  -------------\n"
+            "7   2        3            timeline,news\n"
+        ))
 
 
 if __name__ == "__main__":

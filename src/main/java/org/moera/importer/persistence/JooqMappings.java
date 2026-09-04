@@ -79,7 +79,6 @@ public class JooqMappings {
         return new Destination(
             record.getId(),
             record.getNodeName(),
-            record.getCredentialRef(),
             record.getProfileSync(),
             record.getProfileFingerprint(),
             record.getProfileSourceEmblemId(),

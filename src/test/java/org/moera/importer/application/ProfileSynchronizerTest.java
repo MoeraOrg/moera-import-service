@@ -133,7 +133,6 @@ class ProfileSynchronizerTest {
         return new Destination(
             2,
             "news",
-            "env:TEST",
             true,
             state != null ? state.fingerprint() : null,
             state != null ? state.sourceEmblemId() : null,

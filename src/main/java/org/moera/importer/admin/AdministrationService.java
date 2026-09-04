@@ -1,11 +1,8 @@
 package org.moera.importer.admin;
 
 import java.net.URI;
-import java.nio.file.InvalidPathException;
-import java.nio.file.Path;
 import java.util.HashSet;
 import java.util.List;
-import java.util.regex.Pattern;
 import jakarta.inject.Inject;
 
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
@@ -37,8 +34,6 @@ import static org.moera.importer.admin.AdministrationModels.MirrorView;
 
 @Service
 public class AdministrationService {
-
-    private static final Pattern ENVIRONMENT_REFERENCE = Pattern.compile("env:[A-Za-z_][A-Za-z0-9_]*");
 
     @Inject
     private ChannelRepository channelRepository;
@@ -114,9 +109,7 @@ public class AdministrationService {
     public DestinationView createDestination(DestinationCreate request) {
         validateDestination(request);
         try {
-            return destinationView(destinationRepository.create(
-                request.nodeName(), request.credentialRef(), request.profileSync()
-            ));
+            return destinationView(destinationRepository.create(request.nodeName(), request.profileSync()));
         } catch (RuntimeException e) {
             if (isIntegrityViolation(e)) {
                 throw conflict("Destination already exists");
@@ -130,6 +123,10 @@ public class AdministrationService {
         if (!destinationRepository.delete(destinationId)) {
             throw notFound("Destination does not exist");
         }
+    }
+
+    public List<MirrorView> mirrors() {
+        return mirrorRepository.findAll().stream().map(this::mirrorView).toList();
     }
 
     public MirrorView createMirror(MirrorCreate request) {
@@ -181,7 +178,6 @@ public class AdministrationService {
         return new DestinationView(
             destination.id(),
             destination.nodeName(),
-            destination.credentialRef(),
             destination.profileSync()
         );
     }
@@ -198,26 +194,6 @@ public class AdministrationService {
         if (request == null || request.nodeName() == null || request.nodeName().isBlank()
             || request.nodeName().length() > 135 || !request.nodeName().equals(request.nodeName().strip())) {
             throw badRequest("Node name is invalid");
-        }
-        if (!validCredentialReference(request.credentialRef())) {
-            throw badRequest("Credential reference is invalid");
-        }
-    }
-
-    private boolean validCredentialReference(String reference) {
-        if (reference == null || reference.isBlank()) {
-            return false;
-        }
-        if (ENVIRONMENT_REFERENCE.matcher(reference).matches()) {
-            return true;
-        }
-        if (!reference.startsWith("file:") || reference.length() == "file:".length()) {
-            return false;
-        }
-        try {
-            return Path.of(reference.substring("file:".length())).isAbsolute();
-        } catch (InvalidPathException e) {
-            return false;
         }
     }
 

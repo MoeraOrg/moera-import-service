@@ -326,7 +326,7 @@ class PublicationProcessorTest {
         boolean deleted
     ) {
         ObjectNode empty = objectNode();
-        Destination destination = new Destination(7, "destination.example", "env:TEST", NOW, NOW);
+        Destination destination = new Destination(7, "destination.example", NOW, NOW);
         Message message = new Message(
             11,
             5,

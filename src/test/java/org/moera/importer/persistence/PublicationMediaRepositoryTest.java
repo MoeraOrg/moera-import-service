@@ -233,7 +233,6 @@ class PublicationMediaRepositoryTest extends PostgresIntegrationTest {
             .fetchSingle(MEDIA.ID);
         long destinationId = dslContext.insertInto(DESTINATIONS)
             .set(DESTINATIONS.NODE_NAME, "destination.example")
-            .set(DESTINATIONS.CREDENTIAL_REF, "env:TEST")
             .returningResult(DESTINATIONS.ID)
             .fetchSingle(DESTINATIONS.ID);
         long mirrorId = dslContext.insertInto(MIRRORS)

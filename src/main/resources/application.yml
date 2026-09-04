@@ -46,6 +46,10 @@ management:
 
 moera:
   naming-server: ${MOERA_NAMING_SERVER:main}
+  authentication:
+    name: ${MOERA_AUTHENTICATION_NAME:importer_0}
+    signing-key: ${MOERA_AUTHENTICATION_SIGNING_KEY:}
+    addresses: ${MOERA_AUTHENTICATION_ADDRESSES:}
   profile:
     contact-email: ${MOERA_PROFILE_CONTACT_EMAIL:balu@moera.org}
     attribution-html: >-

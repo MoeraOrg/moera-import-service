@@ -21,6 +21,8 @@ public abstract class PostgresIntegrationTest {
         registry.add("spring.datasource.url", PostgresIntegrationTest::jdbcUrl);
         registry.add("spring.datasource.username", POSTGRES::getUsername);
         registry.add("spring.datasource.password", POSTGRES::getPassword);
+        registry.add("moera.authentication.signing-key", () -> "0".repeat(63) + "1");
+        registry.add("moera.authentication.addresses", () -> "127.0.0.1");
         registry.add("moera.workers.scheduling-enabled", () -> false);
         registry.add("moera.storage.staging-directory", () -> "target/test-staging");
     }

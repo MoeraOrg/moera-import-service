@@ -61,6 +61,11 @@ public class AdministrationController {
         return ResponseEntity.noContent().build();
     }
 
+    @GetMapping("/mirrors")
+    public List<MirrorView> mirrors() {
+        return administrationService.mirrors();
+    }
+
     @PostMapping("/mirrors")
     public ResponseEntity<MirrorView> createMirror(@RequestBody MirrorCreate request) {
         MirrorView created = administrationService.createMirror(request);

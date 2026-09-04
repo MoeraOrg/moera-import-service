@@ -551,7 +551,6 @@ class MessageRepositoryTest extends PostgresIntegrationTest {
     private long insertMirror(long channelId) {
         long destinationId = dslContext.insertInto(DESTINATIONS)
             .set(DESTINATIONS.NODE_NAME, "node.moera.org")
-            .set(DESTINATIONS.CREDENTIAL_REF, "env:TEST")
             .returningResult(DESTINATIONS.ID)
             .fetchSingle(DESTINATIONS.ID);
         return dslContext.insertInto(MIRRORS)

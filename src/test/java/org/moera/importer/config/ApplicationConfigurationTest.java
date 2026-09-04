@@ -14,6 +14,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class ApplicationConfigurationTest {
 
+    private static final String VALID_KEY = "0".repeat(63) + "1";
+
     @Test
     void telegramSwitchesUseTelegramEnvironmentVariables() throws IOException {
         MutablePropertySources propertySources = new MutablePropertySources();
@@ -40,6 +42,24 @@ class ApplicationConfigurationTest {
         PropertySourcesPropertyResolver resolver = new PropertySourcesPropertyResolver(propertySources);
 
         assertThat(resolver.getProperty("moera.naming-server")).isEqualTo("development");
+    }
+
+    @Test
+    void moeraAuthenticationUsesEnvironmentVariables() throws IOException {
+        MutablePropertySources propertySources = new MutablePropertySources();
+        propertySources.addFirst(new MapPropertySource("environment", Map.of(
+            "MOERA_AUTHENTICATION_NAME", "importer_7",
+            "MOERA_AUTHENTICATION_SIGNING_KEY", VALID_KEY,
+            "MOERA_AUTHENTICATION_ADDRESSES", "192.0.2.10,2001:db8::10"
+        )));
+        new YamlPropertySourceLoader().load("application", new ClassPathResource("application.yml"))
+            .forEach(propertySources::addLast);
+        PropertySourcesPropertyResolver resolver = new PropertySourcesPropertyResolver(propertySources);
+
+        assertThat(resolver.getProperty("moera.authentication.name")).isEqualTo("importer_7");
+        assertThat(resolver.getProperty("moera.authentication.signing-key")).isEqualTo(VALID_KEY);
+        assertThat(resolver.getProperty("moera.authentication.addresses"))
+            .isEqualTo("192.0.2.10,2001:db8::10");
     }
 
     @Test

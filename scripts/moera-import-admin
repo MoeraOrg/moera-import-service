@@ -144,14 +144,12 @@ def run_destination(args, client):
         print_table(rows, [
             ("id", "ID"),
             ("nodeName", "NODE NAME"),
-            ("credentialRef", "CREDENTIAL REF"),
             ("profileSync", "PROFILE SYNC"),
         ])
         return
     if args.action == "add":
         created = client.request("POST", "/api/destinations", {
             "nodeName": args.node_name,
-            "credentialRef": args.credential_ref,
             "profileSync": args.profile_sync,
         })
         print_table([created], [("id", "ID"), ("nodeName", "NODE NAME")])
@@ -162,7 +160,15 @@ def run_destination(args, client):
 
 
 def run_mirror(args, client):
-    path = "/api/mirrors/{}/{}".format(args.channel_id, args.destination_id)
+    if args.action == "list":
+        rows = client.request("GET", "/api/mirrors")
+        print_table(rows, [
+            ("id", "ID"),
+            ("channelId", "CHANNEL"),
+            ("destinationId", "DESTINATION"),
+            ("feeds", "FEEDS"),
+        ])
+        return
     if args.action == "add":
         created = client.request("POST", "/api/mirrors", {
             "channelId": args.channel_id,
@@ -176,6 +182,7 @@ def run_mirror(args, client):
             ("feeds", "FEEDS"),
         ])
         return
+    path = "/api/mirrors/{}/{}".format(args.channel_id, args.destination_id)
     confirm_delete(args, "mirror from channel {} to destination {}".format(
         args.channel_id, args.destination_id
     ))
@@ -217,7 +224,6 @@ def parser():
     destinations.add_parser("list", help="list destinations")
     destination_add = destinations.add_parser("add", help="add a destination")
     destination_add.add_argument("node_name")
-    destination_add.add_argument("credential_ref")
     destination_add.add_argument("--no-profile-sync", dest="profile_sync", action="store_false",
                                  help="do not synchronize the Telegram channel with the Moera profile")
     destination_delete = destinations.add_parser("delete", help="delete a destination")
@@ -227,6 +233,7 @@ def parser():
     mirrors = resources.add_parser("mirror", help="manage channel-to-destination mirrors").add_subparsers(
         dest="action", required=True
     )
+    mirrors.add_parser("list", help="list mirrors")
     mirror_add = mirrors.add_parser("add", help="add a mirror")
     mirror_add.add_argument("channel_id", type=positive_id)
     mirror_add.add_argument("destination_id", type=positive_id)

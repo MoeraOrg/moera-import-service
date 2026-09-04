@@ -171,7 +171,6 @@ class SchemaMigrationTest extends PostgresIntegrationTest {
         );
         assertThat(columns("messages")).contains("external_source_uri", "forward_name", "forward_uri");
         assertThat(columns("destinations")).contains(
-            "credential_ref",
             "profile_sync",
             "profile_fingerprint",
             "profile_source_emblem_id",
@@ -186,7 +185,37 @@ class SchemaMigrationTest extends PostgresIntegrationTest {
             SELECT table_name
             FROM information_schema.tables
             WHERE table_schema = 'public'
-            """)).contains("publication_stories");
+        """)).contains("publication_stories");
+        assertThat(columns("destinations")).doesNotContain("credential_ref");
+    }
+
+    @Test
+    void v007RemovesCredentialReferenceWithoutRemovingDestinations() throws SQLException {
+        String schema = "global_auth_" + UUID.randomUUID().toString().replace("-", "");
+        try {
+            flyway(schema, MigrationVersion.fromVersion("6")).migrate();
+            try (Connection connection = openConnection(); var statement = connection.createStatement()) {
+                statement.executeUpdate("""
+                    INSERT INTO %s.destinations (node_name, credential_ref)
+                    VALUES ('destination_0', 'env:MOERA_ADMIN_TOKEN')
+                    """.formatted(schema));
+            }
+
+            flyway(schema, null).migrate();
+
+            assertThat(queryStrings("""
+                SELECT node_name FROM %s.destinations
+                """.formatted(schema))).containsExactly("destination_0");
+            assertThat(queryStrings("""
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = '%s'
+                  AND table_name = 'destinations'
+                  AND column_name = 'credential_ref'
+                """.formatted(schema))).isEmpty();
+        } finally {
+            dropSchema(schema);
+        }
     }
 
     @Test
@@ -218,7 +247,7 @@ class SchemaMigrationTest extends PostgresIntegrationTest {
             flyway(schema, MigrationVersion.fromVersion("5")).migrate();
             updateLegacyRelationalState(schema);
 
-            flyway(schema, null).migrate();
+            flyway(schema, MigrationVersion.fromVersion("6")).migrate();
 
             assertContractedRelationalState(schema);
         } finally {
@@ -235,7 +264,7 @@ class SchemaMigrationTest extends PostgresIntegrationTest {
             flyway(schema, MigrationVersion.fromVersion("5")).migrate();
             removeLegacyRelationalState(schema);
 
-            flyway(schema, null).migrate();
+            flyway(schema, MigrationVersion.fromVersion("6")).migrate();
 
             assertContractedLegacyRemovals(schema);
         } finally {

@@ -128,7 +128,6 @@ class DestinationCreateRateLimitTest extends PostgresIntegrationTest {
     private long insertDestination(String nodeName) {
         return dslContext.insertInto(DESTINATIONS)
             .set(DESTINATIONS.NODE_NAME, nodeName)
-            .set(DESTINATIONS.CREDENTIAL_REF, "env:TEST")
             .returningResult(DESTINATIONS.ID)
             .fetchSingle(DESTINATIONS.ID);
     }

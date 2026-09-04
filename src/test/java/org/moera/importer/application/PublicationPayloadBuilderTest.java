@@ -216,7 +216,7 @@ class PublicationPayloadBuilderTest {
 
     private PublicationContext context(List<String> feeds, List<PublicationContext.Member> members,
                                        List<PublicationContext.DeliveredMedia> media) {
-        Destination destination = new Destination(1, "alice", "env:TEST", NOW, NOW);
+        Destination destination = new Destination(1, "alice", NOW, NOW);
         return new PublicationContext(7, 2, destination, feeds, null, null, Map.of(), members, media);
     }
 

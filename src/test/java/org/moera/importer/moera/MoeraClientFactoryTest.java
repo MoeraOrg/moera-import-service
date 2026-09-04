@@ -1,18 +1,21 @@
 package org.moera.importer.moera;
 
 import java.time.Instant;
+import java.time.Clock;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 
 import org.junit.jupiter.api.Test;
 import org.mockito.MockedStatic;
 import org.moera.importer.model.Destination;
+import org.moera.importer.config.MoeraAuthenticationProperties;
 import org.moera.lib.jsonrpc.JsonRpcRequest;
 import org.moera.lib.jsonrpc.JsonRpcResponse;
 import org.moera.lib.jsonrpc.OkHttpJsonRpcFetcher;
 import org.moera.lib.naming.MoeraNaming;
 import org.moera.lib.node.MoeraNode;
 import org.moera.lib.node.NodeAuth;
+import org.moera.lib.node.carte.CarteSource;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.test.util.ReflectionTestUtils;
 
@@ -21,19 +24,19 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.times;
-import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class MoeraClientFactoryTest {
 
     @Test
     void resolvesNodeEveryTimeAndCreatesAuthenticatedClient() {
-        MoeraCredentialStore moeraCredentialStore = mock(MoeraCredentialStore.class);
-        when(moeraCredentialStore.resolve("env:MOERA_TOKEN")).thenReturn("secret-token");
+        MoeraCarteSourceFactory moeraCarteSourceFactory = mock(MoeraCarteSourceFactory.class);
+        CarteSource carteSource = () -> "signed-carte";
+        when(moeraCarteSourceFactory.create("alice")).thenReturn(carteSource);
         MoeraClientFactory factory = new MoeraClientFactory();
-        ReflectionTestUtils.setField(factory, "moeraCredentialStore", moeraCredentialStore);
+        ReflectionTestUtils.setField(factory, "moeraCarteSourceFactory", moeraCarteSourceFactory);
         Instant now = Instant.parse("2026-08-27T12:00:00Z");
-        Destination destination = new Destination(1, "alice", "env:MOERA_TOKEN", now, now);
+        Destination destination = new Destination(1, "alice", now, now);
 
         try (MockedStatic<MoeraNaming> naming = mockStatic(MoeraNaming.class)) {
             naming.when(() -> MoeraNaming.resolve(any(), any()))
@@ -44,21 +47,23 @@ class MoeraClientFactoryTest {
 
             assertThat(first.getRoot()).isEqualTo("https://first.example/moera");
             assertThat(second.getRoot()).isEqualTo("https://second.example/moera");
-            assertThat(ReflectionTestUtils.getField(first, "token")).isEqualTo("secret-token");
-            assertThat(ReflectionTestUtils.getField(first, "authMethod")).isEqualTo(NodeAuth.ADMIN);
+            assertThat(ReflectionTestUtils.getField(first, "token")).isNull();
+            assertThat(ReflectionTestUtils.getField(first, "carteSource")).isSameAs(carteSource);
+            assertThat(ReflectionTestUtils.getField(first, "authMethod")).isEqualTo(NodeAuth.PEER);
             naming.verify(() -> MoeraNaming.resolve(any(), any()), times(2));
         }
-        verify(moeraCredentialStore, times(2)).resolve("env:MOERA_TOKEN");
     }
 
     @Test
     void resolvesNodeThroughDevelopmentNamingServerWhenConfigured() {
-        MoeraCredentialStore moeraCredentialStore = mock(MoeraCredentialStore.class);
-        when(moeraCredentialStore.resolve("env:MOERA_TOKEN")).thenReturn("secret-token");
+        MoeraCarteSourceFactory moeraCarteSourceFactory = mock(MoeraCarteSourceFactory.class);
+        when(moeraCarteSourceFactory.create("alice")).thenReturn(() -> "signed-carte");
         AtomicReference<Function<JsonRpcRequest, JsonRpcResponse>> fetcher = new AtomicReference<>();
         ApplicationContextRunner contextRunner = new ApplicationContextRunner()
             .withPropertyValues("moera.naming-server=development")
-            .withBean(MoeraCredentialStore.class, () -> moeraCredentialStore)
+            .withBean(Clock.class, Clock::systemUTC)
+            .withBean(MoeraAuthenticationProperties.class, () -> mock(MoeraAuthenticationProperties.class))
+            .withBean(MoeraCarteSourceFactory.class, () -> moeraCarteSourceFactory)
             .withBean(MoeraClientFactory.class);
 
         try (MockedStatic<MoeraNaming> naming = mockStatic(MoeraNaming.class)) {
@@ -77,9 +82,12 @@ class MoeraClientFactoryTest {
 
     @Test
     void rejectsUnknownNamingServerAtStartup() {
+        MoeraCarteSourceFactory moeraCarteSourceFactory = mock(MoeraCarteSourceFactory.class);
         ApplicationContextRunner contextRunner = new ApplicationContextRunner()
             .withPropertyValues("moera.naming-server=private")
-            .withBean(MoeraCredentialStore.class)
+            .withBean(Clock.class, Clock::systemUTC)
+            .withBean(MoeraAuthenticationProperties.class, () -> mock(MoeraAuthenticationProperties.class))
+            .withBean(MoeraCarteSourceFactory.class, () -> moeraCarteSourceFactory)
             .withBean(MoeraClientFactory.class);
 
         contextRunner.run(context -> {
@@ -90,7 +98,7 @@ class MoeraClientFactoryTest {
 
     private Destination destination() {
         Instant now = Instant.parse("2026-08-27T12:00:00Z");
-        return new Destination(1, "alice", "env:MOERA_TOKEN", now, now);
+        return new Destination(1, "alice", now, now);
     }
 
 }

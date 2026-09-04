@@ -96,6 +96,11 @@ legacy key was removed. It then removes the obsolete JSONB columns. A typed-only
 against a schema stopped at `V005`, because two independently writable representations would have ambiguous
 precedence.
 
+### 4.2 Global Moera authentication migration
+
+`V007` removes `destinations.credential_ref`. It does not delete or rewrite destination rows; after the migration, all
+existing and new destinations use the process-wide carte authentication configuration described in section 32.2.
+
 ## 5. Source types
 
 `source_type` is a PostgreSQL enum. The initial migration contains only:
@@ -550,7 +555,6 @@ A destination identifies a concrete Moera node/account:
 ```text
 id
 node_name varchar(135)
-credential_ref
 profile_sync
 profile_fingerprint
 profile_source_emblem_id
@@ -567,8 +571,9 @@ updated_at
 `next_create_at` is nullable durable rate state for new Moera postings. `NULL` means a create slot is available
 immediately. It does not limit updates, deletes, story changes, or media uploads.
 
-`credential_ref` identifies a deployment secret without storing the credential itself. `profile_sync` is explicit
-configuration. The remaining nullable profile and avatar columns are durable service-owned synchronization state.
+`profile_sync` is explicit configuration. The remaining nullable profile and avatar columns are durable service-owned
+synchronization state. Moera authentication is configured once for the importer process and is not stored per
+destination.
 
 ## 18. Mirror
 
@@ -926,10 +931,35 @@ public sealed interface MediaUpload {
 }
 ```
 
-`MoeraClientFactory` resolves the current node URL from `destination.node_name`, obtains the credential referenced by
-`destinations.credential_ref`, and creates an authenticated Moera client. A global service setting selects either the
-main or development Moera naming server; the main server is the default. All destinations handled by one service
-instance use the same naming server. Node URL resolution must not be treated as permanently stable.
+`MoeraClientFactory` resolves the current node URL from `destination.node_name` and creates a client authenticated by a
+carte signed with the importer's globally configured signing key. The carte owner is the configured importer name, and
+the carte is restricted to the configured importer IP addresses and the target `destination.node_name`. A fresh carte
+is generated for every Moera API request. Reusing a still-valid carte for immediately consecutive requests to the same
+destination is permitted as a future optimization but is not required.
+
+The carte requests no client permissions and requests the following fixed administrative scope:
+
+```text
+view-content
+add-post
+update-post
+delete-own-content
+view-feeds
+update-feeds
+view-profile
+update-profile
+view-settings
+upload-public-media
+upload-private-media
+```
+
+The target node intersects this requested scope with the administrative permissions granted to the importer name by
+its Grants configuration. Every target node must grant the complete listed scope before the importer delivers to it.
+
+A global service setting selects either the main or development Moera naming server; the main server is the default.
+The importer name, every destination name, and their signing keys must be registered in this same naming environment.
+All destinations handled by one service instance use the same naming server. Node URL resolution must not be treated
+as permanently stable.
 
 Authentication, Moera IDs, `downsize=true`, API flags, and future idempotency behavior remain inside `MoeraService`.
 Durable universal state is represented by explicit columns and relations.
@@ -1403,17 +1433,24 @@ The first implementation officially supports one active service instance owning 
 leasing remains safe for multiple workers/instances, but multiple JVMs do not concurrently open the same TDLight state
 directory. Horizontal scaling/leader election is deferred until needed.
 
-### 32.2 Moera credentials
+### 32.2 Moera carte authentication
 
-`destinations.credential_ref` stores a credential reference rather than the credential value itself. The credential is
-resolved from a mounted secret/file or equivalent deployment secret mechanism. Database dumps therefore do not
-contain Moera authentication secrets.
+One importer identity authenticates to every destination by signing short-lived cartes. Its configuration is global:
 
-The initial configuration uses `credentialRef` with either `env:VARIABLE_NAME` or `file:/absolute/path` syntax. The
-referenced environment value or file contains the Moera admin token.
+```text
+moera.authentication.name
+moera.authentication.signing-key
+moera.authentication.addresses
+```
 
-A dedicated abstraction with multiple credential-store implementations is not required initially; a concrete
-file/environment-backed implementation is sufficient.
+`name` defaults to `importer_0`. It must be a registered Moera name whose public signing key in the selected naming
+environment corresponds to `signing-key`. `signing-key` is the required 32-byte private signing key encoded as exactly
+64 hexadecimal characters. `addresses` is a required non-empty list of the importer's externally visible IP addresses;
+every configured entry is resolved to `InetAddress` values at startup and included in each carte.
+
+The application fails startup if the importer name is invalid, the private key is missing or malformed, the address
+list is empty, or an address cannot be resolved. The private key is supplied through deployment secret storage, such
+as an environment variable expanded by Spring configuration. It is never stored in PostgreSQL or logged.
 
 ## 33. TelegramSourceAdapter design
 
@@ -2128,7 +2165,7 @@ result
 ```
 
 Sensitive values are never logged, including message bodies, Telegram invite links, authentication tokens, verification
-codes, 2FA passwords, or Moera credentials.
+codes, 2FA passwords, or the Moera importer private signing key.
 
 Outcome-unknown Moera create failures are logged distinctly from ordinary temporary failures.
 
@@ -2234,7 +2271,7 @@ later run.
 The service exposes a small unauthenticated administration API under `/api`. It is a host-local interface: requests
 whose peer address is not a loopback address are rejected even if the main HTTP connector is bound to a non-loopback
 interface. Operators must not publish this interface through a reverse proxy. The API never accepts or returns Moera
-credential values; it stores only the `credentialRef` described in section 32.2.
+authentication secrets.
 
 The initial resource operations are:
 
@@ -2247,6 +2284,7 @@ GET    /api/destinations
 POST   /api/destinations
 DELETE /api/destinations/{destinationId}
 
+GET    /api/mirrors
 POST   /api/mirrors
 DELETE /api/mirrors/{channelId}/{destinationId}
 ```
@@ -2259,13 +2297,13 @@ transaction is held across Telegram or another external source call.
 Newly created channels are scheduled immediately for every operation applicable to their resolved states. The initial
 API accepts only `TELEGRAM`, because it is the only implemented source type.
 
-Destination creation accepts a registered Moera `nodeName` and a non-secret `credentialRef`. Mirror creation accepts
-`channelId`, `destinationId`, and an ordered set of target feed names. Repository code stores these values in typed
-columns; jOOQ remains confined to persistence classes.
+Destination creation accepts a registered Moera `nodeName`. Mirror listing returns mirrors ordered by ID. Mirror
+creation accepts `channelId`, `destinationId`, and an ordered set of target feed names. Repository code stores these
+values in typed columns; jOOQ remains confined to persistence classes.
 
 Duplicate channel identities, destination names, and channel/destination mirror pairs return a conflict. References
-to missing resources return not found. Invalid source URIs, names, credential references, and feed sets return a bad
-request without leaking sensitive input into error text or logs.
+to missing resources return not found. Invalid source URIs, names, and feed sets return a bad request without leaking
+sensitive input into error text or logs.
 
 Deleting a channel, destination, or mirror uses the existing foreign-key cascades for durable importer state. It does
 not make external Moera calls and therefore does not delete postings that were already delivered. Operators who need
@@ -2273,5 +2311,6 @@ those postings removed must do so before deleting the importer configuration.
 
 A Python command-line client wraps exactly these operations. It uses the Python standard library, defaults to
 `http://127.0.0.1:8084`, and may select another loopback URL for local deployment. It does not implement authentication
-or accept raw Moera credentials. `channel add` accepts `--full-history`; without it Telegram imports only the recent
-configured initial count.
+or accept Moera authentication secrets. `destination add` accepts only the destination node name and optional profile
+synchronization flag. `channel add` accepts `--full-history`; without it Telegram imports only the recent configured
+initial count.

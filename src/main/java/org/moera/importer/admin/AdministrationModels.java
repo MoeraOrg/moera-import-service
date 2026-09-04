@@ -36,24 +36,23 @@ public final class AdministrationModels {
     ) {
     }
 
-    public record DestinationCreate(String nodeName, String credentialRef, boolean profileSync) {
+    public record DestinationCreate(String nodeName, boolean profileSync) {
 
         @JsonCreator
         public DestinationCreate(
             @JsonProperty("nodeName") String nodeName,
-            @JsonProperty("credentialRef") String credentialRef,
             @JsonProperty("profileSync") Boolean profileSync
         ) {
-            this(nodeName, credentialRef, profileSync == null || profileSync);
+            this(nodeName, profileSync == null || profileSync);
         }
 
-        public DestinationCreate(String nodeName, String credentialRef) {
-            this(nodeName, credentialRef, true);
+        public DestinationCreate(String nodeName) {
+            this(nodeName, true);
         }
 
     }
 
-    public record DestinationView(long id, String nodeName, String credentialRef, boolean profileSync) {
+    public record DestinationView(long id, String nodeName, boolean profileSync) {
     }
 
     public record MirrorCreate(long channelId, long destinationId, List<String> feeds) {

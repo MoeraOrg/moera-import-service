@@ -303,7 +303,6 @@ class PublicationRevisionRaceTest extends PostgresIntegrationTest {
     private long insertDestination() {
         return dslContext.insertInto(DESTINATIONS)
             .set(DESTINATIONS.NODE_NAME, "destination.example")
-            .set(DESTINATIONS.CREDENTIAL_REF, "env:TEST")
             .returningResult(DESTINATIONS.ID)
             .fetchSingle(DESTINATIONS.ID);
     }

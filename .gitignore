@@ -2,6 +2,7 @@
 .*.swp
 .*.ods#
 *.log
+__pycache__/
 /.idea/
 /.env.local
 /target/

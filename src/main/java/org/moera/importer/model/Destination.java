@@ -6,7 +6,6 @@ import java.util.Objects;
 public record Destination(
     long id,
     String nodeName,
-    String credentialRef,
     boolean profileSync,
     String profileFingerprint,
     String profileSourceEmblemId,
@@ -17,13 +16,12 @@ public record Destination(
     Instant updatedAt
 ) {
 
-    public Destination(long id, String nodeName, String credentialRef, Instant createdAt, Instant updatedAt) {
-        this(id, nodeName, credentialRef, true, null, null, null, null, null, createdAt, updatedAt);
+    public Destination(long id, String nodeName, Instant createdAt, Instant updatedAt) {
+        this(id, nodeName, true, null, null, null, null, null, createdAt, updatedAt);
     }
 
     public Destination {
         Objects.requireNonNull(nodeName, "nodeName");
-        Objects.requireNonNull(credentialRef, "credentialRef");
         Objects.requireNonNull(createdAt, "createdAt");
         Objects.requireNonNull(updatedAt, "updatedAt");
     }

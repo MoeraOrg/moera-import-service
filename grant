@@ -1,0 +1,3 @@
+#!/bin/bash
+
+moctl -kdN carol-dev grant grant importer_0 view-content,add-post,update-post,delete-own-content,view-feeds,update-feeds,view-profile,update-profile,view-settings,upload-public-media,upload-private-media

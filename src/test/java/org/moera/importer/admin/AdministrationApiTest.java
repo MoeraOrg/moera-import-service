@@ -116,13 +116,12 @@ class AdministrationApiTest extends PostgresIntegrationTest {
         assertThat(json(channels).path(0).path("sourceId").asText()).isEqualTo("telegram-42");
 
         HttpResponse<String> destinationCreated = request("POST", "/api/destinations", objectNode()
-            .put("nodeName", "destination-node")
-            .put("credentialRef", "env:MOERA_ADMIN_TOKEN"));
+            .put("nodeName", "destination-node"));
         assertThat(destinationCreated.statusCode()).isEqualTo(201);
         JsonNode destination = json(destinationCreated);
         assertThat(destination.path("id").asLong()).isEqualTo(1);
         assertThat(destination.path("nodeName").asText()).isEqualTo("destination-node");
-        assertThat(destination.path("credentialRef").asText()).isEqualTo("env:MOERA_ADMIN_TOKEN");
+        assertThat(destination.has("credentialRef")).isFalse();
         assertThat(destination.path("profileSync").asBoolean()).isTrue();
 
         HttpResponse<String> destinations = request("GET", "/api/destinations", null);
@@ -146,12 +145,27 @@ class AdministrationApiTest extends PostgresIntegrationTest {
         assertThat(dslContext.select(MIRRORS.FEEDS).from(MIRRORS).fetchSingle(MIRRORS.FEEDS))
             .containsExactly("timeline", "news");
 
+        assertThat(request("POST", "/api/destinations", objectNode()
+            .put("nodeName", "second-destination-node")).statusCode()).isEqualTo(201);
+        ObjectNode secondMirrorRequest = objectNode()
+            .put("channelId", 1)
+            .put("destinationId", 2);
+        secondMirrorRequest.putArray("feeds").add("archive");
+        JsonNode secondMirror = json(request("POST", "/api/mirrors", secondMirrorRequest));
+
+        HttpResponse<String> mirrors = request("GET", "/api/mirrors", null);
+        assertThat(mirrors.statusCode()).isEqualTo(200);
+        assertThat(json(mirrors)).containsExactly(mirror, secondMirror);
+
         assertThat(request("DELETE", "/api/mirrors/1/1", null).statusCode()).isEqualTo(204);
+        assertThat(dslContext.fetchCount(MIRRORS)).isOne();
+        assertThat(request("DELETE", "/api/mirrors/1/2", null).statusCode()).isEqualTo(204);
         assertThat(dslContext.fetchCount(MIRRORS)).isZero();
 
         assertThat(request("DELETE", "/api/channels/1", null).statusCode()).isEqualTo(204);
         assertThat(dslContext.fetchCount(CHANNELS)).isZero();
         assertThat(request("DELETE", "/api/destinations/1", null).statusCode()).isEqualTo(204);
+        assertThat(request("DELETE", "/api/destinations/2", null).statusCode()).isEqualTo(204);
         assertThat(dslContext.fetchCount(DESTINATIONS)).isZero();
     }
 
@@ -180,16 +194,11 @@ class AdministrationApiTest extends PostgresIntegrationTest {
     void destinationCanDisableProfileSynchronization() throws Exception {
         HttpResponse<String> response = request("POST", "/api/destinations", objectNode()
             .put("nodeName", "multi-channel-node")
-            .put("credentialRef", "env:MOERA_ADMIN_TOKEN")
             .put("profileSync", false));
 
         assertThat(response.statusCode()).isEqualTo(201);
         assertThat(json(response).path("profileSync").asBoolean()).isFalse();
-        var stored = dslContext.select(DESTINATIONS.CREDENTIAL_REF, DESTINATIONS.PROFILE_SYNC)
-            .from(DESTINATIONS)
-            .fetchSingle();
-        assertThat(stored.value1()).isEqualTo("env:MOERA_ADMIN_TOKEN");
-        assertThat(stored.value2()).isFalse();
+        assertThat(dslContext.select(DESTINATIONS.PROFILE_SYNC).from(DESTINATIONS).fetchSingle().value1()).isFalse();
     }
 
     @Test
@@ -201,8 +210,7 @@ class AdministrationApiTest extends PostgresIntegrationTest {
         assertThat(request("POST", "/api/channels", channelRequest).statusCode()).isEqualTo(409);
 
         ObjectNode destinationRequest = objectNode()
-            .put("nodeName", "destination-node")
-            .put("credentialRef", "env:MOERA_ADMIN_TOKEN");
+            .put("nodeName", "destination-node");
         assertThat(request("POST", "/api/destinations", destinationRequest).statusCode()).isEqualTo(201);
         assertThat(request("POST", "/api/destinations", destinationRequest).statusCode()).isEqualTo(409);
 
@@ -229,8 +237,7 @@ class AdministrationApiTest extends PostgresIntegrationTest {
             .put("sourceType", "TELEGRAM")
             .put("sourceUri", "not a URI")).statusCode()).isEqualTo(400);
         assertThat(request("POST", "/api/destinations", objectNode()
-            .put("nodeName", "")
-            .put("credentialRef", "raw-secret")).statusCode()).isEqualTo(400);
+            .put("nodeName", "")).statusCode()).isEqualTo(400);
 
         ObjectNode mirrorRequest = objectNode()
             .put("channelId", 1)

@@ -58,6 +58,9 @@ validates the retained state, repeats the backfill to include valid changes made
 from adapter-owned JSON, and drops the six obsolete JSONB columns. Unknown keys or malformed values stop `V006`
 before any legacy column is removed; correct the reported table, row, and field, then restart the application.
 
+Migration `V007` removes the obsolete per-destination `credential_ref` column. It preserves every destination row;
+afterward, existing and new destinations use the process-wide carte identity described below.
+
 If the migrations are deployed separately, keep the legacy application version running after `V005`. Deploy the typed
 application only together with `V006`; Flyway must complete `V006` before that application starts. Do not run a
 typed-only build against a database stopped at `V005`.
@@ -158,8 +161,8 @@ MOERA_NAMING_SERVER=development
 ```
 
 The supported values are `main` and `development`. Restart the service after changing the value. Nodes registered in
-one naming environment are not visible in the other; make sure `destinations.node_name` and its credential belong to
-the selected environment. Arbitrary private naming-server URLs are not supported.
+one naming environment are not visible in the other; make sure the importer identity and every
+`destinations.node_name` belong to the selected environment. Arbitrary private naming-server URLs are not supported.
 
 If the node URL is known but its registered name is not, query it with
 [`moctl`](https://moera.org/administration/tools/moctl.html):
@@ -171,74 +174,67 @@ moctl -H https://node.example/moera name show
 Use the base Moera node URL supplied by that deployment in place of `https://node.example/moera`. The command prints
 the value to store as `node_name`. The same name is normally visible as the node's identity in Moera clients.
 
-### Create a dedicated admin token
+### Configure the importer identity
 
-The importer authenticates as the administrator of the target node because it uploads private media, reads node
-features/settings, and creates, updates, and deletes postings and feed stories. Create a separate named token instead
-of reusing a client token or storing the administrator password:
-
-```bash
-read -rsp 'Moera admin password: ' MOERA_ADMIN_PASSWORD && echo
-moctl -N my-node-name token create -n moera-import "$MOERA_ADMIN_PASSWORD"
-unset MOERA_ADMIN_PASSWORD
-```
-
-Replace `my-node-name` with the registered name and enter the current node administrator password at the prompt.
-`token create` authenticates directly with that password and prints the created token information. Because `-p` is
-omitted, the token receives all administrator permissions; this covers all current importer operations. The hidden
-prompt keeps the password out of shell history; run the command from a trusted administrative host because the CLI must
-still pass it to `moctl` as a process argument.
-
-Keep both the token ID and token value long enough to record them separately:
-
-- the token ID is used only for later `moctl token show`, `token update`, or `token delete` operations;
-- the token value is the secret required by the importer.
-
-Do not put the token ID, administrator password, root secret, or a `secret:`-prefixed root credential in
-`credentialRef`. Admin tokens have the node-configured `token.lifetime`; monitor their expiry and rotate the referenced
-secret before it expires.
-
-### Store the token outside PostgreSQL
-
-`destinations.credential_ref` stores only a reference to a Moera admin token. The supported forms are:
-
-- `env:VARIABLE_NAME`, resolved from the daemon environment;
-- `file:/absolute/path`, read from a mounted secret file.
-
-For an environment-backed secret:
-
-```bash
-export MOERA_ADMIN_TOKEN='replace-with-admin-token'
-```
-
-For a file-backed secret, make the file readable only by the daemon user:
-
-```bash
-sudo chown moera-import:moera-import /run/secrets/moera-admin-token
-sudo chmod 0400 /run/secrets/moera-admin-token
-```
-
-The database value is then respectively `env:MOERA_ADMIN_TOKEN` or
-`file:/run/secrets/moera-admin-token`; the token itself must not be stored in PostgreSQL. Pass either reference as the
-second argument to `destination add` below.
-
-For local development, the environment-backed variant can be placed in `.env.local`:
+The service uses one registered Moera identity for every destination. It signs a short-lived, destination-bound carte
+for each API request. Configure the identity, its private signing key, and every source IP address from which target
+nodes will observe requests:
 
 ```dotenv
-MOERA_ADMIN_TOKEN=replace-with-the-token-value-not-its-id
+MOERA_NAMING_SERVER=main
+MOERA_AUTHENTICATION_NAME=importer_0
+MOERA_AUTHENTICATION_SIGNING_KEY=replace-with-64-hex-character-private-signing-key
+MOERA_AUTHENTICATION_ADDRESSES=203.0.113.10,2001:db8::10
 ```
+
+The full name, including its generation suffix, and the corresponding public signing key must already be registered
+in the selected naming environment. `MOERA_AUTHENTICATION_ADDRESSES` is mandatory and may contain comma-separated IPv4
+and IPv6 addresses. Use the externally observed source addresses after NAT, not merely addresses assigned to the local
+host. All entries are resolved at startup and included in every carte. Restart the service after changing any value.
+
+Store the private key in deployment secret storage. It must not be committed to source control or written to
+PostgreSQL or logs. The example value above is deliberately unusable.
+
+### Grant the importer administrative rights
+
+Every destination node must grant the configured importer identity exactly the permissions needed by the service:
+
+- `view-content`
+- `add-post`
+- `update-post`
+- `delete-own-content`
+- `view-feeds`
+- `update-feeds`
+- `view-profile`
+- `update-profile`
+- `view-settings`
+- `upload-public-media`
+- `upload-private-media`
+
+Run the following for each destination. Keep the comma-separated scope list in one shell argument:
+
+```bash
+IMPORTER_SCOPES='view-content,add-post,update-post,delete-own-content,view-feeds,'\
+'update-feeds,view-profile,update-profile,view-settings,upload-public-media,upload-private-media'
+moctl -N my-node-name grant grant importer_0 "$IMPORTER_SCOPES"
+moctl -N my-node-name grant show importer_0
+```
+
+Here `my-node-name` is the destination issuing the grant, and `importer_0` must equal
+`MOERA_AUTHENTICATION_NAME`. Repeat the command after changing the importer name or generation.
 
 ### Create the destination and mirror
 
 After starting the normal daemon with Telegram enabled and its saved session ready, use the host-local administration
-CLI. Replace the source URI, registered node name, and credential reference:
+CLI. Replace the source URI and registered destination node name:
 
 ```bash
 ./scripts/moera-import-admin channel add https://t.me/example_channel
-./scripts/moera-import-admin destination add my-node-name env:MOERA_ADMIN_TOKEN
+./scripts/moera-import-admin destination add my-node-name
 ./scripts/moera-import-admin channel list
 ./scripts/moera-import-admin destination list
 ./scripts/moera-import-admin mirror add 1 1 --feed timeline
+./scripts/moera-import-admin mirror list
 ```
 
 By default, the mirror also keeps the Moera profile synchronized with the Telegram channel. Configure the English
@@ -258,7 +254,7 @@ captured in each newly created posting.
 Disable profile synchronization when a destination is intended to aggregate several channels:
 
 ```bash
-./scripts/moera-import-admin destination add aggregate-node env:MOERA_ADMIN_TOKEN --no-profile-sync
+./scripts/moera-import-admin destination add aggregate-node --no-profile-sync
 ```
 
 Without additional options, a newly added Telegram channel imports at most the newest 20 unique messages before
@@ -275,7 +271,8 @@ and continues delivering it; new Moera posts are paced by the destination rate d
 This creates three related objects:
 
 - `channels` tells the Telegram adapter which public channel URL or private invite link to resolve and poll;
-- `destinations` tells `MoeraService` which registered node to resolve and where to obtain its admin token;
+- `destinations` tells `MoeraService` which registered node to resolve and holds importer-owned delivery and profile
+  state;
 - `mirrors` connects that source to that destination. Every name in `mirrors.feeds` creates a feed story for the
   posting; `timeline` publishes it to the node's timeline.
 
@@ -317,6 +314,7 @@ DELETE /api/channels/{channelId}
 GET    /api/destinations
 POST   /api/destinations
 DELETE /api/destinations/{destinationId}
+GET    /api/mirrors
 POST   /api/mirrors
 DELETE /api/mirrors/{channelId}/{destinationId}
 ```
@@ -343,10 +341,11 @@ LEFT JOIN publications p ON p.mirror_id = r.id
 ORDER BY r.id, p.id;
 ```
 
-If `publication_last_error` reports a missing or unavailable credential, check that `destinations.credential_ref`
-names an existing environment variable in the daemon process or an absolute file readable by the daemon user. If node
-resolution fails, check that `node_name` is registered in the naming service selected by `MOERA_NAMING_SERVER` and is
-not a URL.
+For authentication failures, check that the importer name and public signing key are registered in the selected naming
+environment, the configured private key matches that public key, the destination has the exact Grants above, and the
+configured addresses match the source IP observed by the destination. Also verify clock synchronization on the
+importer and destination hosts. For resolution failures, confirm that `node_name` is registered in the naming service
+selected by `MOERA_NAMING_SERVER` and is not a URL.
 
 ## Import flow control
 
@@ -375,7 +374,7 @@ lease while active and stop completing work if ownership is lost.
 
 ## Starting the daemon
 
-Set the database, Telegram, directory, and Moera-secret environment described above, then start:
+Set the database, Telegram, directory, and Moera authentication environment described above, then start:
 
 ```bash
 export SERVER_PORT=8084
@@ -392,8 +391,8 @@ cp .env.local.example .env.local
 ./run
 ```
 
-Add Telegram and secret environment variables to `.env.local` when a real local account is needed. `./run` fixes the
-HTTP port at `8084` and enables JDWP on port `5006` without suspending startup.
+Add Telegram and authentication environment variables to `.env.local` when a real local account is needed. `./run`
+fixes the HTTP port at `8084` and enables JDWP on port `5006` without suspending startup.
 
 ## Health and metrics
 
@@ -439,8 +438,9 @@ ORDER BY id DESC;
 
 ### Moera smoke
 
-Use a test node and admin token, provision the destination and mirror with the CLI above, and publish a message with an
-image and a video in the test Telegram channel. Wait for the pipeline and inspect durable delivery state:
+Use a test importer identity with the required Grants, provision the destination and mirror with the CLI above, and
+publish a message with an image and a video in the test Telegram channel. Wait for the pipeline and inspect durable
+delivery state:
 
 ```sql
 SELECT

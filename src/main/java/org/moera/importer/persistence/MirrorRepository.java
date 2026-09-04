@@ -5,8 +5,8 @@ import java.util.Optional;
 import jakarta.inject.Inject;
 
 import org.jooq.DSLContext;
-import org.moera.importer.model.Mirror;
 import org.moera.importer.model.Destination;
+import org.moera.importer.model.Mirror;
 import org.moera.importer.persistence.jooq.tables.Mirrors;
 import org.moera.importer.persistence.jooq.tables.records.MirrorsRecord;
 import org.springframework.stereotype.Repository;
@@ -29,6 +29,12 @@ public class MirrorRepository {
 
     @Inject
     private JooqMappings jooqMappings;
+
+    public List<Mirror> findAll() {
+        return dslContext.selectFrom(MIRRORS)
+            .orderBy(MIRRORS.ID)
+            .fetch(jooqMappings::mirror);
+    }
 
     public List<Long> findWithUnassignedMessages(int limit) {
         return dslContext.select(MIRRORS.ID)

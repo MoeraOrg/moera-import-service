@@ -291,7 +291,7 @@ class PublicationMediaProcessorTest {
             empty,
             empty
         );
-        Destination destination = new Destination(7, "destination.example", "env:TEST", NOW, NOW);
+        Destination destination = new Destination(7, "destination.example", NOW, NOW);
         Media media = new Media(
             23,
             11,

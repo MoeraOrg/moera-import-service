@@ -38,10 +38,9 @@ public class DestinationRepository {
             .fetch(jooqMappings::destination);
     }
 
-    public Destination create(String nodeName, String credentialRef, boolean profileSync) {
+    public Destination create(String nodeName, boolean profileSync) {
         DestinationsRecord record = dslContext.insertInto(DESTINATIONS)
             .set(DESTINATIONS.NODE_NAME, nodeName)
-            .set(DESTINATIONS.CREDENTIAL_REF, credentialRef)
             .set(DESTINATIONS.PROFILE_SYNC, profileSync)
             .returning()
             .fetchSingle();

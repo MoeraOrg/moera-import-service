@@ -19,7 +19,7 @@ public class MoeraClientFactory {
     private static final String USER_AGENT = "moera-import-service";
 
     @Inject
-    private MoeraCredentialStore moeraCredentialStore;
+    private MoeraCarteSourceFactory moeraCarteSourceFactory;
 
     @Value("${moera.naming-server:main}")
     private String configuredNamingServer = "main";
@@ -37,10 +37,9 @@ public class MoeraClientFactory {
 
     public MoeraNode create(Destination destination) {
         String nodeUrl = resolve(destination.nodeName());
-        String token = moeraCredentialStore.resolve(destination.credentialRef());
         MoeraNode moeraNode = new MoeraNode(new OkHttpTransport(), nodeUrl);
-        moeraNode.token(token);
-        moeraNode.authAdmin();
+        moeraNode.carteSource(moeraCarteSourceFactory.create(destination.nodeName()));
+        moeraNode.auth();
         moeraNode.userAgent(USER_AGENT);
         return moeraNode;
     }
