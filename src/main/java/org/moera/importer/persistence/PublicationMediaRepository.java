@@ -14,8 +14,12 @@ import jakarta.inject.Inject;
 import org.jooq.DSLContext;
 import org.moera.importer.model.MediaSkipReason;
 import org.moera.importer.observability.ImportMetrics;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import static org.moera.importer.persistence.jooq.enums.PublicationMediaStatus.PENDING;
 import static org.moera.importer.persistence.jooq.enums.PublicationMediaStatus.SKIPPED;
@@ -34,6 +38,8 @@ import static org.moera.importer.persistence.jooq.tables.Publications.PUBLICATIO
 
 @Repository
 public class PublicationMediaRepository {
+
+    private static final Logger log = LoggerFactory.getLogger(PublicationMediaRepository.class);
 
     @Inject
     private Clock clock;
@@ -54,6 +60,7 @@ public class PublicationMediaRepository {
                 PUBLICATION_MEDIA.PUBLICATION_ID,
                 PUBLICATION_MEDIA.MEDIA_ID,
                 PUBLICATION_MEDIA.ATTEMPTS,
+                PUBLICATION_MEDIA.PROCESSING_TOKEN,
                 PUBLICATION_MEDIA.PROCESSING_UNTIL
             )
             .from(PUBLICATION_MEDIA)
@@ -79,6 +86,8 @@ public class PublicationMediaRepository {
             long mediaId = record.get(PUBLICATION_MEDIA.MEDIA_ID);
             int attempts = record.get(PUBLICATION_MEDIA.ATTEMPTS) + 1;
             UUID processingToken = UUID.randomUUID();
+            UUID previousProcessingToken = record.get(PUBLICATION_MEDIA.PROCESSING_TOKEN);
+            var previousProcessingUntil = record.get(PUBLICATION_MEDIA.PROCESSING_UNTIL);
             dslContext.update(PUBLICATION_MEDIA)
                 .set(PUBLICATION_MEDIA.ATTEMPTS, attempts)
                 .set(PUBLICATION_MEDIA.PROCESSING_TOKEN, processingToken)
@@ -87,8 +96,40 @@ public class PublicationMediaRepository {
                 .where(PUBLICATION_MEDIA.PUBLICATION_ID.eq(publicationId))
                 .and(PUBLICATION_MEDIA.MEDIA_ID.eq(mediaId))
                 .execute();
+            if (previousProcessingUntil != null) {
+                logReclaimAfterCommit(
+                    publicationId,
+                    mediaId,
+                    previousProcessingToken,
+                    previousProcessingUntil,
+                    processingToken,
+                    attempts
+                );
+            }
             return new PublicationMediaClaim(publicationId, mediaId, processingToken, attempts);
         }).toList();
+    }
+
+    private void logReclaimAfterCommit(
+        long publicationId,
+        long mediaId,
+        UUID previousProcessingToken,
+        java.time.OffsetDateTime previousProcessingUntil,
+        UUID processingToken,
+        int attempts
+    ) {
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+
+            @Override
+            public void afterCommit() {
+                log.warn(
+                    "Publication media lease reclaimed: operation=publication_media, publication_id={}, media_id={}, "
+                        + "previous_processing_token={}, previous_processing_until={}, processing_token={}, attempt={}",
+                    publicationId, mediaId, previousProcessingToken, previousProcessingUntil, processingToken, attempts
+                );
+            }
+
+        });
     }
 
     public PublicationMediaContext loadContext(long publicationId, long mediaId) {

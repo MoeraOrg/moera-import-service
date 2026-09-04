@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 
 import argparse
+import datetime
 import ipaddress
 import json
+import os
 import socket
+import subprocess
 import sys
 import urllib.error
 import urllib.parse
@@ -126,11 +129,14 @@ def run_channel(args, client):
         ])
         return
     if args.action == "add":
-        created = client.request("POST", "/api/channels", {
+        request = {
             "sourceType": args.source_type,
             "sourceUri": args.source_uri,
             "fullHistory": args.full_history,
-        })
+        }
+        if args.initial_import_after is not None:
+            request["initialImportAfter"] = args.initial_import_after
+        created = client.request("POST", "/api/channels", request)
         print_table([created], [("id", "ID"), ("sourceUri", "SOURCE URI")])
         return
     confirm_delete(args, "channel {} and all importer state below it".format(args.channel_id))
@@ -197,6 +203,27 @@ def positive_id(value):
     return parsed
 
 
+def initial_import_after(value):
+    environment = os.environ.copy()
+    environment["LC_ALL"] = "C"
+    try:
+        result = subprocess.run(
+            ["date", "--date", value, "+%s"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            env=environment,
+        )
+        timestamp = int(result.stdout.strip())
+        parsed = datetime.datetime.fromtimestamp(timestamp, datetime.timezone.utc)
+    except FileNotFoundError as failure:
+        raise argparse.ArgumentTypeError("GNU date is required to parse --after") from failure
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, ValueError, OverflowError) as failure:
+        raise argparse.ArgumentTypeError("invalid date/time for --after") from failure
+    return parsed.isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
 def add_delete_confirmation(parser):
     parser.add_argument("--yes", action="store_true", help="do not prompt for destructive deletion")
 
@@ -213,7 +240,11 @@ def parser():
     channel_add = channels.add_parser("add", help="resolve and add a channel")
     channel_add.add_argument("source_uri")
     channel_add.add_argument("--type", dest="source_type", default="TELEGRAM", choices=("TELEGRAM",))
-    channel_add.add_argument("--full-history", action="store_true", help="import all available source history")
+    initial_history = channel_add.add_mutually_exclusive_group()
+    initial_history.add_argument("--full-history", action="store_true",
+                                 help="import all available source history")
+    initial_history.add_argument("--after", dest="initial_import_after", type=initial_import_after,
+                                 help="import source history strictly after DATE/TIME (parsed by GNU date)")
     channel_delete = channels.add_parser("delete", help="delete a channel")
     channel_delete.add_argument("channel_id", type=positive_id)
     add_delete_confirmation(channel_delete)

@@ -33,8 +33,8 @@ class ChannelProfileRendererTest {
         assertThat(profile.fullName()).isEqualTo("News & reports");
         assertThat(profile.bioHtml()).isEqualTo(
             "<p>First paragraph<br>line two</p><p>Second &lt;paragraph&gt;</p>"
-                + "<p>This profile mirrors <a href=\"https://t.me/news_reports\">Telegram channel "
-                + "&quot;News &amp; reports&quot;</a>. To import another channel, or your own channel into your Moera "
+                + "<p><b>This profile mirrors Telegram channel <a href=\"https://t.me/news_reports\">"
+                + "News &amp; reports</a>.</b> To import another channel, or your own channel into your Moera "
                 + "account, contact <a href=\"mailto:import@moera.example\">import@moera.example</a>.</p>"
         );
     }
@@ -54,7 +54,7 @@ class ChannelProfileRendererTest {
         var profile = renderer.render(new ChannelMetadata("News", "", "news", null));
 
         assertThat(profile.bioHtml()).isEqualTo(
-            "<p>Mirror: <a href=\"https://t.me/news\">Telegram channel &quot;News&quot;</a>; requests: "
+            "<p>Mirror: Telegram channel <a href=\"https://t.me/news\">News</a>; requests: "
                 + "<a href=\"mailto:import@moera.example\">import@moera.example</a>.</p>"
         );
     }
@@ -86,7 +86,7 @@ class ChannelProfileRendererTest {
 
         assertThat(profile.bioHtml().codePointCount(0, profile.bioHtml().length())).isLessThanOrEqualTo(4096);
         assertThat(profile.bioHtml()).startsWith("<p><a href=\"https://example.org\">");
-        assertThat(profile.bioHtml()).contains("</a></p><p>This profile mirrors");
+        assertThat(profile.bioHtml()).contains("</a></p><p><b>This profile mirrors");
     }
 
 }

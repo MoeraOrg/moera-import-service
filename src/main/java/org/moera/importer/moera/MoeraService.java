@@ -1,6 +1,13 @@
 package org.moera.importer.moera;
 
+import java.io.EOFException;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.io.UncheckedIOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -24,6 +31,8 @@ import org.moera.lib.node.types.AvatarAttributes;
 import org.moera.lib.node.types.AvatarDescription;
 import org.moera.lib.node.types.AvatarInfo;
 import org.moera.lib.node.types.FeedReference;
+import org.moera.lib.node.types.MediaUploadAttributes;
+import org.moera.lib.node.types.MediaUploadInfo;
 import org.moera.lib.node.types.PostingText;
 import org.moera.lib.node.types.PostingOperations;
 import org.moera.lib.node.types.PrivateMediaFileInfo;
@@ -40,6 +49,9 @@ import org.springframework.util.ObjectUtils;
 public class MoeraService {
 
     private static final Duration CAPABILITIES_TTL = Duration.ofMinutes(5);
+    private static final int MEDIA_UPLOAD_CHUNK_SIZE = 8 * 1024 * 1024;
+    private static final int COPY_BUFFER_SIZE = 64 * 1024;
+    private static final String EMPTY_BODY_CONTENT_TYPE = "application/octet-stream";
     private static final String MEDIA_MAX_SIZE = "media.max-size";
     private static final String CLIENT_POSTING_PREFIX = "client.mercy.posting.";
     private static final String VISIBILITY_DEFAULT = CLIENT_POSTING_PREFIX + "visibility.default";
@@ -82,12 +94,105 @@ public class MoeraService {
         Objects.requireNonNull(media, "media");
         MoeraNode moeraNode = moeraClientFactory.create(destination);
         try {
-            PrivateMediaFileInfo info = moeraNode.uploadPrivateMedia(
-                null, null, true, file, media.mimeType()
-            );
+            PrivateMediaFileInfo info = Files.size(file) <= MEDIA_UPLOAD_CHUNK_SIZE
+                ? moeraNode.uploadPrivateMedia(null, null, true, file, media.mimeType())
+                : uploadMediaInChunks(moeraNode, file, media);
             return classifyMedia(moeraNode, info);
+        } catch (IOException e) {
+            throw new UncheckedIOException("Cannot prepare media chunks for Moera", e);
         } catch (MoeraNodeException e) {
             throw externalFailure("Cannot upload media to Moera", e);
+        }
+    }
+
+    private PrivateMediaFileInfo uploadMediaInChunks(MoeraNode moeraNode, Path file, Media media)
+        throws IOException, MoeraNodeException {
+        long fileSize = Files.size(file);
+        MediaUploadAttributes attributes = new MediaUploadAttributes();
+        attributes.setMimeType(media.mimeType());
+        if (!ObjectUtils.isEmpty(media.fileName()) && media.fileName().length() <= 255) {
+            attributes.setTitle(media.fileName());
+        }
+        attributes.setFileSize(Math.toIntExact(fileSize));
+        attributes.setChunkSize(MEDIA_UPLOAD_CHUNK_SIZE);
+        MediaUploadInfo upload = moeraNode.createMediaUpload(attributes);
+        String uploadId = upload != null ? upload.getId() : null;
+        boolean finalized = false;
+        try {
+            if (ObjectUtils.isEmpty(uploadId) || upload.getChunkSize() <= 0) {
+                throw new MoeraPermanentException("Moera returned incomplete media upload information", null);
+            }
+            uploadChunks(moeraNode, uploadId, upload.getChunkSize(), file, fileSize, media.mimeType());
+            PrivateMediaFileInfo info = finalizeMediaUpload(moeraNode, uploadId);
+            finalized = true;
+            return info;
+        } finally {
+            if (!finalized && !ObjectUtils.isEmpty(uploadId)) {
+                deleteMediaUploadQuietly(moeraNode, uploadId);
+            }
+        }
+    }
+
+    private void uploadChunks(
+        MoeraNode moeraNode,
+        String uploadId,
+        int chunkSize,
+        Path file,
+        long fileSize,
+        String mimeType
+    ) throws IOException, MoeraNodeException {
+        try (
+            TemporaryChunkFile chunkFile = TemporaryChunkFile.create();
+            InputStream input = Files.newInputStream(file)
+        ) {
+            byte[] buffer = new byte[Math.min(COPY_BUFFER_SIZE, chunkSize)];
+            long remaining = fileSize;
+            for (int chunk = 0; remaining > 0; chunk++) {
+                int size = (int) Math.min(chunkSize, remaining);
+                writeChunk(input, chunkFile.path(), buffer, size);
+                moeraNode.uploadMediaChunk(uploadId, chunk, chunkFile.path(), mimeType);
+                remaining -= size;
+            }
+        }
+    }
+
+    private PrivateMediaFileInfo finalizeMediaUpload(MoeraNode moeraNode, String uploadId)
+        throws IOException, MoeraNodeException {
+        TemporaryChunkFile requestBody = TemporaryChunkFile.create();
+        PrivateMediaFileInfo info;
+        try {
+            info = moeraNode.uploadPrivateMedia(
+                uploadId, null, true, requestBody.path(), EMPTY_BODY_CONTENT_TYPE
+            );
+        } catch (MoeraNodeException | RuntimeException | Error e) {
+            requestBody.closeSuppressing(e);
+            throw e;
+        }
+        requestBody.closeQuietly();
+        return info;
+    }
+
+    private void writeChunk(InputStream input, Path chunkFile, byte[] buffer, int size) throws IOException {
+        try (OutputStream output = Files.newOutputStream(
+            chunkFile, StandardOpenOption.WRITE, StandardOpenOption.TRUNCATE_EXISTING
+        )) {
+            int remaining = size;
+            while (remaining > 0) {
+                int read = input.read(buffer, 0, Math.min(buffer.length, remaining));
+                if (read < 0) {
+                    throw new EOFException("Media file ended before the declared size");
+                }
+                output.write(buffer, 0, read);
+                remaining -= read;
+            }
+        }
+    }
+
+    private void deleteMediaUploadQuietly(MoeraNode moeraNode, String uploadId) {
+        try {
+            moeraNode.deleteMediaUpload(uploadId);
+        } catch (MoeraNodeException | RuntimeException ignored) {
+            // The upload expires automatically if cleanup cannot reach Moera.
         }
     }
 
@@ -340,17 +445,28 @@ public class MoeraService {
 
     private RuntimeException externalFailure(String message, MoeraNodeException exception) {
         if (exception instanceof MoeraNodeApiException apiException) {
+            String detailedMessage = apiFailureMessage(message, apiException);
             if ("media.wrong-size".equals(apiException.getErrorCode())) {
                 return new MoeraMediaTooLargeException(exception);
             }
-            if (apiException.getStatus() == 429 || TEMPORARY_ERROR_CODES.contains(apiException.getErrorCode())) {
-                return new MoeraTemporaryException(message, exception);
+            if (
+                apiException.getStatus() == 429
+                || apiException.getErrorCode() != null && TEMPORARY_ERROR_CODES.contains(apiException.getErrorCode())
+            ) {
+                return new MoeraTemporaryException(detailedMessage, exception);
             }
             if (apiException.getStatus() < 500) {
-                return new MoeraPermanentException(message, exception);
+                return new MoeraPermanentException(detailedMessage, exception);
             }
+            return new MoeraTemporaryException(detailedMessage, exception);
         }
         return new MoeraTemporaryException(message, exception);
+    }
+
+    private String apiFailureMessage(String message, MoeraNodeApiException exception) {
+        return "%s: status=%d, error_code=%s, response=%s".formatted(
+            message, exception.getStatus(), exception.getErrorCode(), exception.getMessage()
+        );
     }
 
     private RuntimeException mutatingFailure(String message, MoeraNodeException exception) {
@@ -366,6 +482,35 @@ public class MoeraService {
     }
 
     private record CachedCapabilities(DestinationCapabilities capabilities, Instant expiresAt) {
+    }
+
+    private record TemporaryChunkFile(Path path) implements AutoCloseable {
+
+        private static TemporaryChunkFile create() throws IOException {
+            return new TemporaryChunkFile(Files.createTempFile("moera-media-", ".chunk"));
+        }
+
+        @Override
+        public void close() throws IOException {
+            Files.deleteIfExists(path);
+        }
+
+        private void closeQuietly() {
+            try {
+                close();
+            } catch (IOException ignored) {
+                // A successful upload must not be retried because an empty temporary request body cannot be deleted.
+            }
+        }
+
+        private void closeSuppressing(Throwable failure) {
+            try {
+                close();
+            } catch (IOException e) {
+                failure.addSuppressed(e);
+            }
+        }
+
     }
 
 }

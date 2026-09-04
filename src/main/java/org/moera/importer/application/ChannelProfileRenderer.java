@@ -35,12 +35,11 @@ public class ChannelProfileRenderer {
     }
 
     private String channelLink(ChannelMetadata metadata) {
-        String label = "Telegram channel &quot;" + escape(metadata.title()) + "&quot;";
         if (ObjectUtils.isEmpty(metadata.publicUsername())) {
-            return label;
+            return "Telegram channel &quot;" + escape(metadata.title()) + "&quot;";
         }
         String url = "https://t.me/" + metadata.publicUsername();
-        return "<a href=\"" + escape(url) + "\">" + label + "</a>";
+        return "Telegram channel " + "<a href=\"" + escape(url) + "\">" + escape(metadata.title()) + "</a>";
     }
 
     private String contactLink() {

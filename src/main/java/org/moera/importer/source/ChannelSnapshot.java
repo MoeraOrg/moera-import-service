@@ -1,6 +1,7 @@
 package org.moera.importer.source;
 
 import java.net.URI;
+import java.time.Instant;
 import java.util.Objects;
 
 import com.fasterxml.jackson.databind.JsonNode;
@@ -15,6 +16,7 @@ public record ChannelSnapshot(
     URI sourceUri,
     JsonNode sourceData,
     InitialImportMode initialImportMode,
+    Instant initialImportAfter,
     ChannelMetadata metadata,
     AccessState accessState,
     JsonNode accessData,
@@ -29,6 +31,7 @@ public record ChannelSnapshot(
         String sourceId,
         URI sourceUri,
         JsonNode sourceData,
+        InitialImportMode initialImportMode,
         ChannelMetadata metadata,
         AccessState accessState,
         JsonNode accessData,
@@ -36,7 +39,24 @@ public record ChannelSnapshot(
         JsonNode subscriptionData,
         JsonNode waterline
     ) {
-        this(id, sourceType, sourceId, sourceUri, sourceData, InitialImportMode.RECENT, metadata, accessState,
+        this(id, sourceType, sourceId, sourceUri, sourceData, initialImportMode, null, metadata, accessState,
+            accessData, subscriptionState, subscriptionData, waterline);
+    }
+
+    public ChannelSnapshot(
+        long id,
+        SourceType sourceType,
+        String sourceId,
+        URI sourceUri,
+        JsonNode sourceData,
+        ChannelMetadata metadata,
+        AccessState accessState,
+        JsonNode accessData,
+        SubscriptionState subscriptionState,
+        JsonNode subscriptionData,
+        JsonNode waterline
+    ) {
+        this(id, sourceType, sourceId, sourceUri, sourceData, InitialImportMode.RECENT, null, metadata, accessState,
             accessData, subscriptionState, subscriptionData, waterline);
     }
 
@@ -52,8 +72,8 @@ public record ChannelSnapshot(
         JsonNode subscriptionData,
         JsonNode waterline
     ) {
-        this(id, sourceType, sourceId, sourceUri, sourceData, InitialImportMode.RECENT, null, accessState, accessData,
-            subscriptionState,
+        this(id, sourceType, sourceId, sourceUri, sourceData, InitialImportMode.RECENT, null, null, accessState,
+            accessData, subscriptionState,
             subscriptionData, waterline);
     }
 
@@ -62,6 +82,7 @@ public record ChannelSnapshot(
         Objects.requireNonNull(sourceUri, "sourceUri");
         Objects.requireNonNull(sourceData, "sourceData");
         Objects.requireNonNull(initialImportMode, "initialImportMode");
+        initialImportMode.validate(initialImportAfter);
         Objects.requireNonNull(accessState, "accessState");
         Objects.requireNonNull(accessData, "accessData");
         Objects.requireNonNull(subscriptionState, "subscriptionState");

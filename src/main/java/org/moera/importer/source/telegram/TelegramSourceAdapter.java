@@ -3,6 +3,7 @@ package org.moera.importer.source.telegram;
 import java.net.URI;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -211,14 +212,18 @@ public class TelegramSourceAdapter implements SourceAdapter {
     public PollResult poll(ChannelSnapshot channel) {
         long chatId = requiredChatId(channel);
         ChannelMetadata metadata = client.channelMetadata(chatId);
+        boolean initialScan = channel.waterline() == null;
         long previousWaterline = channel.waterline() == null ? 0 : channel.waterline().path("messageId").asLong(0);
         long fromMessageId = 0;
         long newestScannedId = previousWaterline;
-        int initialLimit = previousWaterline == 0 && !isFullInitialImport(channel)
+        int initialLimit = initialScan && channel.initialImportMode() == InitialImportMode.RECENT
             ? properties.getInitialHistoryCount()
             : Integer.MAX_VALUE;
         int lookBehindRead = 0;
         int noProgressPages = 0;
+        Instant initialImportAfter = initialScan && channel.initialImportMode() == InitialImportMode.AFTER
+            ? Objects.requireNonNull(channel.initialImportAfter(), "initialImportAfter")
+            : null;
         Map<Long, TdApi.Message> scanned = new LinkedHashMap<>();
         polling:
         while (true) {
@@ -241,6 +246,11 @@ public class TelegramSourceAdapter implements SourceAdapter {
                 }
                 progressed = true;
                 oldestId = Math.min(oldestId, message.id);
+                newestScannedId = Math.max(newestScannedId, message.id);
+                if (initialImportAfter != null
+                    && !Instant.ofEpochSecond(message.date).isAfter(initialImportAfter)) {
+                    break polling;
+                }
                 if (previousWaterline != 0 && message.id < previousWaterline) {
                     lookBehindRead++;
                     if (lookBehindRead > properties.getLookBehindCount()) {
@@ -248,7 +258,6 @@ public class TelegramSourceAdapter implements SourceAdapter {
                     }
                 }
                 if (scanned.putIfAbsent(message.id, message) == null) {
-                    newestScannedId = Math.max(newestScannedId, message.id);
                     if (scanned.size() == initialLimit) {
                         break polling;
                     }
@@ -278,10 +287,6 @@ public class TelegramSourceAdapter implements SourceAdapter {
             }
         });
         return new PollResult(messages, objectNode().put("messageId", newestScannedId), metadata);
-    }
-
-    private boolean isFullInitialImport(ChannelSnapshot channel) {
-        return channel.initialImportMode() == InitialImportMode.FULL;
     }
 
     private String inviteLink(ChannelSnapshot channel) {

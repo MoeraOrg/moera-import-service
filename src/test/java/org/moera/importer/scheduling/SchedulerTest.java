@@ -34,6 +34,7 @@ import org.moera.importer.source.telegram.TelegramRuntime;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -135,6 +136,25 @@ class SchedulerTest {
 
         assertThat(publicationMediaRepository.requestedLimit).isEqualTo(4);
         assertThat(publicationMediaRepository.requestedLease).isEqualTo(Duration.ofMinutes(7));
+        assertThat(publicationMediaProcessor.mediaIds).containsExactly(23L, 29L);
+    }
+
+    @Test
+    void publicationMediaSchedulerContainsProcessorRuntimeFailure() {
+        RecordingPublicationMediaRepository publicationMediaRepository =
+            new RecordingPublicationMediaRepository();
+        RecordingPublicationMediaProcessor publicationMediaProcessor =
+            new RecordingPublicationMediaProcessor();
+        publicationMediaProcessor.failure = new IllegalStateException("already logged by processor");
+        WorkerProperties workerProperties = properties();
+        PublicationMediaScheduler scheduler = new PublicationMediaScheduler();
+        ReflectionTestUtils.setField(scheduler, "publicationMediaProcessor", publicationMediaProcessor);
+        ReflectionTestUtils.setField(scheduler, "publicationMediaRepository", publicationMediaRepository);
+        ReflectionTestUtils.setField(scheduler, "workerProperties", workerProperties);
+        dispatcher(scheduler, workerProperties);
+        ready(scheduler);
+
+        assertThatCode(scheduler::run).doesNotThrowAnyException();
         assertThat(publicationMediaProcessor.mediaIds).containsExactly(23L, 29L);
     }
 
@@ -300,10 +320,14 @@ class SchedulerTest {
     private static class RecordingPublicationMediaProcessor extends PublicationMediaProcessor {
 
         private final List<Long> mediaIds = new ArrayList<>();
+        private RuntimeException failure;
 
         @Override
         public void process(PublicationMediaClaim claim) {
             mediaIds.add(claim.mediaId());
+            if (failure != null) {
+                throw failure;
+            }
         }
 
     }

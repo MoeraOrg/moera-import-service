@@ -66,6 +66,7 @@ public class JooqMappings {
             URI.create(record.getSourceUri()),
             jsonNode(record.getSourceData()),
             InitialImportMode.valueOf(record.getInitialImportMode().getLiteral()),
+            instant(record.getInitialImportAfter()),
             channelMetadata(record),
             org.moera.importer.model.AccessState.valueOf(record.getAccessState().getLiteral()),
             jsonNode(record.getAccessData()),

@@ -1,6 +1,8 @@
 package org.moera.importer.admin;
 
 import java.net.URI;
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.HashSet;
 import java.util.List;
 import jakarta.inject.Inject;
@@ -59,6 +61,9 @@ public class AdministrationService {
             || request.sourceUri().isBlank()) {
             throw badRequest("Source type and URI are required");
         }
+        if (request.fullHistory() && request.initialImportAfter() != null) {
+            throw badRequest("Full history and initial import boundary are mutually exclusive");
+        }
         URI sourceUri;
         try {
             sourceUri = URI.create(request.sourceUri());
@@ -72,9 +77,12 @@ public class AdministrationService {
             throw unavailable("Source adapter is unavailable");
         }
         ChannelResolution resolution;
-        InitialImportMode initialImportMode = request.fullHistory()
-            ? InitialImportMode.FULL
-            : InitialImportMode.RECENT;
+        Instant initialImportAfter = request.initialImportAfter() != null
+            ? request.initialImportAfter().truncatedTo(ChronoUnit.SECONDS)
+            : null;
+        InitialImportMode initialImportMode = initialImportAfter != null
+            ? InitialImportMode.AFTER
+            : request.fullHistory() ? InitialImportMode.FULL : InitialImportMode.RECENT;
         try {
             resolution = sourceAdapter.resolveChannel(sourceUri, initialImportMode);
         } catch (SourcePermanentException | IllegalArgumentException e) {
@@ -86,7 +94,9 @@ public class AdministrationService {
             throw badRequest("Canonical source URI is too long");
         }
         try {
-            return channelView(channelRepository.create(request.sourceType(), initialImportMode, resolution));
+            return channelView(channelRepository.create(
+                request.sourceType(), initialImportMode, initialImportAfter, resolution
+            ));
         } catch (RuntimeException e) {
             if (isIntegrityViolation(e)) {
                 throw conflict("Channel already exists");

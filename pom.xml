@@ -13,18 +13,19 @@
 
     <groupId>org.moera</groupId>
     <artifactId>moera-import</artifactId>
-    <version>0.0.1-SNAPSHOT</version>
+    <version>0.1.0</version>
     <name>Moera Import Service</name>
     <description>Import external channels into Moera</description>
 
     <properties>
         <java.version>25</java.version>
         <maven-checkstyle-plugin.version>3.6.0</maven-checkstyle-plugin.version>
+        <maven-resources-plugin.version>3.4.0</maven-resources-plugin.version>
         <checkstyle.version>13.9.0</checkstyle.version>
         <flexmark.version>0.64.8</flexmark.version>
         <jsoup.version>1.23.1</jsoup.version>
-        <moeralib.version>0.19.1-SNAPSHOT</moeralib.version>
         <moeralib.compatible.version>0.19.0</moeralib.compatible.version>
+        <moeralib.version>0.19.1</moeralib.version>
         <tdlight.version>3.5.4+td.1.8.66</tdlight.version>
     </properties>
 
@@ -143,6 +144,17 @@
 
     <build>
         <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-resources-plugin</artifactId>
+                <version>${maven-resources-plugin.version}</version>
+                <configuration>
+                    <delimiters>
+                        <delimiter>^</delimiter>
+                    </delimiters>
+                    <useDefaultDelimiters>false</useDefaultDelimiters>
+                </configuration>
+            </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-checkstyle-plugin</artifactId>

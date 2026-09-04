@@ -1,11 +1,13 @@
 package org.moera.importer.moera;
 
 import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.List;
 
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
@@ -13,10 +15,12 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.mockito.ArgumentCaptor;
+import org.mockito.MockedStatic;
 import org.moera.importer.application.PublicationPayload;
 import org.moera.importer.model.Destination;
 import org.moera.importer.model.Media;
 import org.moera.lib.node.MoeraNode;
+import org.moera.lib.node.exception.MoeraNodeApiException;
 import org.moera.lib.node.exception.MoeraNodeApiNotFoundException;
 import org.moera.lib.node.exception.MoeraNodeApiOperationException;
 import org.moera.lib.node.exception.MoeraNodeApiValidationException;
@@ -26,6 +30,8 @@ import org.moera.lib.node.types.AvatarAttributes;
 import org.moera.lib.node.types.AvatarInfo;
 import org.moera.lib.node.types.FeedReference;
 import org.moera.lib.node.types.MediaToAttach;
+import org.moera.lib.node.types.MediaUploadAttributes;
+import org.moera.lib.node.types.MediaUploadInfo;
 import org.moera.lib.node.types.PostingFeatures;
 import org.moera.lib.node.types.PostingInfo;
 import org.moera.lib.node.types.PostingText;
@@ -42,10 +48,14 @@ import org.springframework.test.util.ReflectionTestUtils;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.CALLS_REAL_METHODS;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -121,6 +131,7 @@ class MoeraServiceTest {
     @Test
     void alwaysRequestsDownsizeAndPreservesMediaIdAndHash() throws Exception {
         Path file = temporaryDirectory.resolve("image.jpg");
+        Files.write(file, new byte[] { 1, 2, 3 });
         PrivateMediaFileInfo info = mediaInfo("media-id", "media-hash", false, null);
         when(moeraNode.uploadPrivateMedia(null, null, true, file, "image/jpeg")).thenReturn(info);
 
@@ -128,11 +139,169 @@ class MoeraServiceTest {
 
         assertThat(upload).isEqualTo(new MediaUpload.Ready(new UploadedMedia("media-id", "media-hash")));
         verify(moeraNode).uploadPrivateMedia(null, null, true, file, "image/jpeg");
+        verify(moeraNode, never()).createMediaUpload(any());
+    }
+
+    @Test
+    void uploadsMediaInServerSelectedChunksAndFinalizesByUploadId() throws Exception {
+        Path file = temporaryDirectory.resolve("chunked-image.jpg");
+        byte[] content = new byte[8 * 1024 * 1024 + 3];
+        for (int i = 0; i < content.length; i++) {
+            content[i] = (byte) (i % 251);
+        }
+        Files.write(file, content);
+        MediaUploadInfo uploadInfo = new MediaUploadInfo();
+        uploadInfo.setId("upload-id");
+        uploadInfo.setChunkSize(4 * 1024 * 1024);
+        when(moeraNode.createMediaUpload(any())).thenReturn(uploadInfo);
+        List<byte[]> chunks = new ArrayList<>();
+        when(moeraNode.uploadMediaChunk(eq("upload-id"), anyInt(), any(Path.class), eq("image/jpeg")))
+            .thenAnswer(invocation -> {
+                chunks.add(Files.readAllBytes(invocation.getArgument(2)));
+                return uploadInfo;
+            });
+        List<Long> finalizationBodySizes = new ArrayList<>();
+        when(moeraNode.uploadPrivateMedia(
+            eq("upload-id"), isNull(), eq(true), any(Path.class), eq("application/octet-stream")
+        )).thenAnswer(invocation -> {
+            finalizationBodySizes.add(Files.size(invocation.getArgument(3)));
+            return mediaInfo("media-id", "media-hash", false, null);
+        });
+
+        MediaUpload upload = moeraService.uploadMedia(destination, file, media());
+
+        assertThat(upload).isEqualTo(new MediaUpload.Ready(new UploadedMedia("media-id", "media-hash")));
+        ArgumentCaptor<MediaUploadAttributes> attributes = ArgumentCaptor.forClass(MediaUploadAttributes.class);
+        var calls = inOrder(moeraNode);
+        calls.verify(moeraNode).createMediaUpload(attributes.capture());
+        calls.verify(moeraNode).uploadMediaChunk(eq("upload-id"), eq(0), any(Path.class), eq("image/jpeg"));
+        calls.verify(moeraNode).uploadMediaChunk(eq("upload-id"), eq(1), any(Path.class), eq("image/jpeg"));
+        calls.verify(moeraNode).uploadMediaChunk(eq("upload-id"), eq(2), any(Path.class), eq("image/jpeg"));
+        calls.verify(moeraNode).uploadPrivateMedia(
+            eq("upload-id"), isNull(), eq(true), any(Path.class), eq("application/octet-stream")
+        );
+        assertThat(attributes.getValue().getMimeType()).isEqualTo("image/jpeg");
+        assertThat(attributes.getValue().getTitle()).isEqualTo("image.jpg");
+        assertThat(attributes.getValue().getFileSize()).isEqualTo(content.length);
+        assertThat(attributes.getValue().getChunkSize()).isEqualTo(8 * 1024 * 1024);
+        assertThat(chunks).containsExactly(
+            java.util.Arrays.copyOfRange(content, 0, 4 * 1024 * 1024),
+            java.util.Arrays.copyOfRange(content, 4 * 1024 * 1024, 8 * 1024 * 1024),
+            java.util.Arrays.copyOfRange(content, 8 * 1024 * 1024, content.length)
+        );
+        assertThat(finalizationBodySizes).containsExactly(0L);
+        verify(moeraNode, never()).deleteMediaUpload(anyString());
+    }
+
+    @Test
+    void deletesChunkedUploadWhenAChunkFails() throws Exception {
+        Path file = temporaryDirectory.resolve("chunked-image.jpg");
+        try (var channel = java.nio.channels.FileChannel.open(
+            file, java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.WRITE
+        )) {
+            channel.position(8L * 1024 * 1024);
+            channel.write(java.nio.ByteBuffer.wrap(new byte[] { 1 }));
+        }
+        MediaUploadInfo uploadInfo = new MediaUploadInfo();
+        uploadInfo.setId("upload-id");
+        uploadInfo.setChunkSize(4 * 1024 * 1024);
+        when(moeraNode.createMediaUpload(any())).thenReturn(uploadInfo);
+        when(moeraNode.uploadMediaChunk(eq("upload-id"), eq(0), any(Path.class), eq("image/jpeg")))
+            .thenThrow(new MoeraNodeConnectionException(new IOException("connection reset")));
+
+        assertThatThrownBy(() -> moeraService.uploadMedia(destination, file, media()))
+            .isInstanceOf(MoeraTemporaryException.class);
+
+        verify(moeraNode).deleteMediaUpload("upload-id");
+        verify(moeraNode, never()).uploadPrivateMedia(
+            eq("upload-id"), isNull(), eq(true), any(Path.class), anyString()
+        );
+    }
+
+    @Test
+    void deletesChunkedUploadWhenCreateResponseIsIncomplete() throws Exception {
+        Path file = temporaryDirectory.resolve("chunked-image.jpg");
+        try (var channel = java.nio.channels.FileChannel.open(
+            file, java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.WRITE
+        )) {
+            channel.position(8L * 1024 * 1024);
+            channel.write(java.nio.ByteBuffer.wrap(new byte[] { 1 }));
+        }
+        MediaUploadInfo uploadInfo = new MediaUploadInfo();
+        uploadInfo.setId("upload-id");
+        when(moeraNode.createMediaUpload(any())).thenReturn(uploadInfo);
+
+        assertThatThrownBy(() -> moeraService.uploadMedia(destination, file, media()))
+            .isInstanceOf(MoeraPermanentException.class)
+            .hasMessage("Moera returned incomplete media upload information");
+
+        verify(moeraNode).deleteMediaUpload("upload-id");
+        verify(moeraNode, never()).uploadMediaChunk(anyString(), anyInt(), any(Path.class), anyString());
+    }
+
+    @Test
+    void preservesFinalizeFailureWhenServerUploadCleanupAlsoFails() throws Exception {
+        Path file = temporaryDirectory.resolve("chunked-image.jpg");
+        try (var channel = java.nio.channels.FileChannel.open(
+            file, java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.WRITE
+        )) {
+            channel.position(8L * 1024 * 1024);
+            channel.write(java.nio.ByteBuffer.wrap(new byte[] { 1 }));
+        }
+        MediaUploadInfo uploadInfo = new MediaUploadInfo();
+        uploadInfo.setId("upload-id");
+        uploadInfo.setChunkSize(16 * 1024 * 1024);
+        when(moeraNode.createMediaUpload(any())).thenReturn(uploadInfo);
+        when(moeraNode.uploadPrivateMedia(
+            eq("upload-id"), isNull(), eq(true), any(Path.class), eq("application/octet-stream")
+        )).thenThrow(new MoeraNodeApiException(503, "node.unavailable", "maintenance"));
+        when(moeraNode.deleteMediaUpload("upload-id"))
+            .thenThrow(new IllegalStateException("cleanup failed"));
+
+        assertThatThrownBy(() -> moeraService.uploadMedia(destination, file, media()))
+            .isInstanceOf(MoeraTemporaryException.class)
+            .hasMessageContaining("status=503", "error_code=node.unavailable", "maintenance");
+
+        verify(moeraNode).deleteMediaUpload("upload-id");
+    }
+
+    @Test
+    void preservesSuccessfulFinalizationWhenEmptyRequestBodyCleanupFails() throws Exception {
+        Path file = temporaryDirectory.resolve("chunked-image.jpg");
+        try (var channel = java.nio.channels.FileChannel.open(
+            file, java.nio.file.StandardOpenOption.CREATE, java.nio.file.StandardOpenOption.WRITE
+        )) {
+            channel.position(8L * 1024 * 1024);
+            channel.write(java.nio.ByteBuffer.wrap(new byte[] { 1 }));
+        }
+        Path chunkFile = Files.createFile(temporaryDirectory.resolve("upload.chunk"));
+        Path finalizationBody = Files.createFile(temporaryDirectory.resolve("finalize.body"));
+        MediaUploadInfo uploadInfo = new MediaUploadInfo();
+        uploadInfo.setId("upload-id");
+        uploadInfo.setChunkSize(16 * 1024 * 1024);
+        when(moeraNode.createMediaUpload(any())).thenReturn(uploadInfo);
+        when(moeraNode.uploadPrivateMedia(
+            eq("upload-id"), isNull(), eq(true), eq(finalizationBody), eq("application/octet-stream")
+        )).thenReturn(mediaInfo("media-id", "media-hash", false, null));
+
+        MediaUpload upload;
+        try (MockedStatic<Files> files = mockStatic(Files.class, CALLS_REAL_METHODS)) {
+            files.when(() -> Files.createTempFile("moera-media-", ".chunk"))
+                .thenReturn(chunkFile, finalizationBody);
+            files.when(() -> Files.deleteIfExists(finalizationBody))
+                .thenThrow(new IOException("cleanup failed"));
+
+            upload = moeraService.uploadMedia(destination, file, media());
+        }
+
+        assertThat(upload).isEqualTo(new MediaUpload.Ready(new UploadedMedia("media-id", "media-hash")));
+        verify(moeraNode, never()).deleteMediaUpload(anyString());
     }
 
     @Test
     void reportsUncompressedUploadAsAwaitingCompression() throws Exception {
         Path file = temporaryDirectory.resolve("video.mp4");
+        Files.write(file, new byte[] { 1, 2, 3 });
         when(moeraNode.uploadPrivateMedia(null, null, true, file, "image/jpeg"))
             .thenReturn(mediaInfo("original-id", "original-hash", true, null));
 
@@ -169,6 +338,7 @@ class MoeraServiceTest {
     @Test
     void returnsAlreadyCompressedMediaImmediatelyAfterUpload() throws Exception {
         Path file = temporaryDirectory.resolve("video.mp4");
+        Files.write(file, new byte[] { 1, 2, 3 });
         when(moeraNode.uploadPrivateMedia(null, null, true, file, "image/jpeg"))
             .thenReturn(mediaInfo("original-id", "original-hash", true, "compressed-id"));
         when(moeraNode.getPrivateMediaInfo("compressed-id", null))
@@ -366,6 +536,7 @@ class MoeraServiceTest {
     @Test
     void mapsWrongSizeToTerminalMediaOutcome() throws Exception {
         Path file = temporaryDirectory.resolve("large.jpg");
+        Files.write(file, new byte[] { 1, 2, 3 });
         when(moeraNode.uploadPrivateMedia(isNull(), isNull(), any(), any(), any()))
             .thenThrow(new MoeraNodeApiValidationException("media.wrong-size", "too large"));
 
@@ -374,8 +545,45 @@ class MoeraServiceTest {
     }
 
     @Test
+    void includesMoeraResponseDetailsInPermanentUploadFailure() throws Exception {
+        Path file = temporaryDirectory.resolve("image.jpg");
+        Files.write(file, new byte[] { 1, 2, 3 });
+        when(moeraNode.uploadPrivateMedia(isNull(), isNull(), any(), any(), any()))
+            .thenThrow(new MoeraNodeApiValidationException("media.invalid", "unsupported image format"));
+
+        assertThatThrownBy(() -> moeraService.uploadMedia(destination, file, media()))
+            .isInstanceOf(MoeraPermanentException.class)
+            .hasMessageContainingAll(
+                "Cannot upload media to Moera",
+                "status=400",
+                "error_code=media.invalid",
+                "Validation failed",
+                "unsupported image format"
+            );
+    }
+
+    @Test
+    void includesMoeraResponseDetailsInTemporaryUploadFailure() throws Exception {
+        Path file = temporaryDirectory.resolve("image.jpg");
+        Files.write(file, new byte[] { 1, 2, 3 });
+        when(moeraNode.uploadPrivateMedia(isNull(), isNull(), any(), any(), any()))
+            .thenThrow(new MoeraNodeApiException(503, "node.unavailable", "maintenance"));
+
+        assertThatThrownBy(() -> moeraService.uploadMedia(destination, file, media()))
+            .isInstanceOf(MoeraTemporaryException.class)
+            .hasMessageContainingAll(
+                "Cannot upload media to Moera",
+                "status=503",
+                "error_code=node.unavailable",
+                "Error status returned: 503",
+                "maintenance"
+            );
+    }
+
+    @Test
     void mapsMediaStorageErrorToRetryableOutcome() throws Exception {
         Path file = temporaryDirectory.resolve("image.jpg");
+        Files.write(file, new byte[] { 1, 2, 3 });
         when(moeraNode.uploadPrivateMedia(isNull(), isNull(), any(), any(), any()))
             .thenThrow(new MoeraNodeApiOperationException("media.storage-error", "storage unavailable"));
 

@@ -16,15 +16,20 @@ import org.springframework.stereotype.Component;
 @Component
 public class MoeraClientFactory {
 
-    private static final String USER_AGENT = "moera-import-service";
+    private static final String USER_AGENT_FORMAT = "Moera import service/%s";
 
     @Inject
     private MoeraCarteSourceFactory moeraCarteSourceFactory;
 
+    @Value("${moera.version}")
+    private String version;
+
     @Value("${moera.naming-server:main}")
     private String configuredNamingServer = "main";
 
+    private final OkHttpTransport okHttpTransport = new OkHttpTransport();
     private MoeraNamingServer moeraNamingServer = MoeraNamingServer.MAIN;
+    private OkHttpJsonRpcFetcher okHttpJsonRpcFetcher;
 
     @PostConstruct
     public void initialize() {
@@ -33,22 +38,21 @@ public class MoeraClientFactory {
         } catch (IllegalArgumentException e) {
             throw new MoeraConfigurationException("Unsupported Moera naming server", e);
         }
+        okHttpJsonRpcFetcher = new OkHttpJsonRpcFetcher(namingServerUrl());
     }
 
     public MoeraNode create(Destination destination) {
         String nodeUrl = resolve(destination.nodeName());
-        MoeraNode moeraNode = new MoeraNode(new OkHttpTransport(), nodeUrl);
+        MoeraNode moeraNode = new MoeraNode(okHttpTransport, nodeUrl);
         moeraNode.carteSource(moeraCarteSourceFactory.create(destination.nodeName()));
         moeraNode.auth();
-        moeraNode.userAgent(USER_AGENT);
+        moeraNode.userAgent(USER_AGENT_FORMAT.formatted(version));
         return moeraNode;
     }
 
     private String resolve(String nodeName) {
         try {
-            String nodeUrl = MoeraNaming.resolve(
-                nodeName, new OkHttpJsonRpcFetcher(namingServerUrl())
-            );
+            String nodeUrl = MoeraNaming.resolve(nodeName, okHttpJsonRpcFetcher);
             if (nodeUrl == null || nodeUrl.isBlank()) {
                 throw new MoeraConfigurationException("Moera node name cannot be resolved");
             }

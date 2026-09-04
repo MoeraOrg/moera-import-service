@@ -6,6 +6,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 import jakarta.inject.Inject;
 
@@ -20,6 +21,7 @@ import org.moera.importer.MoeraImportApplication;
 import org.moera.importer.model.AccessState;
 import org.moera.importer.model.SourceType;
 import org.moera.importer.model.SubscriptionState;
+import org.moera.importer.persistence.ChannelRepository;
 import org.moera.importer.persistence.PostgresIntegrationTest;
 import org.moera.importer.source.AccessResult;
 import org.moera.importer.source.ChannelMetadata;
@@ -37,11 +39,13 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.context.annotation.Bean;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.moera.importer.persistence.jooq.tables.Channels.CHANNELS;
 import static org.moera.importer.persistence.jooq.tables.Destinations.DESTINATIONS;
 import static org.moera.importer.persistence.jooq.tables.Mirrors.MIRRORS;
@@ -54,6 +58,9 @@ class AdministrationApiTest extends PostgresIntegrationTest {
 
     @Inject
     private DSLContext dslContext;
+
+    @Inject
+    private ChannelRepository channelRepository;
 
     @Inject
     private FakeSourceAdapter fakeSourceAdapter;
@@ -191,6 +198,53 @@ class AdministrationApiTest extends PostgresIntegrationTest {
     }
 
     @Test
+    void createChannelRejectsConflictingInitialHistoryOptions() throws Exception {
+        HttpResponse<String> response = request("POST", "/api/channels", objectNode()
+            .put("sourceType", "TELEGRAM")
+            .put("sourceUri", "https://t.me/news")
+            .put("fullHistory", true)
+            .put("initialImportAfter", "2026-09-01T11:30:00Z"));
+
+        assertThat(response.statusCode()).isEqualTo(400);
+    }
+
+    @Test
+    void createChannelCanRequestHistoryAfterTimestamp() throws Exception {
+        Instant boundary = Instant.parse("2026-09-01T11:30:00Z");
+
+        HttpResponse<String> response = request("POST", "/api/channels", objectNode()
+            .put("sourceType", "TELEGRAM")
+            .put("sourceUri", "https://t.me/news")
+            .put("initialImportAfter", boundary.toString()));
+
+        assertThat(response.statusCode()).isEqualTo(201);
+        assertThat(fakeSourceAdapter.resolvedMode.name()).isEqualTo("AFTER");
+        ChannelSnapshot storedChannel = channelRepository.find(1).orElseThrow();
+        assertThat(storedChannel.initialImportMode()).isEqualTo(InitialImportMode.AFTER);
+        assertThat(storedChannel.initialImportAfter()).isEqualTo(boundary);
+    }
+
+    @Test
+    void createChannelTruncatesInitialImportBoundaryToTelegramPrecision() throws Exception {
+        HttpResponse<String> response = request("POST", "/api/channels", objectNode()
+            .put("sourceType", "TELEGRAM")
+            .put("sourceUri", "https://t.me/news")
+            .put("initialImportAfter", "2026-09-01T11:30:00.999999999Z"));
+
+        assertThat(response.statusCode()).isEqualTo(201);
+        assertThat(channelRepository.find(1).orElseThrow().initialImportAfter())
+            .isEqualTo(Instant.parse("2026-09-01T11:30:00Z"));
+    }
+
+    @Test
+    void databaseRejectsInitialImportModeBoundaryMismatch() {
+        assertThatThrownBy(() -> insertChannel(InitialImportMode.AFTER, null))
+            .isInstanceOf(DataIntegrityViolationException.class);
+        assertThatThrownBy(() -> insertChannel(InitialImportMode.RECENT, Instant.parse("2026-09-01T11:30:00Z")))
+            .isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    @Test
     void destinationCanDisableProfileSynchronization() throws Exception {
         HttpResponse<String> response = request("POST", "/api/destinations", objectNode()
             .put("nodeName", "multi-channel-node")
@@ -272,6 +326,19 @@ class AdministrationApiTest extends PostgresIntegrationTest {
             builder.header("Content-Type", "application/json");
         }
         return HttpClient.newHttpClient().send(builder.build(), HttpResponse.BodyHandlers.ofString());
+    }
+
+    private void insertChannel(InitialImportMode initialImportMode, Instant initialImportAfter) {
+        dslContext.insertInto(CHANNELS)
+            .set(CHANNELS.SOURCE_TYPE, org.moera.importer.persistence.jooq.enums.SourceType.TELEGRAM)
+            .set(CHANNELS.SOURCE_URI, "https://t.me/news")
+            .set(CHANNELS.ACCESS_STATE, org.moera.importer.persistence.jooq.enums.AccessState.UNKNOWN)
+            .set(CHANNELS.SUBSCRIPTION_STATE, org.moera.importer.persistence.jooq.enums.SubscriptionState.INACTIVE)
+            .set(CHANNELS.INITIAL_IMPORT_MODE,
+                org.moera.importer.persistence.jooq.enums.InitialImportMode.valueOf(initialImportMode.name()))
+            .set(CHANNELS.INITIAL_IMPORT_AFTER,
+                initialImportAfter != null ? initialImportAfter.atOffset(java.time.ZoneOffset.UTC) : null)
+            .execute();
     }
 
     private JsonNode json(HttpResponse<String> response) throws IOException {

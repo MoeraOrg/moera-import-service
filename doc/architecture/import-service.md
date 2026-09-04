@@ -125,6 +125,7 @@ source_id
 source_uri
 source_data JSONB
 initial_import_mode
+initial_import_after
 title
 description_html
 public_username
@@ -298,11 +299,16 @@ adapter can establish it reliably.
 ### 10.2 Initial scan
 
 `waterline = NULL` means that no successful initial forward scan has completed. The source adapter chooses the initial
-import scope. Channel creation stores an `InitialImportMode` of `RECENT` or `FULL` in `channels.initial_import_mode`.
+import scope. Channel creation stores an `InitialImportMode` of `RECENT`, `FULL`, or `AFTER` in
+`channels.initial_import_mode`. For `AFTER`, `channels.initial_import_after` stores the exclusive lower timestamp
+boundary; it is null for the other modes. The administration service truncates the boundary to whole seconds to match
+Telegram publication timestamp precision.
 
 For Telegram, `RECENT` scans the newest configured number of unique Telegram messages and defaults to 20. Deliberately
-skipped messages count toward this scan boundary. `FULL` scans to the beginning of available history. The mode affects
-only a null-waterline initial scan; ordinary polling always uses the waterline and configured look-behind.
+skipped messages count toward this scan boundary. `FULL` scans to the beginning of available history. `AFTER` scans
+backward until it reaches a message published at or before `initial_import_after` and imports only messages strictly
+after the boundary. The mode affects only a null-waterline initial scan; ordinary polling always uses the waterline and
+configured look-behind.
 
 ## 11. Message
 
@@ -502,9 +508,9 @@ state. The result may contain a null `sourceId` when an external service deliber
 access is granted. `AccessResult` may later return a `resolvedSourceId`; the core persists it only if the channel has
 no source ID yet, and treats a conflicting later ID as a permanent consistency error.
 
-`InitialImportMode` carries the operator's requested initial scope without promoting a source cursor or Telegram
-pagination detail into the core. The core stores the mode in `channels.initial_import_mode`; each adapter interprets
-the value.
+`InitialImportMode` and the optional `initial_import_after` timestamp carry the operator's requested initial scope
+without promoting a source cursor or Telegram pagination detail into the core. The core stores both values on the
+channel; each adapter interprets them.
 
 ## 15. Live source events
 
@@ -1995,7 +2001,8 @@ The processor:
 4. obtains or reuses a staging file;
 5. downloads through the appropriate `SourceAdapter` when necessary;
 6. checks the actual file size;
-7. uploads to Moera with `downsize=true`;
+7. uploads files up to 8 MiB directly and larger files through the Moera chunked-upload API, always finalizing with
+   `downsize=true`;
 8. conditionally completes the claim as `UPLOADED`, `SKIPPED`, retryable failure, or permanent failure.
 
 The processor records the media `source_hash` before doing external work. A completion is accepted only if the current
@@ -2036,6 +2043,10 @@ ${stagingDir}/<publication-id>/<media-id>-<source-hash>
 A retry can therefore reuse a file already downloaded by an earlier attempt without storing a path in PostgreSQL.
 Changing `Media.source_hash` naturally changes the staging path. Old orphaned staging files are later removed by
 cleanup.
+
+Chunked Moera upload uses a short-lived local chunk file. The client proposes an 8 MiB chunk size, uses the size
+selected by the node, and deletes the local chunk file after the attempt. An unconsumed server upload is deleted on a
+best-effort basis after failure and otherwise expires on the node.
 
 After a successful upload, including the transition into durable compression waiting, or after a terminal
 skip/failure, the staging file is deleted. It is retained across temporary or outcome-unknown upload failures so that
@@ -2289,10 +2300,11 @@ POST   /api/mirrors
 DELETE /api/mirrors/{channelId}/{destinationId}
 ```
 
-Channel creation accepts `sourceType`, `sourceUri`, and optional `fullHistory`, which defaults to false. It maps that
-flag to `InitialImportMode.RECENT` or `InitialImportMode.FULL` and calls the matching
-`SourceAdapter.resolveChannel(...)` before opening the insertion transaction, then persists the returned canonical
-URI, identity, JSONB state, access state, subscription state, and relational initial-import mode. No PostgreSQL
+Channel creation accepts `sourceType`, `sourceUri`, optional `fullHistory`, and optional `initialImportAfter` in UTC
+ISO 8601 format. `fullHistory` and `initialImportAfter` are mutually exclusive. Their absence selects
+`InitialImportMode.RECENT`; `fullHistory = true` selects `FULL`; `initialImportAfter` selects `AFTER`. The service calls
+the matching `SourceAdapter.resolveChannel(...)` before opening the insertion transaction, then persists the returned
+canonical URI, identity, JSONB state, access state, subscription state, mode, and optional timestamp. No PostgreSQL
 transaction is held across Telegram or another external source call.
 Newly created channels are scheduled immediately for every operation applicable to their resolved states. The initial
 API accepts only `TELEGRAM`, because it is the only implemented source type.
@@ -2312,5 +2324,7 @@ those postings removed must do so before deleting the importer configuration.
 A Python command-line client wraps exactly these operations. It uses the Python standard library, defaults to
 `http://127.0.0.1:8084`, and may select another loopback URL for local deployment. It does not implement authentication
 or accept Moera authentication secrets. `destination add` accepts only the destination node name and optional profile
-synchronization flag. `channel add` accepts `--full-history`; without it Telegram imports only the recent configured
-initial count.
+synchronization flag. `channel add` accepts mutually exclusive `--full-history` and `--after DATE/TIME` options;
+without either one, Telegram imports only the recent configured initial count. The CLI uses GNU `date --date` to parse
+the timestamp, interprets strings without an explicit zone in the CLI host's local time zone, and sends UTC ISO 8601
+to the administration API.

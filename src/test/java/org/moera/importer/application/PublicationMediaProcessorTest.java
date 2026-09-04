@@ -11,6 +11,7 @@ import java.time.ZoneOffset;
 import java.util.List;
 import java.util.UUID;
 
+import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
@@ -56,10 +57,12 @@ import org.slf4j.LoggerFactory;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class PublicationMediaProcessorTest {
 
     private static final Instant NOW = Instant.parse("2026-08-27T12:00:00Z");
+    private static final UUID PROCESSING_TOKEN = UUID.fromString("b743a429-967d-4b9c-ad9c-e60284a15e68");
 
     @TempDir
     private Path tempDirectory;
@@ -268,8 +271,130 @@ class PublicationMediaProcessorTest {
         assertThat(publicationMediaRepository.error).isNull();
     }
 
+    @Test
+    void logsStartAndPipelineStagesWithClaimContext() {
+        publicationMediaRepository.context = context(null, null, false, null);
+        moeraService.capabilities = capabilities(10);
+        moeraService.uploadResult = new MediaUpload.Ready(new UploadedMedia("media-id", "media-hash"));
+        Logger logger = (Logger) LoggerFactory.getLogger(PublicationMediaProcessor.class);
+        Level previousLevel = logger.getLevel();
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.setLevel(Level.DEBUG);
+        logger.addAppender(appender);
+
+        try {
+            publicationMediaProcessor.process(claim());
+        } finally {
+            logger.detachAppender(appender);
+            logger.setLevel(previousLevel);
+            appender.stop();
+        }
+
+        assertThat(appender.list).extracting(ILoggingEvent::getFormattedMessage).anySatisfy(message ->
+            assertThat(message).contains(
+                "Publication media operation started",
+                "publication_id=17",
+                "media_id=23",
+                "processing_token=" + PROCESSING_TOKEN,
+                "attempt=3"
+            )
+        ).containsSubsequence(
+            stage("context_load_started"),
+            stage("context_loaded"),
+            stage("capabilities_load_started"),
+            stage("capabilities_loaded"),
+            stage("download_started"),
+            stage("download_finished"),
+            stage("upload_started"),
+            stage("upload_finished")
+        );
+    }
+
+    @Test
+    void logsUnexpectedContextFailureWithClaimContextAndStackTrace() {
+        publicationMediaRepository.contextFailure = new IllegalStateException("broken context");
+        Logger logger = (Logger) LoggerFactory.getLogger(PublicationMediaProcessor.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+
+        try {
+            assertThatThrownBy(() -> publicationMediaProcessor.process(claim()))
+                .isSameAs(publicationMediaRepository.contextFailure);
+        } finally {
+            logger.detachAppender(appender);
+            appender.stop();
+        }
+
+        assertThat(appender.list).anySatisfy(event -> {
+            assertThat(event.getLevel()).isEqualTo(Level.ERROR);
+            assertThat(event.getFormattedMessage()).contains(
+                "Publication media operation failed unexpectedly",
+                "publication_id=17",
+                "media_id=23",
+                "processing_token=" + PROCESSING_TOKEN,
+                "attempt=3",
+                "error_type=IllegalStateException",
+                "error=broken context"
+            );
+            assertThat(event.getThrowableProxy()).isNotNull();
+        });
+    }
+
+    @Test
+    void logsStaleClaimWhenRetryTransitionIsRejected() {
+        publicationMediaRepository.context = context(2L, null, false, null);
+        publicationMediaRepository.completionAccepted = false;
+        moeraService.capabilities = capabilities(10);
+        moeraService.failure = new MoeraTemporaryException("temporary", null);
+        Logger logger = (Logger) LoggerFactory.getLogger(PublicationMediaProcessor.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+
+        try {
+            publicationMediaProcessor.process(claim());
+        } finally {
+            logger.detachAppender(appender);
+            appender.stop();
+        }
+
+        assertThat(appender.list).extracting(ILoggingEvent::getFormattedMessage)
+            .anySatisfy(message -> assertThat(message).contains("result=stale_claim", "error=temporary"))
+            .noneSatisfy(message -> assertThat(message).contains("result=temporary_failure"));
+    }
+
+    @Test
+    void logsStaleClaimWhenFailureTransitionIsRejected() {
+        publicationMediaRepository.context = context(2L, null, false, null);
+        publicationMediaRepository.completionAccepted = false;
+        moeraService.capabilities = capabilities(10);
+        moeraService.failure = new MoeraPermanentException("permanent", null);
+        Logger logger = (Logger) LoggerFactory.getLogger(PublicationMediaProcessor.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+
+        try {
+            publicationMediaProcessor.process(claim());
+        } finally {
+            logger.detachAppender(appender);
+            appender.stop();
+        }
+
+        assertThat(appender.list).extracting(ILoggingEvent::getFormattedMessage)
+            .anySatisfy(message -> assertThat(message).contains("result=stale_claim", "error=permanent"))
+            .noneSatisfy(message -> assertThat(message).contains("result=permanent_failure"));
+    }
+
     private PublicationMediaClaim claim() {
-        return new PublicationMediaClaim(17, 23, UUID.randomUUID(), 3);
+        return new PublicationMediaClaim(17, 23, PROCESSING_TOKEN, 3);
+    }
+
+    private String stage(String stage) {
+        return "Publication media operation stage: operation=publication_media, publication_id=17, media_id=23, "
+            + "processing_token=" + PROCESSING_TOKEN + ", attempt=3, stage=" + stage;
     }
 
     private PublicationMediaContext context(
@@ -351,9 +476,13 @@ class PublicationMediaProcessorTest {
         private String error;
         private boolean failed;
         private boolean completionAccepted = true;
+        private RuntimeException contextFailure;
 
         @Override
         public PublicationMediaContext loadContext(long publicationId, long mediaId) {
+            if (contextFailure != null) {
+                throw contextFailure;
+            }
             return context;
         }
 

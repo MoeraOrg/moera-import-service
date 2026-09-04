@@ -5,6 +5,7 @@ import jakarta.inject.Inject;
 import org.moera.importer.application.PublicationMediaProcessor;
 import org.moera.importer.config.WorkerProperties;
 import org.moera.importer.config.StartupCoordinator;
+import org.moera.importer.persistence.PublicationMediaClaim;
 import org.moera.importer.persistence.PublicationMediaRepository;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
@@ -40,7 +41,15 @@ public class PublicationMediaScheduler {
             }
             publicationMediaRepository.claimPending(
                 reservation.capacity(), workerProperties.getPublicationMediaLease()
-            ).forEach(claim -> reservation.dispatch(() -> publicationMediaProcessor.process(claim)));
+            ).forEach(claim -> reservation.dispatch(() -> process(claim)));
+        }
+    }
+
+    private void process(PublicationMediaClaim claim) {
+        try {
+            publicationMediaProcessor.process(claim);
+        } catch (RuntimeException ignored) {
+            // PublicationMediaProcessor has already logged the failure with the claim context and stack trace.
         }
     }
 

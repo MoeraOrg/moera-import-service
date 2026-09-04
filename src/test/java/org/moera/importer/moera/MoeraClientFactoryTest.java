@@ -2,6 +2,8 @@ package org.moera.importer.moera;
 
 import java.time.Instant;
 import java.time.Clock;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 
@@ -29,12 +31,49 @@ import static org.mockito.Mockito.when;
 class MoeraClientFactoryTest {
 
     @Test
+    void reusesNodeTransportAcrossClients() {
+        MoeraCarteSourceFactory moeraCarteSourceFactory = mock(MoeraCarteSourceFactory.class);
+        when(moeraCarteSourceFactory.create("alice")).thenReturn(() -> "signed-carte");
+        MoeraClientFactory factory = factory(moeraCarteSourceFactory);
+
+        try (MockedStatic<MoeraNaming> naming = mockStatic(MoeraNaming.class)) {
+            naming.when(() -> MoeraNaming.resolve(any(), any())).thenReturn("https://node.example");
+
+            MoeraNode first = factory.create(destination());
+            MoeraNode second = factory.create(destination());
+
+            assertThat(ReflectionTestUtils.getField(first, "transport"))
+                .isSameAs(ReflectionTestUtils.getField(second, "transport"));
+        }
+    }
+
+    @Test
+    void reusesNamingFetcherAcrossResolutions() {
+        MoeraCarteSourceFactory moeraCarteSourceFactory = mock(MoeraCarteSourceFactory.class);
+        when(moeraCarteSourceFactory.create("alice")).thenReturn(() -> "signed-carte");
+        MoeraClientFactory factory = factory(moeraCarteSourceFactory);
+        List<Function<JsonRpcRequest, JsonRpcResponse>> fetchers = new ArrayList<>();
+
+        try (MockedStatic<MoeraNaming> naming = mockStatic(MoeraNaming.class)) {
+            naming.when(() -> MoeraNaming.resolve(any(), any())).thenAnswer(invocation -> {
+                fetchers.add(invocation.getArgument(1));
+                return "https://node.example";
+            });
+
+            factory.create(destination());
+            factory.create(destination());
+
+            assertThat(fetchers).hasSize(2);
+            assertThat(fetchers.get(0)).isSameAs(fetchers.get(1));
+        }
+    }
+
+    @Test
     void resolvesNodeEveryTimeAndCreatesAuthenticatedClient() {
         MoeraCarteSourceFactory moeraCarteSourceFactory = mock(MoeraCarteSourceFactory.class);
         CarteSource carteSource = () -> "signed-carte";
         when(moeraCarteSourceFactory.create("alice")).thenReturn(carteSource);
-        MoeraClientFactory factory = new MoeraClientFactory();
-        ReflectionTestUtils.setField(factory, "moeraCarteSourceFactory", moeraCarteSourceFactory);
+        MoeraClientFactory factory = factory(moeraCarteSourceFactory);
         Instant now = Instant.parse("2026-08-27T12:00:00Z");
         Destination destination = new Destination(1, "alice", now, now);
 
@@ -51,6 +90,29 @@ class MoeraClientFactoryTest {
             assertThat(ReflectionTestUtils.getField(first, "carteSource")).isSameAs(carteSource);
             assertThat(ReflectionTestUtils.getField(first, "authMethod")).isEqualTo(NodeAuth.PEER);
             naming.verify(() -> MoeraNaming.resolve(any(), any()), times(2));
+        }
+    }
+
+    @Test
+    void createsClientWithVersionedUserAgent() {
+        MoeraCarteSourceFactory moeraCarteSourceFactory = mock(MoeraCarteSourceFactory.class);
+        when(moeraCarteSourceFactory.create("alice")).thenReturn(() -> "signed-carte");
+        ApplicationContextRunner contextRunner = new ApplicationContextRunner()
+            .withPropertyValues("moera.version=0.1.0")
+            .withBean(Clock.class, Clock::systemUTC)
+            .withBean(MoeraAuthenticationProperties.class, () -> mock(MoeraAuthenticationProperties.class))
+            .withBean(MoeraCarteSourceFactory.class, () -> moeraCarteSourceFactory)
+            .withBean(MoeraClientFactory.class);
+
+        try (MockedStatic<MoeraNaming> naming = mockStatic(MoeraNaming.class)) {
+            naming.when(() -> MoeraNaming.resolve(any(), any())).thenReturn("https://node.example");
+
+            contextRunner.run(context -> {
+                MoeraNode client = context.getBean(MoeraClientFactory.class).create(destination());
+
+                assertThat(ReflectionTestUtils.getField(client, "userAgent"))
+                    .isEqualTo("Moera import service/0.1.0");
+            });
         }
     }
 
@@ -99,6 +161,13 @@ class MoeraClientFactoryTest {
     private Destination destination() {
         Instant now = Instant.parse("2026-08-27T12:00:00Z");
         return new Destination(1, "alice", now, now);
+    }
+
+    private MoeraClientFactory factory(MoeraCarteSourceFactory moeraCarteSourceFactory) {
+        MoeraClientFactory factory = new MoeraClientFactory();
+        ReflectionTestUtils.setField(factory, "moeraCarteSourceFactory", moeraCarteSourceFactory);
+        factory.initialize();
+        return factory;
     }
 
 }

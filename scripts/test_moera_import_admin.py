@@ -4,6 +4,7 @@ import importlib.util
 import io
 from pathlib import Path
 import unittest
+from unittest import mock
 
 
 SCRIPT_PATH = Path(__file__).with_name("moera-import-admin")
@@ -41,6 +42,17 @@ class MoeraImportAdminTest(unittest.TestCase):
 
         self.assertTrue(arguments.full_history)
 
+    @mock.patch("subprocess.run")
+    def test_channel_add_normalizes_flexible_after_timestamp(self, run):
+        run.return_value.stdout = "1788262200\n"
+
+        arguments, unknown = MODULE.parser().parse_known_args([
+            "channel", "add", "https://t.me/news", "--after", "yesterday"
+        ])
+
+        self.assertEqual(unknown, [])
+        self.assertEqual(arguments.initial_import_after, "2026-09-01T11:30:00Z")
+
     def test_channel_add_sends_full_history_in_request_body(self):
         arguments = MODULE.parser().parse_args([
             "channel", "add", "https://t.me/news", "--full-history"
@@ -59,6 +71,40 @@ class MoeraImportAdminTest(unittest.TestCase):
                 "fullHistory": True,
             },
         )])
+
+    @mock.patch("subprocess.run")
+    def test_channel_add_sends_after_timestamp_in_request_body(self, run):
+        run.return_value.stdout = "1788262200\n"
+        arguments = MODULE.parser().parse_args([
+            "channel", "add", "https://t.me/news", "--after", "yesterday"
+        ])
+        client = RecordingClient()
+
+        with contextlib.redirect_stdout(io.StringIO()):
+            MODULE.run(arguments, client)
+
+        self.assertEqual(client.requests, [(
+            "POST",
+            "/api/channels",
+            {
+                "sourceType": "TELEGRAM",
+                "sourceUri": "https://t.me/news",
+                "fullHistory": False,
+                "initialImportAfter": "2026-09-01T11:30:00Z",
+            },
+        )])
+
+    @mock.patch("subprocess.run")
+    def test_channel_add_rejects_full_history_with_after(self, run):
+        run.return_value.stdout = "1788262200\n"
+        error = io.StringIO()
+
+        with contextlib.redirect_stderr(error), self.assertRaises(SystemExit):
+            MODULE.parser().parse_args([
+                "channel", "add", "https://t.me/news", "--full-history", "--after", "yesterday"
+            ])
+
+        self.assertIn("not allowed with argument --full-history", error.getvalue())
 
     def test_destination_add_can_disable_profile_sync(self):
         arguments = MODULE.parser().parse_args([

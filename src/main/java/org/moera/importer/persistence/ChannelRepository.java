@@ -90,8 +90,10 @@ public class ChannelRepository {
     public ChannelSnapshot create(
         SourceType sourceType,
         InitialImportMode initialImportMode,
+        Instant initialImportAfter,
         ChannelResolution resolution
     ) {
+        initialImportMode.validate(initialImportAfter);
         OffsetDateTime now = jooqMappings.offsetDateTime(clock.instant());
         OffsetDateTime accessRetryAt = resolution.accessState() == org.moera.importer.model.AccessState.GRANTED
             ? null : now;
@@ -107,6 +109,7 @@ public class ChannelRepository {
             .set(CHANNELS.SOURCE_DATA, jooqMappings.json(resolution.sourceData()))
             .set(CHANNELS.INITIAL_IMPORT_MODE,
                 org.moera.importer.persistence.jooq.enums.InitialImportMode.valueOf(initialImportMode.name()))
+            .set(CHANNELS.INITIAL_IMPORT_AFTER, jooqMappings.offsetDateTime(initialImportAfter))
             .set(CHANNELS.TITLE, resolution.metadata() != null ? resolution.metadata().title() : null)
             .set(CHANNELS.DESCRIPTION_HTML,
                 resolution.metadata() != null ? resolution.metadata().descriptionHtml() : null)

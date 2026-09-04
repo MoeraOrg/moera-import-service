@@ -45,6 +45,7 @@ management:
         include: health,prometheus
 
 moera:
+  version: ^project.version^
   naming-server: ${MOERA_NAMING_SERVER:main}
   authentication:
     name: ${MOERA_AUTHENTICATION_NAME:importer_0}
@@ -53,8 +54,8 @@ moera:
   profile:
     contact-email: ${MOERA_PROFILE_CONTACT_EMAIL:balu@moera.org}
     attribution-html: >-
-      ${MOERA_PROFILE_ATTRIBUTION_HTML:<p>This profile mirrors {channelLink}. To import another channel, or your own
-      channel into your Moera account, contact {contactLink}.</p>}
+      ${MOERA_PROFILE_ATTRIBUTION_HTML:<p><b>This profile mirrors {channelLink}.</b> To import another channel, or your
+      own channel into your Moera account, contact {contactLink}.</p>}
   telegram:
     enabled: ${TELEGRAM_ENABLED:false}
     login: ${TELEGRAM_LOGIN:false}
@@ -62,8 +63,8 @@ moera:
     api-hash: ${TELEGRAM_API_HASH:}
     database-directory: ${TELEGRAM_DATABASE_DIRECTORY:var/telegram/database}
     download-cache-directory: ${TELEGRAM_DOWNLOAD_CACHE_DIRECTORY:var/telegram/cache}
-    grouping-threshold: ${TELEGRAM_GROUPING_THRESHOLD:5m}
-    settling-delay: ${TELEGRAM_SETTLING_DELAY:30s}
+    grouping-threshold: ${TELEGRAM_GROUPING_THRESHOLD:30s}
+    settling-delay: ${TELEGRAM_SETTLING_DELAY:1m}
     polling-interval: ${TELEGRAM_POLLING_INTERVAL:30m}
     inactive-polling-interval: ${TELEGRAM_INACTIVE_POLLING_INTERVAL:10m}
     look-behind-count: ${TELEGRAM_LOOK_BEHIND_COUNT:20}

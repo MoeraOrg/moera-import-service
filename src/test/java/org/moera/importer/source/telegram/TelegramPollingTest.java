@@ -3,6 +3,7 @@ package org.moera.importer.source.telegram;
 import java.net.URI;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
@@ -143,6 +144,47 @@ class TelegramPollingTest {
     }
 
     @Test
+    void afterInitialPollStopsAtExclusivePublicationBoundary() {
+        Instant boundary = Instant.ofEpochSecond(1_700_000_002);
+        client.pages.add(page(4, message(4, "four"), message(3, "three"), message(2, "two"), message(1, "one")));
+        client.pages.add(page(4));
+
+        var result = adapter(new TelegramMessageMapper()).poll(channel(null, InitialImportMode.AFTER, boundary));
+
+        assertThat(result.messages()).extracting(SourceMessage::sourceId).containsExactly("3", "4");
+        assertThat(result.waterline().path("messageId").asLong()).isEqualTo(4);
+        assertThat(client.fromIds).containsExactly(0L);
+    }
+
+    @Test
+    void afterInitialPollIsNotLimitedByRecentHistoryCount() {
+        properties.setInitialHistoryCount(2);
+        properties.setHistoryPageSize(2);
+        Instant boundary = Instant.ofEpochSecond(1_700_000_002);
+        client.pages.add(page(5, message(5, "five"), message(4, "four")));
+        client.pages.add(page(5, message(3, "three"), message(2, "two")));
+
+        var result = adapter(new TelegramMessageMapper()).poll(channel(null, InitialImportMode.AFTER, boundary));
+
+        assertThat(result.messages()).extracting(SourceMessage::sourceId).containsExactly("3", "4", "5");
+        assertThat(client.fromIds).containsExactly(0L, 4L);
+    }
+
+    @Test
+    void afterBoundaryDoesNotFilterOrdinaryPolls() {
+        Instant boundary = Instant.ofEpochSecond(1_800_000_000);
+        client.pages.add(page(12, message(12, "twelve"), message(11, "eleven")));
+        client.pages.add(page(12, message(10, "ten"), message(9, "nine")));
+        client.pages.add(page(12, message(8, "eight"), message(7, "seven")));
+
+        var result = adapter(new TelegramMessageMapper()).poll(channel(10L, InitialImportMode.AFTER, boundary));
+
+        assertThat(result.messages()).extracting(SourceMessage::sourceId)
+            .containsExactly("8", "9", "10", "11", "12");
+        assertThat(result.waterline().path("messageId").asLong()).isEqualTo(12);
+    }
+
+    @Test
     void skippedMessageCountsTowardRecentInitialLimit() {
         properties.setInitialHistoryCount(2);
         client.pages.add(page(3, message(3, null), message(2, "two"), message(1, "one")));
@@ -167,9 +209,14 @@ class TelegramPollingTest {
     }
 
     private ChannelSnapshot channel(Long waterline, InitialImportMode initialImportMode) {
+        return channel(waterline, initialImportMode, null);
+    }
+
+    private ChannelSnapshot channel(Long waterline, InitialImportMode initialImportMode, Instant initialImportAfter) {
         var sourceData = JsonNodeFactory.instance.objectNode();
         return new ChannelSnapshot(1, SourceType.TELEGRAM, "-1001", URI.create("https://t.me/news"),
-            sourceData, initialImportMode, null, AccessState.GRANTED, JsonNodeFactory.instance.objectNode(),
+            sourceData, initialImportMode, initialImportAfter, null, AccessState.GRANTED,
+            JsonNodeFactory.instance.objectNode(),
             SubscriptionState.ACTIVE, JsonNodeFactory.instance.objectNode(), waterline == null ? null
                 : JsonNodeFactory.instance.objectNode().put("messageId", waterline));
     }

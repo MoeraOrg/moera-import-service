@@ -264,9 +264,20 @@ establishing its waterline. To import all available Telegram history for a new c
 ./scripts/moera-import-admin channel add https://t.me/example_channel --full-history
 ```
 
-`--full-history` affects only the channel's first poll while no waterline exists. Existing messages, publications, and
-already delivered Moera postings are never removed when these settings change. A restart preserves the queued backlog
-and continues delivering it; new Moera posts are paced by the destination rate described below.
+To import every message strictly after a date or time, use `--after`. The argument is parsed by GNU `date --date`, so
+ISO timestamps, local dates and times, and relative expressions are accepted:
+
+```bash
+./scripts/moera-import-admin channel add https://t.me/example_channel --after 2026-09-01
+./scripts/moera-import-admin channel add https://t.me/example_channel --after '2026-09-01 14:30'
+./scripts/moera-import-admin channel add https://t.me/example_channel --after 2026-09-01T14:30:00+03:00
+./scripts/moera-import-admin channel add https://t.me/example_channel --after yesterday
+```
+
+Values without an explicit time zone use the local zone of the machine running the CLI. `--full-history` and `--after`
+are mutually exclusive and affect only the channel's first poll while no waterline exists. Existing messages,
+publications, and already delivered Moera postings are never removed when these settings change. A restart preserves
+the queued backlog and continues delivering it; new Moera posts are paced by the destination rate described below.
 
 This creates three related objects:
 

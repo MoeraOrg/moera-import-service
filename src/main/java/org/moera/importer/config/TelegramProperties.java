@@ -17,8 +17,8 @@ public class TelegramProperties {
     private String apiHash = "";
     private Path databaseDirectory = Path.of("var/telegram/database");
     private Path downloadCacheDirectory = Path.of("var/telegram/cache");
-    private Duration groupingThreshold = Duration.ofMinutes(5);
-    private Duration settlingDelay = Duration.ofSeconds(30);
+    private Duration groupingThreshold = Duration.ofSeconds(30);
+    private Duration settlingDelay = Duration.ofMinutes(1);
     private Duration pollingInterval = Duration.ofMinutes(30);
     private Duration inactivePollingInterval = Duration.ofMinutes(10);
     private int lookBehindCount = 20;
@@ -151,6 +151,11 @@ public class TelegramProperties {
     void validate() {
         if (initialHistoryCount <= 0) {
             throw new IllegalStateException("Telegram initial history count must be positive");
+        }
+        if (settlingDelay.compareTo(groupingThreshold) < 0) {
+            throw new IllegalStateException(
+                "Telegram settling delay must be greater than or equal to grouping threshold"
+            );
         }
     }
 

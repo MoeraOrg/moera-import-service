@@ -11,8 +11,8 @@ import org.springframework.util.ObjectUtils;
 public class ProfileProperties {
 
     private String contactEmail = "balu@moera.org";
-    private String attributionHtml = "<p>This profile mirrors {channelLink}. To import another channel, or your own "
-        + "channel into your Moera account, contact {contactLink}.</p>";
+    private String attributionHtml = "<p><b>This profile mirrors {channelLink}.</b> To import another channel, or your "
+        + "own channel into your Moera account, contact {contactLink}.</p>";
 
     public String getContactEmail() {
         return contactEmail;

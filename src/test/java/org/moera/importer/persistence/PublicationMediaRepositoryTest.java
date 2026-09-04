@@ -7,14 +7,22 @@ import java.time.ZoneOffset;
 import java.time.temporal.ChronoUnit;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.UUID;
 import jakarta.inject.Inject;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import org.jooq.DSLContext;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.moera.importer.model.MediaSkipReason;
+import org.slf4j.LoggerFactory;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.moera.importer.persistence.jooq.enums.AccessState.GRANTED;
@@ -42,6 +50,9 @@ class PublicationMediaRepositoryTest extends PostgresIntegrationTest {
 
     @Inject
     private PublicationMediaRepository publicationMediaRepository;
+
+    @Inject
+    private PlatformTransactionManager platformTransactionManager;
 
     @BeforeEach
     void clearDatabase() {
@@ -74,6 +85,73 @@ class PublicationMediaRepositoryTest extends PostgresIntegrationTest {
         assertThat(context.destinationHash()).isNull();
         assertThat(context.compressionPending()).isFalse();
         assertThat(publicationMediaRepository.claimPending(1, Duration.ofMinutes(5))).isEmpty();
+    }
+
+    @Test
+    void logsExpiredLeaseReclaimWithOldAndNewClaimContext() {
+        Fixture fixture = insertFixture(hash(1));
+        UUID expiredToken = UUID.fromString("e52bbfc3-34b5-43ce-a9f3-44c3ef62349a");
+        OffsetDateTime expiredAt = OffsetDateTime.now(ZoneOffset.UTC).minusMinutes(1);
+        dslContext.update(PUBLICATION_MEDIA)
+            .set(PUBLICATION_MEDIA.ATTEMPTS, 7)
+            .set(PUBLICATION_MEDIA.PROCESSING_TOKEN, expiredToken)
+            .set(PUBLICATION_MEDIA.PROCESSING_UNTIL, expiredAt)
+            .where(PUBLICATION_MEDIA.PUBLICATION_ID.eq(fixture.publicationId()))
+            .and(PUBLICATION_MEDIA.MEDIA_ID.eq(fixture.mediaId()))
+            .execute();
+        Logger logger = (Logger) LoggerFactory.getLogger(PublicationMediaRepository.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+
+        PublicationMediaClaim claim;
+        try {
+            claim = publicationMediaRepository.claimPending(1, Duration.ofMinutes(5)).getFirst();
+        } finally {
+            logger.detachAppender(appender);
+            appender.stop();
+        }
+
+        assertThat(appender.list).anySatisfy(event -> {
+            assertThat(event.getLevel()).isEqualTo(Level.WARN);
+            assertThat(event.getFormattedMessage()).contains(
+                "Publication media lease reclaimed",
+                "publication_id=" + fixture.publicationId(),
+                "media_id=" + fixture.mediaId(),
+                "previous_processing_token=" + expiredToken,
+                "processing_token=" + claim.processingToken(),
+                "attempt=8"
+            );
+        });
+    }
+
+    @Test
+    void doesNotLogExpiredLeaseReclaimWhenClaimTransactionRollsBack() {
+        Fixture fixture = insertFixture(hash(1));
+        UUID expiredToken = UUID.fromString("e52bbfc3-34b5-43ce-a9f3-44c3ef62349a");
+        dslContext.update(PUBLICATION_MEDIA)
+            .set(PUBLICATION_MEDIA.PROCESSING_TOKEN, expiredToken)
+            .set(PUBLICATION_MEDIA.PROCESSING_UNTIL, OffsetDateTime.now(ZoneOffset.UTC).minusMinutes(1))
+            .where(PUBLICATION_MEDIA.PUBLICATION_ID.eq(fixture.publicationId()))
+            .and(PUBLICATION_MEDIA.MEDIA_ID.eq(fixture.mediaId()))
+            .execute();
+        Logger logger = (Logger) LoggerFactory.getLogger(PublicationMediaRepository.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+
+        try {
+            new TransactionTemplate(platformTransactionManager).executeWithoutResult(status -> {
+                publicationMediaRepository.claimPending(1, Duration.ofMinutes(5));
+                status.setRollbackOnly();
+            });
+        } finally {
+            logger.detachAppender(appender);
+            appender.stop();
+        }
+
+        assertThat(appender.list).extracting(ILoggingEvent::getFormattedMessage)
+            .noneSatisfy(message -> assertThat(message).contains("Publication media lease reclaimed"));
     }
 
     @Test

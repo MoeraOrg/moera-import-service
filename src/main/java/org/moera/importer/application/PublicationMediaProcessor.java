@@ -64,21 +64,31 @@ public class PublicationMediaProcessor {
     private WorkerProperties workerProperties;
 
     public void process(PublicationMediaClaim claim) {
-        PublicationMediaContext context = publicationMediaRepository.loadContext(
-            claim.publicationId(), claim.mediaId()
-        );
-        if (compressionPending(context)) {
-            processCompression(claim, context);
-            return;
+        started(claim);
+        try {
+            stage(claim, "context_load_started");
+            PublicationMediaContext context = publicationMediaRepository.loadContext(
+                claim.publicationId(), claim.mediaId()
+            );
+            stage(claim, "context_loaded");
+            if (compressionPending(context)) {
+                processCompression(claim, context);
+                return;
+            }
+            processUpload(claim, context);
+        } catch (RuntimeException e) {
+            unexpectedFailure(claim, e);
+            throw e;
         }
-        processUpload(claim, context);
     }
 
     private void processUpload(PublicationMediaClaim claim, PublicationMediaContext context) {
         Path stagingPath = null;
         boolean uploadStarted = false;
         try {
+            stage(claim, "capabilities_load_started");
             long mediaMaxSize = moeraService.capabilities(context.destination()).mediaMaxSize();
+            stage(claim, "capabilities_loaded");
             if (context.media().size() != null && context.media().size() > mediaMaxSize) {
                 skipTooLarge(claim, context);
                 delete(stagingPath(context));
@@ -88,7 +98,9 @@ public class PublicationMediaProcessor {
             stagingPath = stagingPath(context);
             if (Files.notExists(stagingPath)) {
                 SourceAdapter sourceAdapter = sourceAdapterRegistry.get(context.channel().sourceType());
+                stage(claim, "download_started");
                 sourceAdapter.downloadMedia(context.channel(), snapshot(context.media()), stagingPath);
+                stage(claim, "download_finished");
             }
             long stagingSize = Files.size(stagingPath);
             if (stagingSize > mediaMaxSize) {
@@ -99,7 +111,9 @@ public class PublicationMediaProcessor {
 
             uploadStarted = true;
             importMetrics.mediaUploadBytes(stagingSize);
+            stage(claim, "upload_started");
             MediaUpload upload = moeraService.uploadMedia(context.destination(), stagingPath, context.media());
+            stage(claim, "upload_finished");
             completeUpload(claim, context, upload);
             delete(stagingPath);
         } catch (MoeraMediaTooLargeException e) {
@@ -116,26 +130,26 @@ public class PublicationMediaProcessor {
             skipped(claim, MediaSkipReason.SOURCE_UNAVAILABLE, completed);
             delete(stagingPath);
         } catch (MoeraPermanentException | MoeraConfigurationException e) {
-            publicationMediaRepository.fail(
+            boolean completed = publicationMediaRepository.fail(
                 claim.publicationId(), claim.mediaId(), claim.processingToken(), e.getMessage()
             );
-            log(claim, "permanent_failure", e.getMessage());
+            log(claim, completed ? "permanent_failure" : "stale_claim", e.getMessage());
             delete(stagingPath);
         } catch (SourceTemporaryException e) {
-            retry(claim, e.retryAfter(), e.getMessage());
-            log(claim, "temporary_failure", e.getMessage());
+            boolean completed = retry(claim, e.retryAfter(), e.getMessage());
+            log(claim, completed ? "temporary_failure" : "stale_claim", e.getMessage());
             if (!uploadStarted) {
                 delete(stagingPath);
             }
         } catch (MoeraTemporaryException | MoeraOutcomeUnknownException e) {
-            retry(claim, null, e.getMessage());
-            log(claim, "temporary_failure", e.getMessage());
+            boolean completed = retry(claim, null, e.getMessage());
+            log(claim, completed ? "temporary_failure" : "stale_claim", e.getMessage());
             if (!uploadStarted) {
                 delete(stagingPath);
             }
         } catch (IOException | UncheckedIOException e) {
-            retry(claim, null, "Cannot access staging file");
-            log(claim, "staging_failure", "Cannot access staging file");
+            boolean completed = retry(claim, null, "Cannot access staging file");
+            log(claim, completed ? "staging_failure" : "stale_claim", "Cannot access staging file");
             if (!uploadStarted) {
                 delete(stagingPath);
             }
@@ -144,18 +158,20 @@ public class PublicationMediaProcessor {
 
     private void processCompression(PublicationMediaClaim claim, PublicationMediaContext context) {
         try {
+            stage(claim, "compression_check_started");
             MediaUpload upload = moeraService.checkMediaCompression(
                 context.destination(), context.destinationMediaId()
             );
+            stage(claim, "compression_check_finished");
             completeUpload(claim, context, upload);
         } catch (MoeraPermanentException | MoeraConfigurationException e) {
-            publicationMediaRepository.fail(
+            boolean completed = publicationMediaRepository.fail(
                 claim.publicationId(), claim.mediaId(), claim.processingToken(), e.getMessage()
             );
-            log(claim, "permanent_failure", e.getMessage());
+            log(claim, completed ? "permanent_failure" : "stale_claim", e.getMessage());
         } catch (MoeraTemporaryException | MoeraOutcomeUnknownException e) {
-            retry(claim, null, e.getMessage());
-            log(claim, "temporary_failure", e.getMessage());
+            boolean completed = retry(claim, null, e.getMessage());
+            log(claim, completed ? "temporary_failure" : "stale_claim", e.getMessage());
         }
     }
 
@@ -204,9 +220,9 @@ public class PublicationMediaProcessor {
         skipped(claim, MediaSkipReason.TOO_LARGE, completed);
     }
 
-    private void retry(PublicationMediaClaim claim, Duration retryAfter, String error) {
+    private boolean retry(PublicationMediaClaim claim, Duration retryAfter, String error) {
         Instant nextAttemptAt = clock.instant().plus(retryPolicy.delay(claim.attempts(), retryAfter));
-        publicationMediaRepository.retry(
+        return publicationMediaRepository.retry(
             claim.publicationId(), claim.mediaId(), claim.processingToken(), nextAttemptAt, error
         );
     }
@@ -272,6 +288,31 @@ public class PublicationMediaProcessor {
                 claim.publicationId(), claim.mediaId(), claim.processingToken(), claim.attempts(), result, error
             );
         }
+    }
+
+    private void started(PublicationMediaClaim claim) {
+        log.info(
+            "Publication media operation started: operation=publication_media, publication_id={}, media_id={}, "
+                + "processing_token={}, attempt={}",
+            claim.publicationId(), claim.mediaId(), claim.processingToken(), claim.attempts()
+        );
+    }
+
+    private void stage(PublicationMediaClaim claim, String stage) {
+        log.debug(
+            "Publication media operation stage: operation=publication_media, publication_id={}, media_id={}, "
+                + "processing_token={}, attempt={}, stage={}",
+            claim.publicationId(), claim.mediaId(), claim.processingToken(), claim.attempts(), stage
+        );
+    }
+
+    private void unexpectedFailure(PublicationMediaClaim claim, Throwable failure) {
+        log.error(
+            "Publication media operation failed unexpectedly: operation=publication_media, publication_id={}, "
+                + "media_id={}, processing_token={}, attempt={}, error_type={}, error={}",
+            claim.publicationId(), claim.mediaId(), claim.processingToken(), claim.attempts(),
+            failure.getClass().getSimpleName(), failure.getMessage(), failure
+        );
     }
 
 }

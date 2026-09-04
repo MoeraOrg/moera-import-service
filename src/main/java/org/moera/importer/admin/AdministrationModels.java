@@ -1,5 +1,6 @@
 package org.moera.importer.admin;
 
+import java.time.Instant;
 import java.util.List;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
@@ -13,15 +14,25 @@ public final class AdministrationModels {
     private AdministrationModels() {
     }
 
-    public record ChannelCreate(SourceType sourceType, String sourceUri, boolean fullHistory) {
+    public record ChannelCreate(
+        SourceType sourceType,
+        String sourceUri,
+        boolean fullHistory,
+        Instant initialImportAfter
+    ) {
 
         @JsonCreator
         public ChannelCreate(
             @JsonProperty("sourceType") SourceType sourceType,
             @JsonProperty("sourceUri") String sourceUri,
-            @JsonProperty("fullHistory") Boolean fullHistory
+            @JsonProperty("fullHistory") Boolean fullHistory,
+            @JsonProperty("initialImportAfter") Instant initialImportAfter
         ) {
-            this(sourceType, sourceUri, Boolean.TRUE.equals(fullHistory));
+            this(sourceType, sourceUri, Boolean.TRUE.equals(fullHistory), initialImportAfter);
+        }
+
+        public ChannelCreate(SourceType sourceType, String sourceUri, boolean fullHistory) {
+            this(sourceType, sourceUri, fullHistory, null);
         }
 
     }
