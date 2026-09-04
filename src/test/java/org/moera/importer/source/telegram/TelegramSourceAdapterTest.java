@@ -594,6 +594,10 @@ class TelegramSourceAdapterTest {
         }
 
         @Override
+        public void optimizeStorage() {
+        }
+
+        @Override
         public void start(Consumer<TdApi.Update> updateConsumer) {
             this.updateConsumer = updateConsumer;
         }

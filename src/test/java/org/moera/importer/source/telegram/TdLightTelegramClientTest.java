@@ -97,6 +97,37 @@ class TdLightTelegramClientTest {
     }
 
     @Test
+    void optimizesStorageToOneGibibyteAndSixtyHoursSinceLastAccess() {
+        ClientFactory clientFactory = mock(ClientFactory.class);
+        it.tdlight.TelegramClient nativeClient = mock(it.tdlight.TelegramClient.class);
+        when(clientFactory.createClient()).thenReturn(nativeClient);
+        doReturn(CompletableFuture.completedFuture(new TdApi.StorageStatistics()))
+            .when(nativeClient).sendAsync(isA(TdApi.OptimizeStorage.class));
+        TdLightTelegramClient client = new TdLightTelegramClient(
+            properties(),
+            false,
+            () -> clientFactory,
+            () -> mock(TdLightLoginPrompt.class)
+        );
+        client.start(ignored -> {
+        });
+        ArgumentCaptor<TdApi.OptimizeStorage> request = ArgumentCaptor.forClass(TdApi.OptimizeStorage.class);
+
+        client.optimizeStorage();
+
+        verify(nativeClient).sendAsync(request.capture());
+        assertThat(request.getValue().size).isEqualTo(1_073_741_824L);
+        assertThat(request.getValue().ttl).isEqualTo(216_000);
+        assertThat(request.getValue().count).isEqualTo(-1);
+        assertThat(request.getValue().immunityDelay).isEqualTo(-1);
+        assertThat(request.getValue().fileTypes).isEmpty();
+        assertThat(request.getValue().chatIds).isEmpty();
+        assertThat(request.getValue().excludeChatIds).isEmpty();
+        assertThat(request.getValue().returnDeletedFileStatistics).isFalse();
+        assertThat(request.getValue().chatLimit).isZero();
+    }
+
+    @Test
     void reacquiresThumbnailWithTelegramThumbnailFileType() {
         ClientFactory clientFactory = mock(ClientFactory.class);
         it.tdlight.TelegramClient nativeClient = mock(it.tdlight.TelegramClient.class);

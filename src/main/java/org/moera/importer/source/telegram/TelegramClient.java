@@ -68,6 +68,8 @@ public interface TelegramClient extends AutoCloseable {
 
     void deleteCachedFile(int fileId);
 
+    void optimizeStorage();
+
     void start(Consumer<TdApi.Update> updateConsumer);
 
     default boolean awaitReady(Duration timeout) {

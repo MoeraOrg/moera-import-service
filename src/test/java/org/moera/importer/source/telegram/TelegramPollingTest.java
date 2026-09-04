@@ -295,6 +295,11 @@ class TelegramPollingTest {
         }
 
         @Override
+        public void optimizeStorage() {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
         public void start(Consumer<TdApi.Update> updateConsumer) {
         }
 

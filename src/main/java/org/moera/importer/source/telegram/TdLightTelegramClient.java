@@ -27,6 +27,8 @@ import org.springframework.util.ObjectUtils;
 public class TdLightTelegramClient implements TelegramClient, TelegramForwardMetadataResolver {
 
     private static final Logger log = LoggerFactory.getLogger(TdLightTelegramClient.class);
+    private static final long MAXIMUM_STORAGE_SIZE_BYTES = 1_073_741_824L;
+    private static final int FILE_TTL_SECONDS = 216_000;
 
     private final TelegramProperties properties;
     private final boolean interactive;
@@ -317,6 +319,21 @@ public class TdLightTelegramClient implements TelegramClient, TelegramForwardMet
     @Override
     public void deleteCachedFile(int fileId) {
         send(new TdApi.DeleteFile(fileId));
+    }
+
+    @Override
+    public void optimizeStorage() {
+        send(new TdApi.OptimizeStorage(
+            MAXIMUM_STORAGE_SIZE_BYTES,
+            FILE_TTL_SECONDS,
+            -1,
+            -1,
+            new TdApi.FileType[0],
+            new long[0],
+            new long[0],
+            false,
+            0
+        ));
     }
 
     @Override

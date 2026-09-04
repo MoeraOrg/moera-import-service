@@ -13,7 +13,7 @@
 
     <groupId>org.moera</groupId>
     <artifactId>moera-import</artifactId>
-    <version>0.1.0</version>
+    <version>0.2.0-SNAPSHOT</version>
     <name>Moera Import Service</name>
     <description>Import external channels into Moera</description>
 
