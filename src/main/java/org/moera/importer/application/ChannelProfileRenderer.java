@@ -1,11 +1,12 @@
 package org.moera.importer.application;
 
-import java.util.Comparator;
-import java.util.List;
-import java.util.regex.Pattern;
 import jakarta.inject.Inject;
 
+import org.jsoup.Jsoup;
+import org.jsoup.nodes.Element;
 import org.jsoup.nodes.Entities;
+import org.jsoup.nodes.Node;
+import org.jsoup.nodes.TextNode;
 import org.moera.importer.config.ProfileProperties;
 import org.moera.importer.source.ChannelMetadata;
 import org.springframework.stereotype.Component;
@@ -16,7 +17,6 @@ public class ChannelProfileRenderer {
 
     private static final int MAX_FULL_NAME = 96;
     private static final int MAX_BIO = 4096;
-    private static final Pattern PARAGRAPH_BREAK = Pattern.compile("\\n\\s*\\n");
 
     @Inject
     private ProfileProperties profileProperties;
@@ -29,13 +29,8 @@ public class ChannelProfileRenderer {
         if (attribution.length() > MAX_BIO) {
             throw new IllegalStateException("Configured Moera profile attribution is too long");
         }
-        String description = metadata.description();
-        String bio = descriptionHtml(description, metadata.descriptionEntities()) + attribution;
-        while (bio.length() > MAX_BIO && !description.isEmpty()) {
-            description = description.substring(0, description.offsetByCodePoints(0, description.codePointCount(0,
-                description.length()) - 1));
-            bio = descriptionHtml(description, metadata.descriptionEntities()) + attribution;
-        }
+        String description = truncateHtml(metadata.descriptionHtml(), MAX_BIO - attribution.length());
+        String bio = description + attribution;
         return new RenderedChannelProfile(fullName, bio);
     }
 
@@ -53,64 +48,71 @@ public class ChannelProfileRenderer {
         return "<a href=\"mailto:" + email + "\">" + email + "</a>";
     }
 
-    private String descriptionHtml(
-        String description,
-        List<ChannelMetadata.DescriptionEntity> descriptionEntities
-    ) {
-        if (ObjectUtils.isEmpty(description) || description.isBlank()) {
-            return "";
-        }
-        String linked = linkedDescription(description, descriptionEntities)
-            .replace("\r\n", "\n")
-            .replace('\r', '\n');
-        List<String> paragraphs = PARAGRAPH_BREAK.splitAsStream(linked)
-            .filter(paragraph -> !paragraph.isBlank())
-            .map(paragraph -> "<p>" + paragraph.replace("\n", "<br>") + "</p>")
-            .toList();
-        return String.join("", paragraphs);
-    }
-
-    private String linkedDescription(
-        String description,
-        List<ChannelMetadata.DescriptionEntity> descriptionEntities
-    ) {
-        StringBuilder html = new StringBuilder();
-        int position = 0;
-        List<ChannelMetadata.DescriptionEntity> entities = descriptionEntities.stream()
-            .filter(entity -> entity.offset() >= 0 && entity.offset() + entity.length() <= description.length())
-            .sorted(Comparator.comparingInt(ChannelMetadata.DescriptionEntity::offset))
-            .toList();
-        for (ChannelMetadata.DescriptionEntity entity : entities) {
-            if (entity.offset() < position) {
-                continue;
-            }
-            html.append(escape(description.substring(position, entity.offset())));
-            String visible = description.substring(entity.offset(), entity.offset() + entity.length());
-            html.append("<a href=\"")
-                .append(escape(entityHref(entity.type(), visible)))
-                .append("\">")
-                .append(escape(visible))
-                .append("</a>");
-            position = entity.offset() + entity.length();
-        }
-        return html.append(escape(description.substring(position))).toString();
-    }
-
-    private String entityHref(ChannelMetadata.DescriptionEntityType type, String visible) {
-        return switch (type) {
-            case URL -> visible;
-            case EMAIL -> "mailto:" + visible;
-            case MENTION -> "https://t.me/" + visible.substring(1);
-        };
-    }
-
     private String escape(String value) {
         return Entities.escape(value);
     }
 
     private String truncate(String value, int maxCodePoints) {
+        if (maxCodePoints <= 0) {
+            return "";
+        }
         int count = value.codePointCount(0, value.length());
         return count <= maxCodePoints ? value : value.substring(0, value.offsetByCodePoints(0, maxCodePoints));
+    }
+
+    private String truncateHtml(String value, int maxCodePoints) {
+        if (maxCodePoints <= 0) {
+            return "";
+        }
+        if (value.codePointCount(0, value.length()) <= maxCodePoints) {
+            return value;
+        }
+        var document = Jsoup.parseBodyFragment(value);
+        document.outputSettings().prettyPrint(false);
+        Element body = document.body();
+        while (codePointCount(body.html()) > maxCodePoints) {
+            TextNode textNode = lastNonEmptyTextNode(body);
+            if (textNode != null) {
+                int excess = codePointCount(body.html()) - maxCodePoints;
+                int textLength = codePointCount(textNode.getWholeText());
+                int retainedLength = Math.max(0, textLength - excess);
+                textNode.text(truncate(textNode.getWholeText(), retainedLength));
+                if (retainedLength == 0) {
+                    textNode.remove();
+                }
+                continue;
+            }
+            Node lastNode = lastDescendant(body);
+            if (lastNode == null) {
+                return "";
+            }
+            lastNode.remove();
+        }
+        return body.html();
+    }
+
+    private TextNode lastNonEmptyTextNode(Element body) {
+        TextNode result = null;
+        for (Element element : body.getAllElements()) {
+            for (TextNode textNode : element.textNodes()) {
+                if (!textNode.getWholeText().isEmpty()) {
+                    result = textNode;
+                }
+            }
+        }
+        return result;
+    }
+
+    private Node lastDescendant(Element body) {
+        Node node = body;
+        while (node.childNodeSize() > 0) {
+            node = node.childNode(node.childNodeSize() - 1);
+        }
+        return node == body ? null : node;
+    }
+
+    private int codePointCount(String value) {
+        return value.codePointCount(0, value.length());
     }
 
 }

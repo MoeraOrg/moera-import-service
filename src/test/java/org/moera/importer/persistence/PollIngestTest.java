@@ -16,6 +16,7 @@ import org.moera.importer.model.BodyFormat;
 import org.moera.importer.model.SourceType;
 import org.moera.importer.source.ChannelSnapshot;
 import org.moera.importer.source.ChannelMetadata;
+import org.moera.importer.source.ForwardAttribution;
 import org.moera.importer.source.PollResult;
 import org.moera.importer.source.SourceLinkPreview;
 import org.moera.importer.source.SourceMedia;
@@ -64,6 +65,7 @@ class PollIngestTest extends PostgresIntegrationTest {
         assertThat(byId.sourceType()).isEqualTo(SourceType.TELEGRAM);
         assertThat(byId.sourceUri()).isEqualTo(URI.create("https://t.me/channel-1"));
         assertThat(byId.sourceData().path("source").asText()).isEqualTo("data");
+        assertThat(byId.initialImportMode()).isEqualTo(org.moera.importer.source.InitialImportMode.RECENT);
         assertThat(byId.accessData().path("access").asText()).isEqualTo("data");
         assertThat(byId.subscriptionData().path("subscription").asText()).isEqualTo("data");
         assertThat(byId.waterline().path("cursor").asText()).isEqualTo("initial-waterline");
@@ -80,10 +82,7 @@ class PollIngestTest extends PostgresIntegrationTest {
             JsonNodeFactory.instance.objectNode().put("cursor", "advanced-waterline"),
             new ChannelMetadata(
                 "Updated title",
-                "Updated https://example.org",
-                List.of(new ChannelMetadata.DescriptionEntity(
-                    8, 19, ChannelMetadata.DescriptionEntityType.URL
-                )),
+                "<p>Updated <a href=\"https://example.org\">https://example.org</a></p>",
                 "updated_channel",
                 new ChannelMetadata.Emblem("remote-photo", "unique-photo", "image/jpeg")
             )
@@ -107,11 +106,18 @@ class PollIngestTest extends PostgresIntegrationTest {
         assertThat(channel.getProcessingUntil()).isNull();
         assertThat(jooqMappings.jsonNode(channel.getSourceData()))
             .isEqualTo(JsonNodeFactory.instance.objectNode().put("source", "data"));
-        var metadata = jooqMappings.jsonNode(channel.getMetadata());
-        assertThat(metadata.path("title").asText()).isEqualTo("Updated title");
-        assertThat(metadata.path("emblem").path("uniqueId").asText())
-            .isEqualTo("unique-photo");
-        assertThat(metadata.path("descriptionEntities").path(0).path("type").asText()).isEqualTo("URL");
+        assertThat(channel.getTitle()).isEqualTo("Updated title");
+        assertThat(channel.getDescriptionHtml())
+            .isEqualTo("<p>Updated <a href=\"https://example.org\">https://example.org</a></p>");
+        assertThat(channel.getPublicUsername()).isEqualTo("updated_channel");
+        assertThat(channel.getEmblemRemoteId()).isEqualTo("remote-photo");
+        assertThat(channel.getEmblemUniqueId()).isEqualTo("unique-photo");
+        assertThat(channel.getEmblemMimeType()).isEqualTo("image/jpeg");
+        var message = dslContext.selectFrom(MESSAGES).fetchSingle();
+        assertThat(message.getExternalSourceUri()).isEqualTo("https://example.org/source");
+        assertThat(message.getForwardName()).isEqualTo("Original author");
+        assertThat(message.getForwardUri()).isEqualTo("https://example.org/author");
+        assertThat(jooqMappings.jsonNode(message.getSourceData())).isEqualTo(JsonNodeFactory.instance.objectNode());
     }
 
     @Test
@@ -257,6 +263,8 @@ class PollIngestTest extends PostgresIntegrationTest {
             "Hello, Moera",
             BodyFormat.HTML,
             bodyHash,
+            "https://example.org/source",
+            new ForwardAttribution("Original author", "https://example.org/author"),
             JsonNodeFactory.instance.objectNode(),
             List.of(new SourceMedia(
                 "preview-image",

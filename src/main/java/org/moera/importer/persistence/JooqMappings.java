@@ -4,6 +4,7 @@ import java.net.URI;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.util.List;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -20,7 +21,9 @@ import org.moera.importer.persistence.jooq.tables.records.MessagesRecord;
 import org.moera.importer.persistence.jooq.tables.records.MediaRecord;
 import org.moera.importer.persistence.jooq.tables.records.MirrorsRecord;
 import org.moera.importer.source.ChannelSnapshot;
-import org.moera.importer.source.ChannelMetadataJson;
+import org.moera.importer.source.ChannelMetadata;
+import org.moera.importer.source.ForwardAttribution;
+import org.moera.importer.source.InitialImportMode;
 import org.springframework.stereotype.Component;
 
 @Component
@@ -62,7 +65,8 @@ public class JooqMappings {
             record.getSourceId(),
             URI.create(record.getSourceUri()),
             jsonNode(record.getSourceData()),
-            ChannelMetadataJson.read(jsonNode(record.getMetadata())),
+            InitialImportMode.valueOf(record.getInitialImportMode().getLiteral()),
+            channelMetadata(record),
             org.moera.importer.model.AccessState.valueOf(record.getAccessState().getLiteral()),
             jsonNode(record.getAccessData()),
             org.moera.importer.model.SubscriptionState.valueOf(record.getSubscriptionState().getLiteral()),
@@ -75,8 +79,13 @@ public class JooqMappings {
         return new Destination(
             record.getId(),
             record.getNodeName(),
-            jsonNode(record.getConfig()),
-            jsonNode(record.getData()),
+            record.getCredentialRef(),
+            record.getProfileSync(),
+            record.getProfileFingerprint(),
+            record.getProfileSourceEmblemId(),
+            record.getAvatarId(),
+            record.getAvatarMediaId(),
+            record.getAvatarShape(),
             instant(record.getCreatedAt()),
             instant(record.getUpdatedAt())
         );
@@ -94,6 +103,10 @@ public class JooqMappings {
             record.getBody(),
             BodyFormat.valueOf(record.getBodyFormat().getLiteral()),
             record.getSourceBodyHash(),
+            record.getExternalSourceUri(),
+            record.getForwardName() != null
+                ? new ForwardAttribution(record.getForwardName(), record.getForwardUri())
+                : null,
             jsonNode(record.getSourceData()),
             instant(record.getCreatedAt()),
             instant(record.getUpdatedAt())
@@ -122,9 +135,25 @@ public class JooqMappings {
             record.getChannelId(),
             record.getDestinationId(),
             record.getEnabled(),
-            jsonNode(record.getConfig()),
+            List.of(record.getFeeds()),
             instant(record.getCreatedAt()),
             instant(record.getUpdatedAt())
+        );
+    }
+
+    private ChannelMetadata channelMetadata(ChannelsRecord record) {
+        if (record.getTitle() == null) {
+            return null;
+        }
+        ChannelMetadata.Emblem emblem = record.getEmblemRemoteId() != null
+            && record.getEmblemUniqueId() != null
+            && record.getEmblemMimeType() != null
+            ? new ChannelMetadata.Emblem(
+                record.getEmblemRemoteId(), record.getEmblemUniqueId(), record.getEmblemMimeType()
+            )
+            : null;
+        return new ChannelMetadata(
+            record.getTitle(), record.getDescriptionHtml(), record.getPublicUsername(), emblem
         );
     }
 

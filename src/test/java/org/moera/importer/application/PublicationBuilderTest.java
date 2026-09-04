@@ -313,11 +313,13 @@ class PublicationBuilderTest extends PostgresIntegrationTest {
             .fetchSingle(CHANNELS.ID);
         long destinationId = dslContext.insertInto(DESTINATIONS)
             .set(DESTINATIONS.NODE_NAME, "node.moera.org")
+            .set(DESTINATIONS.CREDENTIAL_REF, "env:TEST")
             .returningResult(DESTINATIONS.ID)
             .fetchSingle(DESTINATIONS.ID);
         return dslContext.insertInto(MIRRORS)
             .set(MIRRORS.CHANNEL_ID, channelId)
             .set(MIRRORS.DESTINATION_ID, destinationId)
+            .set(MIRRORS.FEEDS, new String[] { "timeline" })
             .returningResult(MIRRORS.ID)
             .fetchSingle(MIRRORS.ID);
     }

@@ -4,8 +4,6 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.moera.importer.config.ProfileProperties;
 import org.moera.importer.source.ChannelMetadata;
-import org.moera.importer.source.ChannelMetadata.DescriptionEntity;
-import org.moera.importer.source.ChannelMetadata.DescriptionEntityType;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -26,7 +24,10 @@ class ChannelProfileRendererTest {
     @Test
     void rendersDescriptionAndEnglishAttributionWithPublicLinks() {
         var profile = renderer.render(new ChannelMetadata(
-            "News & reports", "First paragraph\nline two\n\nSecond <paragraph>", "news_reports", null
+            "News & reports",
+            "<p>First paragraph<br>line two</p><p>Second &lt;paragraph&gt;</p>",
+            "news_reports",
+            null
         ));
 
         assertThat(profile.fullName()).isEqualTo("News & reports");
@@ -60,15 +61,11 @@ class ChannelProfileRendererTest {
 
     @Test
     void rendersDetectedDescriptionLinksButLeavesHashtagsPlain() {
-        String description = "Visit https://example.org, write mail@example.org, ask @admin and #ignored.";
         var profile = renderer.render(new ChannelMetadata(
             "News",
-            description,
-            java.util.List.of(
-                entity(description, "https://example.org", DescriptionEntityType.URL),
-                entity(description, "mail@example.org", DescriptionEntityType.EMAIL),
-                entity(description, "@admin", DescriptionEntityType.MENTION)
-            ),
+            "<p>Visit <a href=\"https://example.org\">https://example.org</a>, write "
+                + "<a href=\"mailto:mail@example.org\">mail@example.org</a>, ask "
+                + "<a href=\"https://t.me/admin\">@admin</a> and #ignored.</p>",
             "news",
             null
         ));
@@ -81,8 +78,15 @@ class ChannelProfileRendererTest {
         assertThat(profile.bioHtml()).doesNotContain(">#ignored</a>");
     }
 
-    private DescriptionEntity entity(String text, String value, DescriptionEntityType type) {
-        return new DescriptionEntity(text.indexOf(value), value.length(), type);
+    @Test
+    void truncatesDescriptionWithoutBreakingHtml() {
+        String description = "<p><a href=\"https://example.org\">" + "x".repeat(5000) + "</a></p>";
+
+        var profile = renderer.render(new ChannelMetadata("News", description, "news", null));
+
+        assertThat(profile.bioHtml().codePointCount(0, profile.bioHtml().length())).isLessThanOrEqualTo(4096);
+        assertThat(profile.bioHtml()).startsWith("<p><a href=\"https://example.org\">");
+        assertThat(profile.bioHtml()).contains("</a></p><p>This profile mirrors");
     }
 
 }

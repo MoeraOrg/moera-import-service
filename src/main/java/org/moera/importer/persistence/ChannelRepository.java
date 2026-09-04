@@ -13,7 +13,7 @@ import jakarta.inject.Inject;
 import com.fasterxml.jackson.databind.JsonNode;
 import org.jooq.Condition;
 import org.jooq.DSLContext;
-import org.jooq.JSON;
+import org.jooq.Field;
 import org.jooq.TableField;
 import org.moera.importer.model.ChannelOperation;
 import org.moera.importer.model.SourceType;
@@ -22,8 +22,8 @@ import org.moera.importer.persistence.jooq.tables.records.ChannelsRecord;
 import org.moera.importer.source.AccessResult;
 import org.moera.importer.source.ChannelResolution;
 import org.moera.importer.source.ChannelMetadata;
-import org.moera.importer.source.ChannelMetadataJson;
 import org.moera.importer.source.ChannelSnapshot;
+import org.moera.importer.source.InitialImportMode;
 import org.moera.importer.source.SubscriptionResult;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
@@ -75,14 +75,23 @@ public class ChannelRepository {
     public boolean updateMetadata(SourceType sourceType, String sourceId, ChannelMetadata metadata) {
         var generatedSourceType = org.moera.importer.persistence.jooq.enums.SourceType.valueOf(sourceType.name());
         return dslContext.update(CHANNELS)
-            .set(CHANNELS.METADATA, jooqMappings.json(ChannelMetadataJson.write(metadata)))
+            .set(CHANNELS.TITLE, metadata.title())
+            .set(CHANNELS.DESCRIPTION_HTML, metadata.descriptionHtml())
+            .set(CHANNELS.PUBLIC_USERNAME, metadata.publicUsername())
+            .set(CHANNELS.EMBLEM_REMOTE_ID, emblemRemoteId(metadata))
+            .set(CHANNELS.EMBLEM_UNIQUE_ID, emblemUniqueId(metadata))
+            .set(CHANNELS.EMBLEM_MIME_TYPE, emblemMimeType(metadata))
             .set(CHANNELS.UPDATED_AT, currentOffsetDateTime())
             .where(CHANNELS.SOURCE_TYPE.eq(generatedSourceType))
             .and(CHANNELS.SOURCE_ID.eq(sourceId))
             .execute() == 1;
     }
 
-    public ChannelSnapshot create(SourceType sourceType, ChannelResolution resolution) {
+    public ChannelSnapshot create(
+        SourceType sourceType,
+        InitialImportMode initialImportMode,
+        ChannelResolution resolution
+    ) {
         OffsetDateTime now = jooqMappings.offsetDateTime(clock.instant());
         OffsetDateTime accessRetryAt = resolution.accessState() == org.moera.importer.model.AccessState.GRANTED
             ? null : now;
@@ -96,9 +105,16 @@ public class ChannelRepository {
             .set(CHANNELS.SOURCE_ID, resolution.sourceId())
             .set(CHANNELS.SOURCE_URI, resolution.sourceUri().toString())
             .set(CHANNELS.SOURCE_DATA, jooqMappings.json(resolution.sourceData()))
-            .set(CHANNELS.METADATA, jooqMappings.json(resolution.metadata() != null
-                ? ChannelMetadataJson.write(resolution.metadata())
-                : com.fasterxml.jackson.databind.node.JsonNodeFactory.instance.objectNode()))
+            .set(CHANNELS.INITIAL_IMPORT_MODE,
+                org.moera.importer.persistence.jooq.enums.InitialImportMode.valueOf(initialImportMode.name()))
+            .set(CHANNELS.TITLE, resolution.metadata() != null ? resolution.metadata().title() : null)
+            .set(CHANNELS.DESCRIPTION_HTML,
+                resolution.metadata() != null ? resolution.metadata().descriptionHtml() : null)
+            .set(CHANNELS.PUBLIC_USERNAME,
+                resolution.metadata() != null ? resolution.metadata().publicUsername() : null)
+            .set(CHANNELS.EMBLEM_REMOTE_ID, emblemRemoteId(resolution.metadata()))
+            .set(CHANNELS.EMBLEM_UNIQUE_ID, emblemUniqueId(resolution.metadata()))
+            .set(CHANNELS.EMBLEM_MIME_TYPE, emblemMimeType(resolution.metadata()))
             .set(CHANNELS.ACCESS_STATE,
                 org.moera.importer.persistence.jooq.enums.AccessState.valueOf(resolution.accessState().name()))
             .set(CHANNELS.ACCESS_RETRY_AT, accessRetryAt)
@@ -190,12 +206,14 @@ public class ChannelRepository {
         var sourceIdentityMatches = result.resolvedSourceId() == null
             ? trueCondition()
             : CHANNELS.SOURCE_ID.isNull().or(CHANNELS.SOURCE_ID.eq(result.resolvedSourceId()));
-        org.jooq.Field<JSON> metadata = result.metadata() == null
-            ? CHANNELS.METADATA
-            : val(jooqMappings.json(ChannelMetadataJson.write(result.metadata())));
         int updated = dslContext.update(CHANNELS)
             .set(CHANNELS.SOURCE_ID, coalesce(CHANNELS.SOURCE_ID, result.resolvedSourceId()))
-            .set(CHANNELS.METADATA, metadata)
+            .set(CHANNELS.TITLE, metadataTitle(result.metadata()))
+            .set(CHANNELS.DESCRIPTION_HTML, metadataDescriptionHtml(result.metadata()))
+            .set(CHANNELS.PUBLIC_USERNAME, metadataPublicUsername(result.metadata()))
+            .set(CHANNELS.EMBLEM_REMOTE_ID, metadataEmblemRemoteId(result.metadata()))
+            .set(CHANNELS.EMBLEM_UNIQUE_ID, metadataEmblemUniqueId(result.metadata()))
+            .set(CHANNELS.EMBLEM_MIME_TYPE, metadataEmblemMimeType(result.metadata()))
             .set(CHANNELS.ACCESS_STATE, state)
             .set(CHANNELS.ACCESS_ATTEMPTS, 0)
             .setNull(CHANNELS.ACCESS_RETRY_AT)
@@ -398,6 +416,42 @@ public class ChannelRepository {
             .and(CHANNELS.PROCESSING_TOKEN.eq(token))
             .execute();
         return updated == 1;
+    }
+
+    private Field<String> metadataTitle(ChannelMetadata metadata) {
+        return metadata != null ? val(metadata.title()) : CHANNELS.TITLE;
+    }
+
+    private Field<String> metadataDescriptionHtml(ChannelMetadata metadata) {
+        return metadata != null ? val(metadata.descriptionHtml()) : CHANNELS.DESCRIPTION_HTML;
+    }
+
+    private Field<String> metadataPublicUsername(ChannelMetadata metadata) {
+        return metadata != null ? val(metadata.publicUsername(), String.class) : CHANNELS.PUBLIC_USERNAME;
+    }
+
+    private Field<String> metadataEmblemRemoteId(ChannelMetadata metadata) {
+        return metadata != null ? val(emblemRemoteId(metadata), String.class) : CHANNELS.EMBLEM_REMOTE_ID;
+    }
+
+    private Field<String> metadataEmblemUniqueId(ChannelMetadata metadata) {
+        return metadata != null ? val(emblemUniqueId(metadata), String.class) : CHANNELS.EMBLEM_UNIQUE_ID;
+    }
+
+    private Field<String> metadataEmblemMimeType(ChannelMetadata metadata) {
+        return metadata != null ? val(emblemMimeType(metadata), String.class) : CHANNELS.EMBLEM_MIME_TYPE;
+    }
+
+    private String emblemRemoteId(ChannelMetadata metadata) {
+        return metadata != null && metadata.emblem() != null ? metadata.emblem().remoteId() : null;
+    }
+
+    private String emblemUniqueId(ChannelMetadata metadata) {
+        return metadata != null && metadata.emblem() != null ? metadata.emblem().uniqueId() : null;
+    }
+
+    private String emblemMimeType(ChannelMetadata metadata) {
+        return metadata != null && metadata.emblem() != null ? metadata.emblem().mimeType() : null;
     }
 
 }

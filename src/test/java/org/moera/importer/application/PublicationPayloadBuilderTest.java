@@ -2,6 +2,7 @@ package org.moera.importer.application;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
@@ -13,6 +14,7 @@ import org.moera.importer.model.Message;
 import org.moera.importer.moera.DestinationCapabilities;
 import org.moera.importer.persistence.MessageLinkPreview;
 import org.moera.importer.persistence.PublicationContext;
+import org.moera.importer.source.ForwardAttribution;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.moera.lib.node.types.SourceFormat.HTML;
@@ -116,15 +118,12 @@ class PublicationPayloadBuilderTest {
 
     @Test
     void collectsOrderedSourceLinksFromNonDeletedMembers() {
-        ObjectNode firstSource = objectNode().put("externalSourceUri", "https://t.me/news/10");
-        ObjectNode secondSource = objectNode().put("externalSourceUri", "https://t.me/news/11");
-        ObjectNode deletedSource = objectNode().put("externalSourceUri", "https://t.me/news/12");
         PublicationContext context = context(
             config("timeline"),
             List.of(
-                member(message(1, "first", BodyFormat.HTML, NOW, false, false, firstSource)),
-                member(message(2, "", BodyFormat.HTML, NOW, false, false, secondSource)),
-                member(message(3, "deleted", BodyFormat.HTML, NOW, false, true, deletedSource))
+                member(message(1, "first", false, "https://t.me/news/10", null)),
+                member(message(2, "", false, "https://t.me/news/11", null)),
+                member(message(3, "deleted", true, "https://t.me/news/12", null))
             ),
             List.of()
         );
@@ -137,15 +136,13 @@ class PublicationPayloadBuilderTest {
 
     @Test
     void insertsRuleBetweenDifferentForwardAttributions() {
-        ObjectNode firstSource = objectNode();
-        firstSource.putObject("forwardAttribution").put("name", "First");
-        ObjectNode secondSource = objectNode();
-        secondSource.putObject("forwardAttribution").put("name", "Second");
         PublicationContext context = context(
             config("timeline"),
             List.of(
-                member(message(1, "<p>First</p><p>one</p>", BodyFormat.HTML, NOW, false, false, firstSource)),
-                member(message(2, "<p>Second</p><p>two</p>", BodyFormat.HTML, NOW, false, false, secondSource))
+                member(message(1, "<p>First</p><p>one</p>", false, null,
+                    new ForwardAttribution("First", null))),
+                member(message(2, "<p>Second</p><p>two</p>", false, null,
+                    new ForwardAttribution("Second", null)))
             ),
             List.of()
         );
@@ -217,19 +214,14 @@ class PublicationPayloadBuilderTest {
         return new DestinationCapabilities(1000, List.of(formats));
     }
 
-    private PublicationContext context(ObjectNode config, List<PublicationContext.Member> members,
+    private PublicationContext context(List<String> feeds, List<PublicationContext.Member> members,
                                        List<PublicationContext.DeliveredMedia> media) {
-        Destination destination = new Destination(1, "alice", objectNode(), objectNode(), NOW, NOW);
-        return new PublicationContext(7, 2, destination, config, null, objectNode(), members, media);
+        Destination destination = new Destination(1, "alice", "env:TEST", NOW, NOW);
+        return new PublicationContext(7, 2, destination, feeds, null, null, Map.of(), members, media);
     }
 
-    private ObjectNode config(String... feeds) {
-        ObjectNode config = objectNode();
-        var array = config.putArray("feeds");
-        for (String feed : feeds) {
-            array.add(feed);
-        }
-        return config;
+    private List<String> config(String... feeds) {
+        return List.of(feeds);
     }
 
     private PublicationContext.Member member(Message message, MessageLinkPreview... previews) {
@@ -245,6 +237,19 @@ class PublicationPayloadBuilderTest {
         return new Message(
             id, 1, Long.toString(id), 0, deleted, pinned, publishedAt, body, format, new byte[] { 1 }, sourceData,
             NOW, NOW
+        );
+    }
+
+    private Message message(
+        long id,
+        String body,
+        boolean deleted,
+        String externalSourceUri,
+        ForwardAttribution forwardAttribution
+    ) {
+        return new Message(
+            id, 1, Long.toString(id), 0, deleted, false, NOW, body, BodyFormat.HTML, new byte[] { 1 },
+            externalSourceUri, forwardAttribution, objectNode(), NOW, NOW
         );
     }
 

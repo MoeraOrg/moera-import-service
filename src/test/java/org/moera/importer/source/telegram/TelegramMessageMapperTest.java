@@ -11,6 +11,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.moera.importer.model.BodyFormat;
+import org.moera.importer.source.ForwardAttribution;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -211,8 +212,8 @@ class TelegramMessageMapperTest {
         assertThat(mapped.body()).isEqualTo("<p>Source &lt;name&gt;</p><p>Content</p>"
             + "<p><a href=\"https://example.org/a?x=1&amp;y=2\">Open</a></p>"
             + "<hr><p><b>Fact check</b></p><blockquote>Verified &lt;fact&gt;</blockquote>");
-        assertThat(mapped.sourceData().path("forwardAttribution").path("name").asText())
-            .isEqualTo("Source <name>");
+        assertThat(mapped.forwardAttribution()).isEqualTo(new ForwardAttribution("Source <name>", null));
+        assertThat(mapped.sourceData().has("forwardAttribution")).isFalse();
     }
 
     @Test
@@ -241,8 +242,9 @@ class TelegramMessageMapperTest {
         assertThat(mapped.body()).startsWith(
             "<p><a href=\"https://t.me/moera_news/6660\">Moera News</a></p>"
         );
-        assertThat(mapped.sourceData().path("forwardAttribution").path("url").asText())
-            .isEqualTo("https://t.me/moera_news/6660");
+        assertThat(mapped.forwardAttribution())
+            .isEqualTo(new ForwardAttribution("Moera News", "https://t.me/moera_news/6660"));
+        assertThat(mapped.sourceData().has("forwardAttribution")).isFalse();
     }
 
     @Test
@@ -266,8 +268,8 @@ class TelegramMessageMapperTest {
 
         var mapped = ((TelegramMappingResult.Mapped) mapper.map(telegram)).message();
 
-        assertThat(mapped.sourceData().path("externalSourceUri").asText())
-            .isEqualTo("https://t.me/moera_news/6660");
+        assertThat(mapped.externalSourceUri()).isEqualTo("https://t.me/moera_news/6660");
+        assertThat(mapped.sourceData().has("externalSourceUri")).isFalse();
     }
 
     @Test
@@ -296,8 +298,8 @@ class TelegramMessageMapperTest {
 
         var mapped = ((TelegramMappingResult.Mapped) mapper.map(telegram)).message();
 
-        assertThat(mapped.sourceData().path("externalSourceUri").asText())
-            .isEqualTo("https://t.me/c/1001/6660");
+        assertThat(mapped.externalSourceUri()).isEqualTo("https://t.me/c/1001/6660");
+        assertThat(mapped.sourceData().has("externalSourceUri")).isFalse();
     }
 
     @Test

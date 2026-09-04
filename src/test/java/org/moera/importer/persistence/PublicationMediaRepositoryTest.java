@@ -71,7 +71,8 @@ class PublicationMediaRepositoryTest extends PostgresIntegrationTest {
         assertThat(context.channel().sourceId()).isEqualTo("channel-1");
         assertThat(context.media().sourceId()).isEqualTo("media-1");
         assertThat(context.destinationMediaId()).isNull();
-        assertThat(context.destinationData()).isEqualTo(JsonNodeFactory.instance.objectNode());
+        assertThat(context.destinationHash()).isNull();
+        assertThat(context.compressionPending()).isFalse();
         assertThat(publicationMediaRepository.claimPending(1, Duration.ofMinutes(5))).isEmpty();
     }
 
@@ -88,7 +89,7 @@ class PublicationMediaRepositoryTest extends PostgresIntegrationTest {
             firstClaim.processingToken(),
             originalHash,
             "original-id",
-            JsonNodeFactory.instance.objectNode().put("hash", "original-hash"),
+            "original-hash",
             nextCheck
         );
 
@@ -96,10 +97,8 @@ class PublicationMediaRepositoryTest extends PostgresIntegrationTest {
         var waitingRecord = dslContext.selectFrom(PUBLICATION_MEDIA).fetchSingle();
         assertThat(waitingRecord.getStatus()).isEqualTo(PENDING);
         assertThat(waitingRecord.getDestinationMediaId()).isEqualTo("original-id");
-        assertThat(jooqMappings.jsonNode(waitingRecord.getDestinationData()))
-            .isEqualTo(JsonNodeFactory.instance.objectNode()
-                .put("hash", "original-hash")
-                .put("compressionPending", true));
+        assertThat(waitingRecord.getDestinationHash()).isEqualTo("original-hash");
+        assertThat(waitingRecord.getCompressionPending()).isTrue();
         assertThat(waitingRecord.getNextAttemptAt().toInstant()).isEqualTo(nextCheck);
         assertThat(waitingRecord.getLastError()).isNull();
         assertThat(waitingRecord.getProcessingToken()).isNull();
@@ -120,14 +119,14 @@ class PublicationMediaRepositoryTest extends PostgresIntegrationTest {
             staleClaim.processingToken(),
             originalHash,
             "compressed-id",
-            JsonNodeFactory.instance.objectNode().put("hash", "compressed-hash")
+            "compressed-hash"
         );
 
         assertThat(uploaded).isFalse();
         var resetRecord = dslContext.selectFrom(PUBLICATION_MEDIA).fetchSingle();
         assertThat(resetRecord.getDestinationMediaId()).isNull();
-        assertThat(jooqMappings.jsonNode(resetRecord.getDestinationData()))
-            .isEqualTo(JsonNodeFactory.instance.objectNode());
+        assertThat(resetRecord.getDestinationHash()).isNull();
+        assertThat(resetRecord.getCompressionPending()).isFalse();
         assertThat(resetRecord.getAttempts()).isZero();
         assertThat(resetRecord.getProcessingToken()).isNull();
     }
@@ -234,11 +233,13 @@ class PublicationMediaRepositoryTest extends PostgresIntegrationTest {
             .fetchSingle(MEDIA.ID);
         long destinationId = dslContext.insertInto(DESTINATIONS)
             .set(DESTINATIONS.NODE_NAME, "destination.example")
+            .set(DESTINATIONS.CREDENTIAL_REF, "env:TEST")
             .returningResult(DESTINATIONS.ID)
             .fetchSingle(DESTINATIONS.ID);
         long mirrorId = dslContext.insertInto(MIRRORS)
             .set(MIRRORS.CHANNEL_ID, channelId)
             .set(MIRRORS.DESTINATION_ID, destinationId)
+            .set(MIRRORS.FEEDS, new String[] { "timeline" })
             .returningResult(MIRRORS.ID)
             .fetchSingle(MIRRORS.ID);
         long publicationId = dslContext.insertInto(PUBLICATIONS)

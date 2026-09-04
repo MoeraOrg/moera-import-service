@@ -128,6 +128,7 @@ class DestinationCreateRateLimitTest extends PostgresIntegrationTest {
     private long insertDestination(String nodeName) {
         return dslContext.insertInto(DESTINATIONS)
             .set(DESTINATIONS.NODE_NAME, nodeName)
+            .set(DESTINATIONS.CREDENTIAL_REF, "env:TEST")
             .returningResult(DESTINATIONS.ID)
             .fetchSingle(DESTINATIONS.ID);
     }
@@ -145,6 +146,7 @@ class DestinationCreateRateLimitTest extends PostgresIntegrationTest {
         long mirrorId = dslContext.insertInto(MIRRORS)
             .set(MIRRORS.CHANNEL_ID, channelId)
             .set(MIRRORS.DESTINATION_ID, destinationId)
+            .set(MIRRORS.FEEDS, new String[] { "timeline" })
             .returningResult(MIRRORS.ID)
             .fetchSingle(MIRRORS.ID);
         return dslContext.insertInto(PUBLICATIONS)

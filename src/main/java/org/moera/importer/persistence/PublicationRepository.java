@@ -10,7 +10,6 @@ import java.util.Map;
 import java.util.UUID;
 import jakarta.inject.Inject;
 
-import com.fasterxml.jackson.databind.JsonNode;
 import org.jooq.DSLContext;
 import org.moera.importer.model.Message;
 import org.moera.importer.observability.ImportMetrics;
@@ -20,6 +19,7 @@ import org.springframework.transaction.annotation.Transactional;
 import static org.moera.importer.persistence.jooq.tables.PublicationMessages.PUBLICATION_MESSAGES;
 import static org.moera.importer.persistence.jooq.tables.PublicationMedia.PUBLICATION_MEDIA;
 import static org.moera.importer.persistence.jooq.tables.Publications.PUBLICATIONS;
+import static org.moera.importer.persistence.jooq.tables.PublicationStories.PUBLICATION_STORIES;
 import static org.moera.importer.persistence.jooq.tables.Destinations.DESTINATIONS;
 import static org.moera.importer.persistence.jooq.tables.Media.MEDIA;
 import static org.moera.importer.persistence.jooq.tables.MessageLinkPreviews.MESSAGE_LINK_PREVIEWS;
@@ -122,7 +122,7 @@ public class PublicationRepository {
             .toList();
 
         List<PublicationContext.DeliveredMedia> media = dslContext.select(MEDIA.fields())
-            .select(PUBLICATION_MEDIA.DESTINATION_MEDIA_ID, PUBLICATION_MEDIA.DESTINATION_DATA)
+            .select(PUBLICATION_MEDIA.DESTINATION_MEDIA_ID, PUBLICATION_MEDIA.DESTINATION_HASH)
             .from(PUBLICATION_MEDIA)
             .join(MEDIA).on(MEDIA.ID.eq(PUBLICATION_MEDIA.MEDIA_ID))
             .join(PUBLICATION_MESSAGES)
@@ -131,52 +131,53 @@ public class PublicationRepository {
             .where(PUBLICATION_MEDIA.PUBLICATION_ID.eq(publicationId))
             .and(PUBLICATION_MEDIA.STATUS.eq(UPLOADED))
             .orderBy(PUBLICATION_MESSAGES.POSITION, MEDIA.POSITION)
-            .fetch(record -> {
-                JsonNode data = jooqMappings.jsonNode(record.get(PUBLICATION_MEDIA.DESTINATION_DATA));
-                return new PublicationContext.DeliveredMedia(
-                    jooqMappings.media(record.into(MEDIA)),
-                    record.get(PUBLICATION_MEDIA.DESTINATION_MEDIA_ID),
-                    requiredMediaHash(data)
-                );
-            });
+            .fetch(record -> new PublicationContext.DeliveredMedia(
+                jooqMappings.media(record.into(MEDIA)),
+                record.get(PUBLICATION_MEDIA.DESTINATION_MEDIA_ID),
+                requiredMediaHash(record.get(PUBLICATION_MEDIA.DESTINATION_HASH))
+            ));
         return new PublicationContext(
             publicationId,
             targetRevision,
             jooqMappings.destination(destination),
-            jooqMappings.jsonNode(mirror.getConfig()),
+            List.of(mirror.getFeeds()),
             publication.getDestinationPostId(),
-            jooqMappings.jsonNode(publication.getDestinationData()),
+            publication.getDestinationPinned(),
+            destinationStories(publicationId),
             members,
             media
         );
     }
 
+    @Transactional
     public boolean created(
         long publicationId,
         UUID token,
         int targetRevision,
         String postingId,
-        JsonNode destinationData
+        PublicationDestinationState destinationState
     ) {
-        return complete(publicationId, token, targetRevision, postingId, true, destinationData);
+        return complete(publicationId, token, targetRevision, postingId, true, destinationState);
     }
 
+    @Transactional
     public boolean updated(
         long publicationId,
         UUID token,
         int targetRevision,
-        JsonNode destinationData
+        PublicationDestinationState destinationState
     ) {
-        return complete(publicationId, token, targetRevision, null, false, destinationData);
+        return complete(publicationId, token, targetRevision, null, false, destinationState);
     }
 
+    @Transactional
     public boolean deleted(
         long publicationId,
         UUID token,
         int targetRevision,
-        JsonNode destinationData
+        PublicationDestinationState destinationState
     ) {
-        return complete(publicationId, token, targetRevision, null, true, destinationData);
+        return complete(publicationId, token, targetRevision, null, true, destinationState);
     }
 
     public boolean retry(
@@ -287,12 +288,19 @@ public class PublicationRepository {
         return Map.copyOf(previews);
     }
 
-    private String requiredMediaHash(JsonNode data) {
-        JsonNode hash = data.get("hash");
-        if (hash == null || !hash.isTextual() || hash.textValue().isBlank()) {
+    private String requiredMediaHash(String hash) {
+        if (hash == null || hash.isBlank()) {
             throw new IllegalStateException("Uploaded publication media has no destination hash");
         }
-        return hash.textValue();
+        return hash;
+    }
+
+    private Map<String, String> destinationStories(long publicationId) {
+        return dslContext.select(PUBLICATION_STORIES.FEED_NAME, PUBLICATION_STORIES.STORY_ID)
+            .from(PUBLICATION_STORIES)
+            .where(PUBLICATION_STORIES.PUBLICATION_ID.eq(publicationId))
+            .orderBy(PUBLICATION_STORIES.FEED_NAME)
+            .fetchMap(PUBLICATION_STORIES.FEED_NAME, PUBLICATION_STORIES.STORY_ID);
     }
 
     private boolean complete(
@@ -301,12 +309,12 @@ public class PublicationRepository {
         int targetRevision,
         String destinationPostId,
         boolean replaceDestinationPostId,
-        JsonNode destinationData
+        PublicationDestinationState destinationState
     ) {
         Instant now = clock.instant();
         var update = dslContext.update(PUBLICATIONS)
             .set(PUBLICATIONS.PUBLISHED_REVISION, targetRevision)
-            .set(PUBLICATIONS.DESTINATION_DATA, jooqMappings.json(destinationData))
+            .set(PUBLICATIONS.DESTINATION_PINNED, destinationState.pinned())
             .set(PUBLICATIONS.ATTEMPTS, 0)
             .set(
                 PUBLICATIONS.NEXT_ATTEMPT_AT,
@@ -320,9 +328,21 @@ public class PublicationRepository {
         if (replaceDestinationPostId) {
             update.set(PUBLICATIONS.DESTINATION_POST_ID, destinationPostId);
         }
-        return update.where(PUBLICATIONS.ID.eq(publicationId))
+        boolean completed = update.where(PUBLICATIONS.ID.eq(publicationId))
             .and(PUBLICATIONS.PROCESSING_TOKEN.eq(token))
             .execute() == 1;
+        if (!completed) {
+            return false;
+        }
+        dslContext.deleteFrom(PUBLICATION_STORIES)
+            .where(PUBLICATION_STORIES.PUBLICATION_ID.eq(publicationId))
+            .execute();
+        destinationState.storyIds().forEach((feedName, storyId) -> dslContext.insertInto(PUBLICATION_STORIES)
+            .set(PUBLICATION_STORIES.PUBLICATION_ID, publicationId)
+            .set(PUBLICATION_STORIES.FEED_NAME, feedName)
+            .set(PUBLICATION_STORIES.STORY_ID, storyId)
+            .execute());
+        return true;
     }
 
 }

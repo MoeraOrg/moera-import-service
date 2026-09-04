@@ -1,9 +1,11 @@
 package org.moera.importer.persistence;
 
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 
-import com.fasterxml.jackson.databind.JsonNode;
 import org.moera.importer.model.Destination;
 import org.moera.importer.model.Media;
 import org.moera.importer.model.Message;
@@ -12,17 +14,20 @@ public record PublicationContext(
     long publicationId,
     int targetRevision,
     Destination destination,
-    JsonNode mirrorConfig,
+    List<String> mirrorFeeds,
     String destinationPostId,
-    JsonNode destinationData,
+    Boolean destinationPinned,
+    Map<String, String> destinationStoryIds,
     List<Member> members,
     List<DeliveredMedia> media
 ) {
 
     public PublicationContext {
         Objects.requireNonNull(destination, "destination");
-        Objects.requireNonNull(mirrorConfig, "mirrorConfig");
-        Objects.requireNonNull(destinationData, "destinationData");
+        mirrorFeeds = List.copyOf(Objects.requireNonNull(mirrorFeeds, "mirrorFeeds"));
+        destinationStoryIds = Collections.unmodifiableMap(new LinkedHashMap<>(
+            Objects.requireNonNull(destinationStoryIds, "destinationStoryIds")
+        ));
         members = List.copyOf(Objects.requireNonNull(members, "members"));
         media = List.copyOf(Objects.requireNonNull(media, "media"));
     }

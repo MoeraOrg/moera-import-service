@@ -83,6 +83,7 @@ import static org.moera.importer.persistence.jooq.tables.Messages.MESSAGES;
 import static org.moera.importer.persistence.jooq.tables.Mirrors.MIRRORS;
 import static org.moera.importer.persistence.jooq.tables.PublicationMedia.PUBLICATION_MEDIA;
 import static org.moera.importer.persistence.jooq.tables.PublicationMessages.PUBLICATION_MESSAGES;
+import static org.moera.importer.persistence.jooq.tables.PublicationStories.PUBLICATION_STORIES;
 import static org.moera.importer.persistence.jooq.tables.Publications.PUBLICATIONS;
 
 @SpringBootTest(
@@ -223,8 +224,9 @@ class ImportPipelineTest extends PostgresIntegrationTest {
                 assertThat(story.getPinned()).isFalse();
             });
         });
-        assertThat(publicationDestinationData().path("storyIds").path("timeline").asText())
-            .isEqualTo("story-1");
+        assertThat(dslContext.select(PUBLICATION_STORIES.STORY_ID).from(PUBLICATION_STORIES)
+            .where(PUBLICATION_STORIES.FEED_NAME.eq("timeline"))
+            .fetchSingle(PUBLICATION_STORIES.STORY_ID)).isEqualTo("story-1");
 
         sourceEventProcessor.accept(new SourceEvent.MessageChanged(
             SourceType.TELEGRAM,
@@ -277,7 +279,9 @@ class ImportPipelineTest extends PostgresIntegrationTest {
         assertThat(publicationRevision()).containsExactly(3, 3);
         assertThat(dslContext.select(PUBLICATIONS.DESTINATION_POST_ID).from(PUBLICATIONS)
             .fetchSingle(PUBLICATIONS.DESTINATION_POST_ID)).isNull();
-        assertThat(publicationDestinationData()).isEqualTo(objectNode());
+        assertThat(dslContext.select(PUBLICATIONS.DESTINATION_PINNED).from(PUBLICATIONS)
+            .fetchSingle(PUBLICATIONS.DESTINATION_PINNED)).isNull();
+        assertThat(dslContext.fetchCount(PUBLICATION_STORIES)).isZero();
         assertThat(fakeSourceAdapter.downloadedMedia)
             .containsExactly("preview-one", "video", "preview-two");
         assertThat(fakeMoeraService.uploadedMedia)
@@ -311,14 +315,13 @@ class ImportPipelineTest extends PostgresIntegrationTest {
         )).id();
         long destinationId = dslContext.insertInto(DESTINATIONS)
             .set(DESTINATIONS.NODE_NAME, "destination.example")
+            .set(DESTINATIONS.CREDENTIAL_REF, "env:TEST")
             .returningResult(DESTINATIONS.ID)
             .fetchSingle(DESTINATIONS.ID);
-        ObjectNode mirrorConfig = objectNode();
-        mirrorConfig.putArray("feeds").add("timeline");
         long mirrorId = dslContext.insertInto(MIRRORS)
             .set(MIRRORS.CHANNEL_ID, channelId)
             .set(MIRRORS.DESTINATION_ID, destinationId)
-            .set(MIRRORS.CONFIG, jooqMappings.json(mirrorConfig))
+            .set(MIRRORS.FEEDS, new String[] { "timeline" })
             .returningResult(MIRRORS.ID)
             .fetchSingle(MIRRORS.ID);
         return new PipelineIds(mirrorId);
@@ -414,12 +417,6 @@ class ImportPipelineTest extends PostgresIntegrationTest {
             .from(PUBLICATIONS)
             .fetchSingle();
         return List.of(record.value1(), record.value2());
-    }
-
-    private ObjectNode publicationDestinationData() {
-        return (ObjectNode) jooqMappings.jsonNode(dslContext.select(PUBLICATIONS.DESTINATION_DATA)
-            .from(PUBLICATIONS)
-            .fetchSingle(PUBLICATIONS.DESTINATION_DATA));
     }
 
     private List<Long> publicationMembership(long publicationId) {

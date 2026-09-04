@@ -53,7 +53,8 @@ A `Channel` is a channel/feed in an external source. A `Message` is one item obs
 consecutive messages may form one `Publication`. A `Mirror` connects a channel to a Moera destination. A `Publication`
 is the delivery object for one immutable group of source messages through one mirror.
 
-Source-specific properties that do not belong to the universal model are stored in JSONB fields.
+Source-specific properties that do not belong to the universal model are stored in adapter-owned JSONB fields. Core
+code may persist, copy, and compare those values as a whole, but only the owning `SourceAdapter` interprets their keys.
 
 ## 4. Database naming and schema ownership
 
@@ -83,6 +84,18 @@ Flyway SQL is authoritative. Documentation summarizes the model but does not sup
 
 String fields use `varchar(n)` where a meaningful upper bound exists; unbounded content/diagnostics use `text`.
 
+### 4.1 Relational-state migration rollout
+
+The `V005`/`V006` normalization may be deployed in one application release or as two database releases. If `V005`
+runs separately, only the legacy application version may operate before `V006`; the retained legacy JSON remains
+authoritative throughout that interval. The typed application version and `V006` must be deployed together, with
+Flyway completing `V006` before the typed application starts.
+
+`V006` validates the legacy JSON and repeats the complete `V005` backfill, including clearing typed values when a
+legacy key was removed. It then removes the obsolete JSONB columns. A typed-only application must never operate
+against a schema stopped at `V005`, because two independently writable representations would have ambiguous
+precedence.
+
 ## 5. Source types
 
 `source_type` is a PostgreSQL enum. The initial migration contains only:
@@ -106,7 +119,13 @@ source_type
 source_id
 source_uri
 source_data JSONB
-metadata JSONB
+initial_import_mode
+title
+description_html
+public_username
+emblem_remote_id
+emblem_unique_id
+emblem_mime_type
 
 access_state
 access_attempts
@@ -145,9 +164,10 @@ A `(source_type, source_id)` pair is unique for non-null IDs. PostgreSQL natural
 
 A channel owns many messages and may have many mirrors.
 
-`metadata` stores the latest normalized channel title, description, public identity, and emblem identity separately
-from `source_data`. `source_data` remains exclusively adapter-owned operational state. Channel metadata is updated at
-access, poll, and live-event boundaries without mixing profile content into adapter state.
+The scalar metadata columns store the latest normalized channel title, safe HTML description, public identity, and
+emblem identity. `title = NULL` means metadata has not been obtained; the other metadata columns are nullable.
+`source_data` remains exclusively adapter-owned operational state. Channel metadata is updated at access, poll, and
+live-event boundaries without mixing universal profile content into adapter state.
 
 ## 7. Access lifecycle
 
@@ -273,8 +293,7 @@ adapter can establish it reliably.
 ### 10.2 Initial scan
 
 `waterline = NULL` means that no successful initial forward scan has completed. The source adapter chooses the initial
-import scope. Channel creation supplies an `InitialImportMode` of `RECENT` or `FULL`; the source adapter persists and
-interprets that choice as source state. A missing or unrecognized choice is treated as `RECENT`.
+import scope. Channel creation stores an `InitialImportMode` of `RECENT` or `FULL` in `channels.initial_import_mode`.
 
 For Telegram, `RECENT` scans the newest configured number of unique Telegram messages and defaults to 20. Deliberately
 skipped messages count toward this scan boundary. `FULL` scans to the beginning of available history. The mode affects
@@ -284,8 +303,8 @@ only a null-waterline initial scan; ordinary polling always uses the waterline a
 
 A `Message` belongs to exactly one `Channel`.
 
-A repost/forward is still a separate message in each channel where it appears. Forward/origin metadata may be stored in
-`source_data`; it does not create identity links between messages.
+A repost/forward is still a separate message in each channel where it appears. Universal forward attribution is stored
+in `forward_name` and `forward_uri`; it does not create identity links between messages.
 
 External identity is unique inside the channel:
 
@@ -306,6 +325,9 @@ published_at
 body
 body_format
 source_body_hash
+external_source_uri
+forward_name
+forward_uri
 source_data JSONB
 created_at
 updated_at
@@ -318,6 +340,10 @@ including text/formatting, link previews, media set/content, pinning, or deletio
 
 `created_at` is the time the service first stored the message. `published_at` is the source publication time used for
 grouping. A separate `observed_at` is unnecessary.
+
+`external_source_uri` is the canonical link to the source message when available. `forward_name` is required whenever
+forward attribution exists, while `forward_uri` is optional. These values are universal payload inputs and are not
+encoded in `source_data`.
 
 ## 12. Message body
 
@@ -472,7 +498,8 @@ access is granted. `AccessResult` may later return a `resolvedSourceId`; the cor
 no source ID yet, and treats a conflicting later ID as a permanent consistency error.
 
 `InitialImportMode` carries the operator's requested initial scope without promoting a source cursor or Telegram
-pagination detail into the core. Each adapter stores and interprets the mode through its source state.
+pagination detail into the core. The core stores the mode in `channels.initial_import_mode`; each adapter interprets
+the value.
 
 ## 15. Live source events
 
@@ -523,8 +550,13 @@ A destination identifies a concrete Moera node/account:
 ```text
 id
 node_name varchar(135)
-config JSONB
-data JSONB
+credential_ref
+profile_sync
+profile_fingerprint
+profile_source_emblem_id
+avatar_id
+avatar_media_id
+avatar_shape
 next_create_at
 created_at
 updated_at
@@ -535,8 +567,8 @@ updated_at
 `next_create_at` is nullable durable rate state for new Moera postings. `NULL` means a create slot is available
 immediately. It does not limit updates, deletes, story changes, or media uploads.
 
-`config` is service-owned configuration. `data` is persistent Moera-adapter state. Secrets should preferably be
-referenced rather than embedded directly in JSONB.
+`credential_ref` identifies a deployment secret without storing the credential itself. `profile_sync` is explicit
+configuration. The remaining nullable profile and avatar columns are durable service-owned synchronization state.
 
 ## 18. Mirror
 
@@ -547,12 +579,14 @@ id
 channel_id
 destination_id
 enabled
-config JSONB
+feeds text[]
 created_at
 updated_at
 ```
 
 A `(channel_id, destination_id)` pair is unique.
+
+`feeds` is non-null and preserves request order. It contains non-empty unique Moera feed names.
 
 Grouping rules do not belong to `Mirror`; they are source semantics and belong to `SourceAdapter`.
 
@@ -622,7 +656,7 @@ mirror_id
 revision
 published_revision
 destination_post_id
-destination_data JSONB
+destination_pinned
 attempts
 next_attempt_at
 last_error
@@ -652,6 +686,9 @@ revision = 0, published_revision = NULL
 A worker captures the target revision before external work. If the publication changes while the worker is running, a
 successful worker records only its captured target revision; the newer revision remains pending.
 
+`destination_pinned` is the last pin state delivered to the destination. It is nullable until the first successful
+creation and is cleared when the destination post is deleted.
+
 ## 21. PublicationMessage
 
 The immutable membership relation is stored in `publication_messages`:
@@ -667,6 +704,17 @@ enforced in Java rather than by denormalized composite foreign keys.
 
 `position` fixes message order within the publication.
 
+Feed story identities are stored in `publication_stories`:
+
+```text
+publication_id
+feed_name
+story_id
+```
+
+The primary key is `(publication_id, feed_name)`. The rows preserve the Moera story identities returned when the post
+is first published to its configured feeds.
+
 ## 22. PublicationMedia
 
 `publication_media` stores destination-specific delivery state for source media:
@@ -677,7 +725,8 @@ media_id
 status
 skip_reason
 destination_media_id varchar(40)
-destination_data JSONB
+destination_hash
+compression_pending
 attempts
 next_attempt_at
 last_error
@@ -712,13 +761,12 @@ The database does not attempt to prove that a referenced `Media` belongs to one 
 application code constructs these rows correctly.
 
 For an `UPLOADED` row, `destination_media_id` stores the final attachable `PrivateMediaFileInfo.id` and
-`destination_data` stores its `hash`. The ID attaches the private file to a posting; the hash is used by
+`destination_hash` stores its hash. The ID attaches the private file to a posting; the hash is used by
 `Body.LinkPreview.imageHash` when the media is a selected link-preview image.
 
 A `PENDING` row may already contain the original uploaded media ID/hash while Moera is compressing it. In that case,
-`destination_data` also marks compression as pending. Once compression finishes, the original ID/hash are replaced by
-the compressed file's ID/hash and the row becomes `UPLOADED`. A source-hash change clears both the intermediate and
-final destination data.
+`compression_pending = true`. Once compression finishes, the original ID/hash are replaced by the compressed file's
+ID/hash and the row becomes `UPLOADED`. A source-hash change clears both the intermediate and final destination state.
 
 ## 23. Media staging and upload
 
@@ -774,8 +822,9 @@ Immediately before every posting creation, `MoeraService` fetches client setting
 comment addition, positive and negative reaction addition, and rejected reactions. These settings are never cached,
 so a change affects the next created posting. Posting updates preserve the existing posting-level values.
 
-Every posting create and update sets `PostingText.externalSourceUri` to the ordered links of all non-deleted source
-messages that currently compose the publication. Empty or unavailable links are omitted.
+Every posting create and update sets `PostingText.externalSourceUri` to the ordered `messages.external_source_uri`
+values of all non-deleted source messages that currently compose the publication. Empty or unavailable links are
+omitted.
 
 For each source media item:
 
@@ -787,7 +836,7 @@ For each source media item:
 5. Upload acceptable files as Moera private media.
 6. Always request `downsize=true` for Moera media uploads.
 7. If the returned file does not require asynchronous compression, store its `PrivateMediaFileInfo.id` in
-   `publication_media.destination_media_id` and its `hash` in `publication_media.destination_data`, then mark the row
+   `publication_media.destination_media_id` and its `hash` in `publication_media.destination_hash`, then mark the row
    `UPLOADED`.
 8. If `PrivateMediaFileInfo.uncompressed == true`, persist the original ID/hash with a compression-pending marker,
    leave the row `PENDING`, and poll the original file's private-media information until `compressedMediaId` appears.
@@ -878,12 +927,12 @@ public sealed interface MediaUpload {
 ```
 
 `MoeraClientFactory` resolves the current node URL from `destination.node_name`, obtains the credential referenced by
-`destinations.config`, and creates an authenticated Moera client. A global service setting selects either the main or
-development Moera naming server; the main server is the default. All destinations handled by one service instance use
-the same naming server. Node URL resolution must not be treated as permanently stable.
+`destinations.credential_ref`, and creates an authenticated Moera client. A global service setting selects either the
+main or development Moera naming server; the main server is the default. All destinations handled by one service
+instance use the same naming server. Node URL resolution must not be treated as permanently stable.
 
-Authentication, Moera IDs, `downsize=true`, API flags, and future idempotency state remain inside `MoeraService` and
-destination/publication JSONB state.
+Authentication, Moera IDs, `downsize=true`, API flags, and future idempotency behavior remain inside `MoeraService`.
+Durable universal state is represented by explicit columns and relations.
 
 ### 24.1 Publication text format
 
@@ -908,9 +957,9 @@ otherwise
 The design does not require HTML-to-Markdown conversion. Telegram normally produces HTML, and RSS is also expected to
 commonly produce HTML.
 
-The payload supplies a structured Moera `Body` as `bodySrc`: its `text` field contains the selected source text, and its
-`linkPreviews` field contains the normalized universal previews. `bodySrcFormat` describes the text field. The Moera node
-builds its processed representation.
+The payload supplies a structured Moera `Body` as `bodySrc`: its `text` field contains the selected source text, and
+its `linkPreviews` field contains the normalized universal previews. `bodySrcFormat` describes the text field. The
+Moera node builds its processed representation.
 
 A publication consisting only of media may have an empty source body.
 
@@ -944,21 +993,16 @@ publication source time = min(member Message.published_at)
 This value is used as the publication/story `publishAt` value so imported history appears in source chronological order
 even when imported later.
 
-The target feed set belongs to `mirrors.config`, for example conceptually:
-
-```json
-{
-  "feeds": ["timeline"]
-}
-```
+The ordered target feed set belongs to `mirrors.feeds`.
 
 Feed publication membership and publication time are set when the Moera posting is first created. They are not rebuilt
 on ordinary content updates.
 
 Pinning is an exception. A publication is pinned when any non-deleted member message is pinned. Creation passes this
 value in `StoryAttributes.pinned`. The create response's `FeedReference.storyId` values are stored by feed in
-`publications.destination_data`. Later pin/unpin changes use Moera's separate `updateStory(...)` operation because
-`PostingText.publications` cannot be modified when a posting is updated.
+`publication_stories`. The delivered value is stored in `publications.destination_pinned`. Later pin/unpin changes use
+Moera's separate `updateStory(...)` operation because `PostingText.publications` cannot be modified when a posting is
+updated.
 
 ## 25. Publication delivery
 
@@ -982,8 +1026,9 @@ Delivery flow:
 
 Deleted member messages contribute no content. Skipped media is omitted.
 
-For create, the returned Moera posting ID is stored in `publications.destination_post_id`; returned feed/story identity
-and delivered pin state are stored in `publications.destination_data`.
+For create, the returned Moera posting ID is stored in `publications.destination_post_id`; returned feed/story
+identities are stored in `publication_stories`, and delivered pin state is stored in
+`publications.destination_pinned`.
 
 For update, posting content/media and the pin attribute of existing feed stories may be updated; feed membership/time
 established at create time are left unchanged. Story updates are repeatable by story ID. A publication revision is
@@ -1009,7 +1054,7 @@ duplicate posts because silent loss is worse.
 An unknown create outcome is logged/diagnosed distinctly.
 
 Future Moera idempotency is an internal `MoeraService` concern. The core does not expose an idempotency capability/key
-abstraction. Persistent Moera-specific tokens can be stored in `publication.destination_data`.
+abstraction. Any future durable token requires an explicit schema and design change when Moera provides the feature.
 
 The importer does not use `createRemotePosting(...)` or `updateRemotePosting(...)` to work around media compression.
 Those calls are asynchronous and do not return the created posting ID or a trackable result containing it, which would
@@ -1360,9 +1405,9 @@ directory. Horizontal scaling/leader election is deferred until needed.
 
 ### 32.2 Moera credentials
 
-`destinations.config` stores a credential reference rather than the credential value itself. The credential is resolved
-from a mounted secret/file or equivalent deployment secret mechanism. Database dumps therefore do not contain Moera
-authentication secrets.
+`destinations.credential_ref` stores a credential reference rather than the credential value itself. The credential is
+resolved from a mounted secret/file or equivalent deployment secret mechanism. Database dumps therefore do not
+contain Moera authentication secrets.
 
 The initial configuration uses `credentialRef` with either `env:VARIABLE_NAME` or `file:/absolute/path` syntax. The
 referenced environment value or file contains the Moera admin token.
@@ -1512,9 +1557,9 @@ Formatting-only edits therefore increment `Message.revision`.
 Telegram entity offsets are interpreted according to TDLib semantics inside the Telegram mapper and do not leak into
 the universal model.
 
-The Telegram mapper stores the canonical message link in message `source_data`. Public-channel links are formed from
-the channel username and Telegram's public message identifier. For channels without a public username, the adapter
-uses TDLib `GetMessageLink`. This link participates in the canonical body hash because it affects the delivered
+The Telegram mapper stores the canonical message link in `messages.external_source_uri`. Public-channel links are
+formed from the channel username and Telegram's public message identifier. For channels without a public username, the
+adapter uses TDLib `GetMessageLink`. This link participates in the canonical body hash because it affects the delivered
 `PostingText.externalSourceUri` value.
 
 The mapper uses an explicit allowlist. Its result is either `Mapped(SourceMessage)` or `Skipped(reason)`; it never uses
@@ -1637,8 +1682,9 @@ Telegram fact-check follows buttons as:
 The fact-check country code is ignored, and no block is emitted when TDLib has no text. Replies are not reproduced as
 links or quotations.
 
-Interaction/reaction/view/forward counters, unread reactions, import/via-bot metadata, message effects, sender boost/tag,
-paid-message/suggested-post data, summary language, and auto-delete/self-destruct timing are ignored. `canBeSaved`,
+Interaction/reaction/view/forward counters, unread reactions, import/via-bot metadata, message effects, sender
+boost/tag, paid-message/suggested-post data, summary language, and auto-delete/self-destruct timing are ignored.
+`canBeSaved`,
 `restrictionInfo`, and media `isSecret` do not prevent import; the adapter maps whatever content TDLib actually returns.
 
 #### 33.6.5 Telegram link previews
@@ -1664,8 +1710,8 @@ use the largest available source size. A Telegram live photo imports only its st
 file is imported; alternative qualities, storyboards, cover, and start timestamp are ignored. Thumbnails and covers are
 not separate media except when one is deliberately selected as a link-preview image.
 
-`showCaptionAboveMedia`, media `hasSpoiler`, `isSecret`, viewed/listened state, and other Telegram-only presentation flags
-are ignored and excluded from canonical hashes.
+`showCaptionAboveMedia`, media `hasSpoiler`, `isSecret`, viewed/listened state, and other Telegram-only presentation
+flags are ignored and excluded from canonical hashes.
 
 Where available:
 
@@ -1747,21 +1793,20 @@ IDs/cursors/data kept behind the adapter.
 ## 35.4 Telegram channel profile synchronization
 
 The Telegram adapter reads the channel title, description, public username, and current large channel photo when
-access is first obtained. It stores this metadata in the dedicated `channels.metadata` JSONB column. Every poll reads
-the same metadata before history and persists it atomically with the successful poll batch. Live TDLib chat
-title/photo/full-info
-updates and service messages that announce title/photo changes update the stored metadata without advancing the
-waterline. A Telegram photo is identified durably by its remote and unique file identifiers; the cached local TDLib
-file identifier is not durable state.
+access is first obtained. It normalizes the description to safe HTML and stores the values in the dedicated scalar
+channel metadata columns. Every poll reads the same metadata before history and persists it atomically with the
+successful poll batch. Live TDLib chat title/photo/full-info updates and service messages that announce title/photo
+changes update the stored metadata without advancing the waterline. A Telegram photo is identified durably by its
+remote and unique file identifiers; the cached local TDLib file identifier is not durable state.
 
-TDLib exposes the channel description as plain text. The adapter calls `GetTextEntities` and stores normalized URL,
-e-mail, and mention ranges with the description so profile rendering matches Telegram's automatic link detection.
-Hashtag entities are intentionally ignored and remain plain text.
+TDLib exposes the channel description as plain text. The adapter calls `GetTextEntities`, retains URL, e-mail, and
+mention ranges, and converts the result to safe HTML before crossing the adapter boundary. Hashtag entities are
+intentionally ignored and remain plain text. Raw descriptions and entity ranges are not stored.
 
-A destination has `profileSync` in `destinations.config`; absence means `true` for compatibility. When enabled, its
-single mirror owns the Moera profile. Creating another mirror for the same destination is rejected while profile
-synchronization is enabled, because two source channels cannot deterministically own one profile. Destinations with
-profile synchronization disabled may have multiple mirrors.
+A destination has an explicit `destinations.profile_sync` value; migrated missing values become `true` for
+compatibility. When enabled, its single mirror owns the Moera profile. Creating another mirror for the same destination
+is rejected while profile synchronization is enabled, because two source channels cannot deterministically own one
+profile. Destinations with profile synchronization disabled may have multiple mirrors.
 
 After persisted channel metadata changes, and after a mirror is created, the service reconciles the corresponding
 Moera profile. Failures do not roll back source ingestion or mirror creation; a later poll retries reconciliation. The
@@ -1771,10 +1816,10 @@ invite links must not be exposed in the profile; only an active public Telegram 
 
 When the Telegram emblem changes, the service reacquires and downloads the large JPEG through TDLib, uploads it as
 public Moera media, creates a circular 200-pixel avatar, and sets it as the global profile avatar. It stores the source
-emblem identity, Moera avatar ID, and Moera media ID in `destinations.destination_data`. The stored media ID and shape
-are put into `PostingText.ownerAvatar` for every newly created posting. Old avatar media is retained because existing
-postings may refer to its media ID. Removing the Telegram emblem clears the global profile avatar and the stored
-per-post avatar while retaining the public media referenced by existing posts.
+emblem identity, Moera avatar ID, Moera media ID, and avatar shape in dedicated destination columns. The stored media
+ID and shape are put into `PostingText.ownerAvatar` for every newly created posting. Old avatar media is retained
+because existing postings may refer to its media ID. Removing the Telegram emblem clears the global profile avatar and
+the stored per-post avatar while retaining the public media referenced by existing posts.
 
 Profile reconciliation uses a fingerprint of all rendered profile input, including the configured attribution text.
 An unchanged fingerprint causes no Moera mutation. No PostgreSQL transaction is held while downloading the Telegram
@@ -1784,20 +1829,22 @@ photo or calling Moera.
 
 1. The core models channels, messages, media, mirrors, Moera destinations, and publications; it does not model Telegram
    concepts directly.
-2. Source-specific behavior/data stay in `SourceAdapter` plus JSONB source state.
-3. Moera-specific delivery behavior/data stay in concrete `MoeraService` plus destination/publication JSONB state.
-4. Ingest and delivery are decoupled.
-5. Durable domain state lives in PostgreSQL; adapters do not write it directly.
-6. Polling and live events feed the same message model.
-7. Grouping is source semantics, not mirror configuration.
-8. Publication membership is immutable after creation.
-9. No network call holds a database transaction open.
-10. Claim/lease operations are safe across multiple service instances through `SKIP LOCKED`, lease tokens, and
+2. Source-specific behavior/data stay in `SourceAdapter` plus adapter-owned JSONB source state.
+3. The core may persist, copy, and compare adapter-owned JSON as a whole, but only its `SourceAdapter` may interpret
+   keys inside it.
+4. Moera-specific delivery behavior stays in concrete `MoeraService`; durable service-owned state uses typed columns.
+5. Ingest and delivery are decoupled.
+6. Durable domain state lives in PostgreSQL; adapters do not write it directly.
+7. Polling and live events feed the same message model.
+8. Grouping is source semantics, not mirror configuration.
+9. Publication membership is immutable after creation.
+10. No network call holds a database transaction open.
+11. Claim/lease operations are safe across multiple service instances through `SKIP LOCKED`, lease tokens, and
     conditional completion.
-11. Blocking external/database/file work is handled with Java virtual threads rather than Reactor-style reactive
+12. Blocking external/database/file work is handled with Java virtual threads rather than Reactor-style reactive
     plumbing.
-12. Flyway is the only database-schema source of truth; jOOQ reflects that schema.
-13. New source types are added only together with real adapter implementations.
+13. Flyway is the only database-schema source of truth; jOOQ reflects that schema.
+14. New source types are added only together with real adapter implementations.
 
 ## 37. Repository APIs and application workflows
 
@@ -1831,10 +1878,10 @@ not advance the waterline.
 
 ### Message ingest
 
-Message ingest compares `source_body_hash`, normalized link previews, the media set, media `source_hash` values, pinning,
-and deletion state. A real change increments `messages.revision`. The repository synchronizes link previews and the
-current media set and marks affected publications dirty in the same transaction. Application code does not calculate
-revisions itself.
+Message ingest compares `source_body_hash`, normalized link previews, the media set, media `source_hash` values,
+pinning, and deletion state. A real change increments `messages.revision`. The repository synchronizes link previews
+and the current media set and marks affected publications dirty in the same transaction. Application code does not
+calculate revisions itself.
 
 ### Publication repositories
 
@@ -2041,9 +2088,10 @@ private-media ID/hash values, preview URL deduplication, and activation of a lat
 
 ### 42.3 Telegram tests
 
-`TelegramMessageMapper` is isolated from live network behavior and unit-tested with TDLib objects. Tests cover paragraph
-conversion, every supported entity mapping, UTF-16 offsets, nested/overlapping entities, inline/block spoilers, captions,
-poll/quiz, checklist, location/venue/contact, stickers/animated emoji, expired media, forward attribution, author
+`TelegramMessageMapper` is isolated from live network behavior and unit-tested with TDLib objects. Tests cover
+paragraph conversion, every supported entity mapping, UTF-16 offsets, nested/overlapping entities, inline/block
+spoilers, captions, poll/quiz, checklist, location/venue/contact, stickers/animated emoji, expired media, forward
+attribution, author
 signature, URL buttons, fact-check, link-preview fields/image selection, ordinary media, media-album metadata, remote
 file identifiers, and canonical hashes.
 
@@ -2204,15 +2252,16 @@ DELETE /api/mirrors/{channelId}/{destinationId}
 ```
 
 Channel creation accepts `sourceType`, `sourceUri`, and optional `fullHistory`, which defaults to false. It maps that
-flag to `InitialImportMode.RECENT` or `InitialImportMode.FULL` and calls the matching `SourceAdapter.resolveChannel(...)`
-before opening the insertion transaction, then persists the returned canonical URI, identity, JSONB state, access
-state, and subscription state. No PostgreSQL transaction is held across Telegram or another external source call.
+flag to `InitialImportMode.RECENT` or `InitialImportMode.FULL` and calls the matching
+`SourceAdapter.resolveChannel(...)` before opening the insertion transaction, then persists the returned canonical
+URI, identity, JSONB state, access state, subscription state, and relational initial-import mode. No PostgreSQL
+transaction is held across Telegram or another external source call.
 Newly created channels are scheduled immediately for every operation applicable to their resolved states. The initial
 API accepts only `TELEGRAM`, because it is the only implemented source type.
 
 Destination creation accepts a registered Moera `nodeName` and a non-secret `credentialRef`. Mirror creation accepts
-`channelId`, `destinationId`, and an ordered set of target feed names. Repository code builds the corresponding JSONB
-configuration; jOOQ remains confined to persistence classes.
+`channelId`, `destinationId`, and an ordered set of target feed names. Repository code stores these values in typed
+columns; jOOQ remains confined to persistence classes.
 
 Duplicate channel identities, destination names, and channel/destination mirror pairs return a conflict. References
 to missing resources return not found. Invalid source URIs, names, credential references, and feed sets return a bad

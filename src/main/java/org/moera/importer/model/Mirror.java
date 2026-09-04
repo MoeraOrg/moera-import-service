@@ -1,22 +1,21 @@
 package org.moera.importer.model;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.Objects;
-
-import com.fasterxml.jackson.databind.JsonNode;
 
 public record Mirror(
     long id,
     long channelId,
     long destinationId,
     boolean enabled,
-    JsonNode config,
+    List<String> feeds,
     Instant createdAt,
     Instant updatedAt
 ) {
 
     public Mirror {
-        Objects.requireNonNull(config, "config");
+        feeds = List.copyOf(Objects.requireNonNull(feeds, "feeds"));
         Objects.requireNonNull(createdAt, "createdAt");
         Objects.requireNonNull(updatedAt, "updatedAt");
     }

@@ -2,7 +2,6 @@ package org.moera.importer.persistence;
 
 import java.util.Objects;
 
-import com.fasterxml.jackson.databind.JsonNode;
 import org.moera.importer.model.Destination;
 import org.moera.importer.model.Media;
 import org.moera.importer.source.ChannelSnapshot;
@@ -13,14 +12,14 @@ public record PublicationMediaContext(
     ChannelSnapshot channel,
     Media media,
     String destinationMediaId,
-    JsonNode destinationData
+    String destinationHash,
+    boolean compressionPending
 ) {
 
     public PublicationMediaContext {
         Objects.requireNonNull(destination, "destination");
         Objects.requireNonNull(channel, "channel");
         Objects.requireNonNull(media, "media");
-        Objects.requireNonNull(destinationData, "destinationData");
     }
 
 }

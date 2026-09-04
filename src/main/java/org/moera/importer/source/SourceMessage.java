@@ -15,10 +15,28 @@ public record SourceMessage(
     String body,
     BodyFormat bodyFormat,
     byte[] sourceBodyHash,
+    String externalSourceUri,
+    ForwardAttribution forwardAttribution,
     JsonNode sourceData,
     List<SourceMedia> media,
     List<SourceLinkPreview> linkPreviews
 ) {
+
+    public SourceMessage(
+        String sourceId,
+        boolean deleted,
+        boolean pinned,
+        Instant publishedAt,
+        String body,
+        BodyFormat bodyFormat,
+        byte[] sourceBodyHash,
+        JsonNode sourceData,
+        List<SourceMedia> media,
+        List<SourceLinkPreview> linkPreviews
+    ) {
+        this(sourceId, deleted, pinned, publishedAt, body, bodyFormat, sourceBodyHash, null, null, sourceData, media,
+            linkPreviews);
+    }
 
     public SourceMessage {
         Objects.requireNonNull(sourceId, "sourceId");

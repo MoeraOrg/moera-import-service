@@ -11,9 +11,6 @@ import java.util.Set;
 import java.util.UUID;
 import jakarta.inject.Inject;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import org.jooq.DSLContext;
 import org.moera.importer.model.MediaSkipReason;
 import org.moera.importer.observability.ImportMetrics;
@@ -97,7 +94,8 @@ public class PublicationMediaRepository {
     public PublicationMediaContext loadContext(long publicationId, long mediaId) {
         var record = dslContext.select(
                 PUBLICATION_MEDIA.DESTINATION_MEDIA_ID,
-                PUBLICATION_MEDIA.DESTINATION_DATA
+                PUBLICATION_MEDIA.DESTINATION_HASH,
+                PUBLICATION_MEDIA.COMPRESSION_PENDING
             )
             .select(DESTINATIONS.fields())
             .select(CHANNELS.fields())
@@ -118,7 +116,8 @@ public class PublicationMediaRepository {
             jooqMappings.channelSnapshot(record.into(CHANNELS)),
             jooqMappings.media(record.into(MEDIA)),
             record.get(PUBLICATION_MEDIA.DESTINATION_MEDIA_ID),
-            jooqMappings.jsonNode(record.get(PUBLICATION_MEDIA.DESTINATION_DATA))
+            record.get(PUBLICATION_MEDIA.DESTINATION_HASH),
+            record.get(PUBLICATION_MEDIA.COMPRESSION_PENDING)
         );
     }
 
@@ -159,19 +158,16 @@ public class PublicationMediaRepository {
         UUID token,
         byte[] expectedSourceHash,
         String originalMediaId,
-        JsonNode destinationData,
+        String destinationHash,
         Instant nextAttemptAt
     ) {
-        if (!(destinationData instanceof ObjectNode objectNode)) {
-            throw new IllegalArgumentException("destinationData must be a JSON object");
-        }
-        ObjectNode waitingData = objectNode.deepCopy().put("compressionPending", true);
         Instant now = clock.instant();
         return dslContext.update(PUBLICATION_MEDIA)
             .set(PUBLICATION_MEDIA.STATUS, PENDING)
             .setNull(PUBLICATION_MEDIA.SKIP_REASON)
             .set(PUBLICATION_MEDIA.DESTINATION_MEDIA_ID, originalMediaId)
-            .set(PUBLICATION_MEDIA.DESTINATION_DATA, jooqMappings.json(waitingData))
+            .set(PUBLICATION_MEDIA.DESTINATION_HASH, destinationHash)
+            .set(PUBLICATION_MEDIA.COMPRESSION_PENDING, true)
             .set(PUBLICATION_MEDIA.NEXT_ATTEMPT_AT, jooqMappings.offsetDateTime(nextAttemptAt))
             .setNull(PUBLICATION_MEDIA.LAST_ERROR)
             .setNull(PUBLICATION_MEDIA.PROCESSING_TOKEN)
@@ -188,14 +184,15 @@ public class PublicationMediaRepository {
         UUID token,
         byte[] expectedSourceHash,
         String destinationMediaId,
-        JsonNode destinationData
+        String destinationHash
     ) {
         Instant now = clock.instant();
         return dslContext.update(PUBLICATION_MEDIA)
             .set(PUBLICATION_MEDIA.STATUS, UPLOADED)
             .setNull(PUBLICATION_MEDIA.SKIP_REASON)
             .set(PUBLICATION_MEDIA.DESTINATION_MEDIA_ID, destinationMediaId)
-            .set(PUBLICATION_MEDIA.DESTINATION_DATA, jooqMappings.json(destinationData))
+            .set(PUBLICATION_MEDIA.DESTINATION_HASH, destinationHash)
+            .set(PUBLICATION_MEDIA.COMPRESSION_PENDING, false)
             .setNull(PUBLICATION_MEDIA.NEXT_ATTEMPT_AT)
             .setNull(PUBLICATION_MEDIA.LAST_ERROR)
             .setNull(PUBLICATION_MEDIA.PROCESSING_TOKEN)
@@ -219,7 +216,8 @@ public class PublicationMediaRepository {
             .set(PUBLICATION_MEDIA.STATUS, SKIPPED)
             .set(PUBLICATION_MEDIA.SKIP_REASON, databaseReason)
             .setNull(PUBLICATION_MEDIA.DESTINATION_MEDIA_ID)
-            .set(PUBLICATION_MEDIA.DESTINATION_DATA, jooqMappings.json(JsonNodeFactory.instance.objectNode()))
+            .setNull(PUBLICATION_MEDIA.DESTINATION_HASH)
+            .set(PUBLICATION_MEDIA.COMPRESSION_PENDING, false)
             .setNull(PUBLICATION_MEDIA.NEXT_ATTEMPT_AT)
             .setNull(PUBLICATION_MEDIA.LAST_ERROR)
             .setNull(PUBLICATION_MEDIA.PROCESSING_TOKEN)
@@ -277,7 +275,8 @@ public class PublicationMediaRepository {
                 .set(PUBLICATION_MEDIA.STATUS, PENDING)
                 .setNull(PUBLICATION_MEDIA.SKIP_REASON)
                 .setNull(PUBLICATION_MEDIA.DESTINATION_MEDIA_ID)
-                .set(PUBLICATION_MEDIA.DESTINATION_DATA, jooqMappings.json(JsonNodeFactory.instance.objectNode()))
+                .setNull(PUBLICATION_MEDIA.DESTINATION_HASH)
+                .set(PUBLICATION_MEDIA.COMPRESSION_PENDING, false)
                 .set(PUBLICATION_MEDIA.ATTEMPTS, 0)
                 .set(PUBLICATION_MEDIA.NEXT_ATTEMPT_AT, jooqMappings.offsetDateTime(now))
                 .setNull(PUBLICATION_MEDIA.LAST_ERROR)

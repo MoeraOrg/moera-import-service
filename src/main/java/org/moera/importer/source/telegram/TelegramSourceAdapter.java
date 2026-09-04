@@ -75,10 +75,9 @@ public class TelegramSourceAdapter implements SourceAdapter {
     public ChannelResolution resolveChannel(URI sourceUri, InitialImportMode initialImportMode) {
         Objects.requireNonNull(initialImportMode, "initialImportMode");
         TelegramReference reference = TelegramReference.parse(sourceUri);
-        ObjectNode sourceData = objectNode().put("initialImportMode", initialImportMode.name());
+        ObjectNode sourceData = objectNode();
         if (reference instanceof TelegramReference.Invite(String inviteLink, URI canonicalUri)) {
             TelegramClient.Invite invite = client.inspectInvite(inviteLink);
-            sourceData.put("inviteLink", inviteLink);
             String sourceId = invite.chatId() == 0 ? null : Long.toString(invite.chatId());
             AccessState access = sourceId == null ? AccessState.UNKNOWN : AccessState.GRANTED;
             SubscriptionState subscription = sourceId == null
@@ -92,7 +91,6 @@ public class TelegramSourceAdapter implements SourceAdapter {
         if (channel == null || channel.id() == 0) {
             throw new SourcePermanentException("Telegram channel cannot be resolved");
         }
-        sourceData.put("username", publicReference.username());
         return resolution(Long.toString(channel.id()), publicReference.canonicalUri(), sourceData,
             AccessState.GRANTED, subscriptionState(channel.id()), client.channelMetadata(channel.id()));
     }
@@ -140,7 +138,7 @@ public class TelegramSourceAdapter implements SourceAdapter {
     @Override
     public AccessResult refreshAccess(ChannelSnapshot channel) {
         if (channel.sourceId() == null) {
-            return accessResult(client.join(null, channel.sourceData().path("inviteLink").textValue()));
+            return accessResult(client.join(null, inviteLink(channel)));
         }
 
         long chatId = requiredChatId(channel);
@@ -148,12 +146,12 @@ public class TelegramSourceAdapter implements SourceAdapter {
             return new AccessResult(AccessState.GRANTED, null, objectNode(), client.channelMetadata(chatId));
         }
 
-        String inviteLink = channel.sourceData().path("inviteLink").textValue();
+        String inviteLink = inviteLink(channel);
         if (inviteLink != null) {
             return accessResult(client.join(channel.sourceId(), inviteLink));
         }
 
-        String username = channel.sourceData().path("username").textValue();
+        String username = publicUsername(channel);
         if (username == null) {
             return new AccessResult(AccessState.DENIED, null, objectNode());
         }
@@ -200,7 +198,7 @@ public class TelegramSourceAdapter implements SourceAdapter {
         } else if (channel.subscriptionState() == SubscriptionState.ACTIVE) {
             state = SubscriptionState.LOST;
         } else {
-            state = switch (client.join(channel.sourceId(), channel.sourceData().path("inviteLink").textValue())) {
+            state = switch (client.join(channel.sourceId(), inviteLink(channel))) {
                 case TelegramClient.JoinResult.Joined ignored -> SubscriptionState.ACTIVE;
                 case TelegramClient.JoinResult.Requested ignored -> SubscriptionState.ACTIVATING;
                 case TelegramClient.JoinResult.Declined ignored -> SubscriptionState.FAILED;
@@ -283,7 +281,17 @@ public class TelegramSourceAdapter implements SourceAdapter {
     }
 
     private boolean isFullInitialImport(ChannelSnapshot channel) {
-        return InitialImportMode.FULL.name().equals(channel.sourceData().path("initialImportMode").asText());
+        return channel.initialImportMode() == InitialImportMode.FULL;
+    }
+
+    private String inviteLink(ChannelSnapshot channel) {
+        TelegramReference reference = TelegramReference.parse(channel.sourceUri());
+        return reference instanceof TelegramReference.Invite invite ? invite.inviteLink() : null;
+    }
+
+    private String publicUsername(ChannelSnapshot channel) {
+        TelegramReference reference = TelegramReference.parse(channel.sourceUri());
+        return reference instanceof TelegramReference.Public publicReference ? publicReference.username() : null;
     }
 
     @Override

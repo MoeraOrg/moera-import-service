@@ -3,11 +3,9 @@ package org.moera.importer.application;
 import java.time.Clock;
 import java.time.Instant;
 import java.util.Map;
+import java.util.Objects;
 import jakarta.inject.Inject;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.node.JsonNodeFactory;
-import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.moera.importer.config.CreateRateProperties;
 import org.moera.importer.moera.CreatedPosting;
 import org.moera.importer.moera.MoeraConfigurationException;
@@ -20,6 +18,7 @@ import org.moera.importer.persistence.DestinationCreateSlot;
 import org.moera.importer.persistence.DestinationRepository;
 import org.moera.importer.persistence.PublicationClaim;
 import org.moera.importer.persistence.PublicationContext;
+import org.moera.importer.persistence.PublicationDestinationState;
 import org.moera.importer.persistence.PublicationRepository;
 import org.moera.importer.persistence.PublicationSnapshotChangedException;
 import org.slf4j.Logger;
@@ -101,7 +100,7 @@ public class PublicationProcessor {
                 claim.publicationId(),
                 claim.processingToken(),
                 claim.targetRevision(),
-                JsonNodeFactory.instance.objectNode()
+                new PublicationDestinationState(null, Map.of())
             );
             complete(claim, "deleted", completed);
             return;
@@ -141,45 +140,32 @@ public class PublicationProcessor {
                 claim.publicationId(),
                 claim.processingToken(),
                 claim.targetRevision(),
-                JsonNodeFactory.instance.objectNode()
+                new PublicationDestinationState(null, Map.of())
             );
             complete(claim, "deleted", completed);
             return;
         }
         moeraService.updatePost(context.destination(), context.destinationPostId(), payload);
-        ObjectNode destinationData = synchronizePin(context, payload.pinned());
+        PublicationDestinationState destinationState = synchronizePin(context, payload.pinned());
         boolean completed = publicationRepository.updated(
-            claim.publicationId(), claim.processingToken(), claim.targetRevision(), destinationData
+            claim.publicationId(), claim.processingToken(), claim.targetRevision(), destinationState
         );
         complete(claim, "updated", completed);
     }
 
-    private ObjectNode synchronizePin(PublicationContext context, boolean pinned) {
-        ObjectNode destinationData = context.destinationData() instanceof ObjectNode objectNode
-            ? objectNode.deepCopy()
-            : JsonNodeFactory.instance.objectNode();
-        JsonNode deliveredPin = destinationData.get("pinned");
-        if (deliveredPin == null || !deliveredPin.isBoolean() || deliveredPin.booleanValue() != pinned) {
-            JsonNode storyIds = destinationData.path("storyIds");
-            if (storyIds.isObject()) {
-                for (Map.Entry<String, JsonNode> story : storyIds.properties()) {
-                    if (story.getValue().isTextual() && !story.getValue().textValue().isBlank()) {
-                        moeraService.updateStory(
-                            context.destination(), story.getValue().textValue(), pinned
-                        );
-                    }
+    private PublicationDestinationState synchronizePin(PublicationContext context, boolean pinned) {
+        if (!Objects.equals(context.destinationPinned(), pinned)) {
+            for (String storyId : context.destinationStoryIds().values()) {
+                if (!storyId.isBlank()) {
+                    moeraService.updateStory(context.destination(), storyId, pinned);
                 }
             }
-            destinationData.put("pinned", pinned);
         }
-        return destinationData;
+        return new PublicationDestinationState(pinned, context.destinationStoryIds());
     }
 
-    private ObjectNode createdData(CreatedPosting created, boolean pinned) {
-        ObjectNode destinationData = JsonNodeFactory.instance.objectNode().put("pinned", pinned);
-        ObjectNode storyIds = destinationData.putObject("storyIds");
-        created.storyIds().forEach(storyIds::put);
-        return destinationData;
+    private PublicationDestinationState createdData(CreatedPosting created, boolean pinned) {
+        return new PublicationDestinationState(pinned, created.storyIds());
     }
 
     private void retry(PublicationClaim claim, String error) {

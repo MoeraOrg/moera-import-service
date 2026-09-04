@@ -13,6 +13,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.moera.importer.model.BodyFormat;
+import org.moera.importer.source.ForwardAttribution;
 import org.moera.importer.source.SourceMedia;
 import org.moera.importer.source.SourceMessage;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -69,6 +70,8 @@ class MessageRepositoryTest extends PostgresIntegrationTest {
             "Hello, Moera",
             BodyFormat.HTML,
             bodyHash,
+            "https://example.org/source",
+            new ForwardAttribution("Original author", "https://example.org/author"),
             JsonNodeFactory.instance.objectNode().put("source", "message"),
             List.of(
                 new SourceMedia(
@@ -104,6 +107,10 @@ class MessageRepositoryTest extends PostgresIntegrationTest {
         assertThat(message.getBody()).isEqualTo("Hello, Moera");
         assertThat(message.getBodyFormat().getLiteral()).isEqualTo("HTML");
         assertThat(message.getSourceBodyHash()).containsExactly(bodyHash);
+        assertThat(message.getExternalSourceUri()).isEqualTo("https://example.org/source");
+        assertThat(message.getForwardName()).isEqualTo("Original author");
+        assertThat(message.getForwardUri()).isEqualTo("https://example.org/author");
+        assertThat(jooqMappings.jsonNode(message.getSourceData()).path("source").asText()).isEqualTo("message");
 
         var media = dslContext.selectFrom(MEDIA).orderBy(MEDIA.POSITION).fetch();
         assertThat(media).hasSize(2);
@@ -294,8 +301,7 @@ class MessageRepositoryTest extends PostgresIntegrationTest {
             .set(PUBLICATION_MEDIA.MEDIA_ID, changedMediaId)
             .set(PUBLICATION_MEDIA.STATUS, UPLOADED)
             .set(PUBLICATION_MEDIA.DESTINATION_MEDIA_ID, "destination-media")
-            .set(PUBLICATION_MEDIA.DESTINATION_DATA,
-                jooqMappings.json(JsonNodeFactory.instance.objectNode().put("remote", "old")))
+            .set(PUBLICATION_MEDIA.DESTINATION_HASH, "old-hash")
             .set(PUBLICATION_MEDIA.ATTEMPTS, 3)
             .set(PUBLICATION_MEDIA.LAST_ERROR, "old media failure")
             .set(PUBLICATION_MEDIA.PROCESSING_TOKEN, processingToken)
@@ -331,8 +337,8 @@ class MessageRepositoryTest extends PostgresIntegrationTest {
         assertThat(changedDelivery.getProcessingToken()).isNull();
         assertThat(changedDelivery.getProcessingUntil()).isNull();
         assertThat(changedDelivery.getDestinationMediaId()).isNull();
-        assertThat(jooqMappings.jsonNode(changedDelivery.getDestinationData()))
-            .isEqualTo(JsonNodeFactory.instance.objectNode());
+        assertThat(changedDelivery.getDestinationHash()).isNull();
+        assertThat(changedDelivery.getCompressionPending()).isFalse();
         assertThat(changedDelivery.getAttempts()).isZero();
         assertThat(changedDelivery.getLastError()).isNull();
         assertThat(changedDelivery.getNextAttemptAt()).isNotNull();
@@ -545,11 +551,13 @@ class MessageRepositoryTest extends PostgresIntegrationTest {
     private long insertMirror(long channelId) {
         long destinationId = dslContext.insertInto(DESTINATIONS)
             .set(DESTINATIONS.NODE_NAME, "node.moera.org")
+            .set(DESTINATIONS.CREDENTIAL_REF, "env:TEST")
             .returningResult(DESTINATIONS.ID)
             .fetchSingle(DESTINATIONS.ID);
         return dslContext.insertInto(MIRRORS)
             .set(MIRRORS.CHANNEL_ID, channelId)
             .set(MIRRORS.DESTINATION_ID, destinationId)
+            .set(MIRRORS.FEEDS, new String[] { "timeline" })
             .returningResult(MIRRORS.ID)
             .fetchSingle(MIRRORS.ID);
     }

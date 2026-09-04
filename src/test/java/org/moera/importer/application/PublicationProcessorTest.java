@@ -13,7 +13,6 @@ import java.util.UUID;
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
-import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -31,6 +30,7 @@ import org.moera.importer.moera.MoeraService;
 import org.moera.importer.observability.ImportMetrics;
 import org.moera.importer.persistence.PublicationClaim;
 import org.moera.importer.persistence.PublicationContext;
+import org.moera.importer.persistence.PublicationDestinationState;
 import org.moera.importer.persistence.PublicationRepository;
 import org.moera.importer.persistence.PublicationSnapshotChangedException;
 import org.moera.importer.persistence.DestinationCreateSlot;
@@ -84,7 +84,7 @@ class PublicationProcessorTest {
 
     @Test
     void createsNonEmptyPublicationAndPersistsPostingStoriesAndPin() {
-        publicationRepository.context = context(null, objectNode(), "Body", true, false);
+        publicationRepository.context = context(null, destinationState(null, Map.of()), "Body", true, false);
         moeraService.createdPosting = new CreatedPosting(
             "posting-1", linkedMap("timeline", "story-1", "news", "story-2")
         );
@@ -94,11 +94,10 @@ class PublicationProcessorTest {
         assertThat(moeraService.operations).containsExactly("capabilities", "create");
         assertThat(publicationRepository.completion).isEqualTo("created");
         assertThat(publicationRepository.postingId).isEqualTo("posting-1");
-        assertThat(publicationRepository.destinationData.path("pinned").asBoolean()).isTrue();
-        assertThat(publicationRepository.destinationData.path("storyIds").path("timeline").asText())
-            .isEqualTo("story-1");
-        assertThat(publicationRepository.destinationData.path("storyIds").path("news").asText())
-            .isEqualTo("story-2");
+        assertThat(publicationRepository.destinationState.pinned()).isTrue();
+        assertThat(publicationRepository.destinationState.storyIds())
+            .containsEntry("timeline", "story-1")
+            .containsEntry("news", "story-2");
         assertThat(destinationRepository.acquisitions).isEqualTo(1);
         assertThat(destinationRepository.destinationId).isEqualTo(7);
         assertThat(destinationRepository.interval).isEqualTo(Duration.ofSeconds(6));
@@ -106,7 +105,7 @@ class PublicationProcessorTest {
 
     @Test
     void defersFirstCreateWhenDestinationSlotIsNotDue() {
-        publicationRepository.context = context(null, objectNode(), "Body", false, false);
+        publicationRepository.context = context(null, destinationState(null, Map.of()), "Body", false, false);
         destinationRepository.slot = new DestinationCreateSlot.Deferred(NOW.plusSeconds(6));
 
         publicationProcessor.process(claim());
@@ -120,7 +119,7 @@ class PublicationProcessorTest {
 
     @Test
     void reportsStaleClaimWhenRateDeferralRejectsToken() {
-        publicationRepository.context = context(null, objectNode(), "Body", false, false);
+        publicationRepository.context = context(null, destinationState(null, Map.of()), "Body", false, false);
         publicationRepository.deferAccepted = false;
         destinationRepository.slot = new DestinationCreateSlot.Deferred(NOW.plusSeconds(6));
         Logger logger = (Logger) LoggerFactory.getLogger(PublicationProcessor.class);
@@ -150,7 +149,7 @@ class PublicationProcessorTest {
     @Test
     void updatesExistingNonEmptyPublicationWithoutChangingFeedMembership() {
         publicationRepository.context = context(
-            "posting-1", destinationData(false, linkedMap("timeline", "story-1")), "Updated", false, false
+            "posting-1", destinationState(false, linkedMap("timeline", "story-1")), "Updated", false, false
         );
 
         publicationProcessor.process(claim());
@@ -158,40 +157,41 @@ class PublicationProcessorTest {
         assertThat(moeraService.operations).containsExactly("capabilities", "update:posting-1");
         assertThat(moeraService.lastPayload.publications()).isNotEmpty();
         assertThat(publicationRepository.completion).isEqualTo("updated");
-        assertThat(publicationRepository.destinationData.path("storyIds").path("timeline").asText())
-            .isEqualTo("story-1");
+        assertThat(publicationRepository.destinationState.storyIds()).containsEntry("timeline", "story-1");
         assertThat(destinationRepository.acquisitions).isZero();
     }
 
     @Test
     void deletesExistingPostWhenAllContentDisappears() {
         publicationRepository.context = context(
-            "posting-1", destinationData(true, linkedMap("timeline", "story-1")), "", false, true
+            "posting-1", destinationState(true, linkedMap("timeline", "story-1")), "", false, true
         );
 
         publicationProcessor.process(claim());
 
         assertThat(moeraService.operations).containsExactly("capabilities", "delete:posting-1");
         assertThat(publicationRepository.completion).isEqualTo("deleted");
-        assertThat(publicationRepository.destinationData).isEqualTo(objectNode());
+        assertThat(publicationRepository.destinationState)
+            .isEqualTo(new PublicationDestinationState(null, Map.of()));
         assertThat(destinationRepository.acquisitions).isZero();
     }
 
     @Test
     void completesEmptyNeverCreatedPublicationWithoutExternalMutation() {
-        publicationRepository.context = context(null, objectNode(), "", false, true);
+        publicationRepository.context = context(null, destinationState(null, Map.of()), "", false, true);
 
         publicationProcessor.process(claim());
 
         assertThat(moeraService.operations).containsExactly("capabilities");
         assertThat(publicationRepository.completion).isEqualTo("deleted");
-        assertThat(publicationRepository.destinationData).isEqualTo(objectNode());
+        assertThat(publicationRepository.destinationState)
+            .isEqualTo(new PublicationDestinationState(null, Map.of()));
         assertThat(destinationRepository.acquisitions).isZero();
     }
 
     @Test
     void retriesUnknownCreateOutcomeWithoutCompletingRevision() {
-        publicationRepository.context = context(null, objectNode(), "Body", false, false);
+        publicationRepository.context = context(null, destinationState(null, Map.of()), "Body", false, false);
         moeraService.createFailure = new MoeraOutcomeUnknownException("create outcome unknown", null);
 
         publicationProcessor.process(claim());
@@ -207,7 +207,7 @@ class PublicationProcessorTest {
     void pinsEveryStoredStoryAfterUpdatingPost() {
         publicationRepository.context = context(
             "posting-1",
-            destinationData(false, linkedMap("timeline", "story-1", "news", "story-2")),
+            destinationState(false, linkedMap("timeline", "story-1", "news", "story-2")),
             "Body",
             true,
             false
@@ -219,14 +219,14 @@ class PublicationProcessorTest {
             "capabilities", "update:posting-1", "story:story-1:true", "story:story-2:true"
         );
         assertThat(publicationRepository.completion).isEqualTo("updated");
-        assertThat(publicationRepository.destinationData.path("pinned").asBoolean()).isTrue();
+        assertThat(publicationRepository.destinationState.pinned()).isTrue();
     }
 
     @Test
     void unpinsEveryStoredStory() {
         publicationRepository.context = context(
             "posting-1",
-            destinationData(true, linkedMap("timeline", "story-1", "news", "story-2")),
+            destinationState(true, linkedMap("timeline", "story-1", "news", "story-2")),
             "Body",
             false,
             false
@@ -237,14 +237,14 @@ class PublicationProcessorTest {
         assertThat(moeraService.operations).containsExactly(
             "capabilities", "update:posting-1", "story:story-1:false", "story:story-2:false"
         );
-        assertThat(publicationRepository.destinationData.path("pinned").asBoolean()).isFalse();
+        assertThat(publicationRepository.destinationState.pinned()).isFalse();
     }
 
     @Test
     void partialStoryUpdateFailureRetriesWithoutCompletingRevision() {
         publicationRepository.context = context(
             "posting-1",
-            destinationData(false, linkedMap("timeline", "story-1", "news", "story-2")),
+            destinationState(false, linkedMap("timeline", "story-1", "news", "story-2")),
             "Body",
             true,
             false
@@ -263,8 +263,36 @@ class PublicationProcessorTest {
     }
 
     @Test
+    void preservesStoryOrderAcrossImmutableDeliveryBoundaries() {
+        Map<String, String> stories = linkedMap(
+            "feed-0", "story-0",
+            "feed-1", "story-1",
+            "feed-2", "story-2",
+            "feed-3", "story-3",
+            "feed-4", "story-4",
+            "feed-5", "story-5",
+            "feed-6", "story-6",
+            "feed-7", "story-7",
+            "feed-8", "story-8",
+            "feed-9", "story-9",
+            "feed-10", "story-10",
+            "feed-11", "story-11"
+        );
+        List<String> expectedOrder = List.copyOf(stories.keySet());
+        PublicationDestinationState destinationState = destinationState(false, stories);
+
+        assertThat(destinationState.storyIds().keySet()).containsExactlyElementsOf(expectedOrder);
+        assertThat(context("posting-1", destinationState, "Body", false, false)
+            .destinationStoryIds().keySet()).containsExactlyElementsOf(expectedOrder);
+        assertThat(new CreatedPosting("posting-1", stories).storyIds().keySet())
+            .containsExactlyElementsOf(expectedOrder);
+    }
+
+    @Test
     void permanentFailureStopsAutomaticScheduling() {
-        publicationRepository.context = context("posting-1", objectNode(), "Body", false, false);
+        publicationRepository.context = context(
+            "posting-1", destinationState(null, Map.of()), "Body", false, false
+        );
         moeraService.updateFailure = new MoeraPermanentException("invalid posting", null);
 
         publicationProcessor.process(claim());
@@ -292,13 +320,13 @@ class PublicationProcessorTest {
 
     private PublicationContext context(
         String destinationPostId,
-        JsonNode destinationData,
+        PublicationDestinationState destinationState,
         String body,
         boolean pinned,
         boolean deleted
     ) {
         ObjectNode empty = objectNode();
-        Destination destination = new Destination(7, "destination.example", empty, empty, NOW, NOW);
+        Destination destination = new Destination(7, "destination.example", "env:TEST", NOW, NOW);
         Message message = new Message(
             11,
             5,
@@ -314,25 +342,21 @@ class PublicationProcessorTest {
             NOW,
             NOW
         );
-        ObjectNode mirrorConfig = objectNode();
-        mirrorConfig.putArray("feeds").add("timeline").add("news");
         return new PublicationContext(
             17,
             5,
             destination,
-            mirrorConfig,
+            List.of("timeline", "news"),
             destinationPostId,
-            destinationData,
+            destinationState.pinned(),
+            destinationState.storyIds(),
             List.of(new PublicationContext.Member(message, List.of())),
             List.of()
         );
     }
 
-    private ObjectNode destinationData(boolean pinned, Map<String, String> storyIds) {
-        ObjectNode data = objectNode().put("pinned", pinned);
-        ObjectNode stories = data.putObject("storyIds");
-        storyIds.forEach(stories::put);
-        return data;
+    private PublicationDestinationState destinationState(Boolean pinned, Map<String, String> storyIds) {
+        return new PublicationDestinationState(pinned, storyIds);
     }
 
     private Map<String, String> linkedMap(String... keysAndValues) {
@@ -358,7 +382,7 @@ class PublicationProcessorTest {
         private PublicationContext context;
         private String completion;
         private String postingId;
-        private JsonNode destinationData;
+        private PublicationDestinationState destinationState;
         private Instant nextAttemptAt;
         private Instant deferredUntil;
         private String error;
@@ -380,11 +404,11 @@ class PublicationProcessorTest {
             UUID token,
             int targetRevision,
             String postingId,
-            JsonNode destinationData
+            PublicationDestinationState destinationState
         ) {
             completion = "created";
             this.postingId = postingId;
-            this.destinationData = destinationData;
+            this.destinationState = destinationState;
             return true;
         }
 
@@ -393,10 +417,10 @@ class PublicationProcessorTest {
             long publicationId,
             UUID token,
             int targetRevision,
-            JsonNode destinationData
+            PublicationDestinationState destinationState
         ) {
             completion = "updated";
-            this.destinationData = destinationData;
+            this.destinationState = destinationState;
             return true;
         }
 
@@ -405,10 +429,10 @@ class PublicationProcessorTest {
             long publicationId,
             UUID token,
             int targetRevision,
-            JsonNode destinationData
+            PublicationDestinationState destinationState
         ) {
             completion = "deleted";
-            this.destinationData = destinationData;
+            this.destinationState = destinationState;
             return true;
         }
 

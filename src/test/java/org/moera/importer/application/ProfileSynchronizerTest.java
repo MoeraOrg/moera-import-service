@@ -14,6 +14,7 @@ import org.moera.importer.config.ProfileProperties;
 import org.moera.importer.config.StorageProperties;
 import org.moera.importer.model.AccessState;
 import org.moera.importer.model.Destination;
+import org.moera.importer.model.DestinationProfileState;
 import org.moera.importer.model.SourceType;
 import org.moera.importer.model.SubscriptionState;
 import org.moera.importer.moera.MoeraProfileAvatar;
@@ -74,7 +75,7 @@ class ProfileSynchronizerTest {
     @Test
     void uploadsChangedEmblemUpdatesProfileAndPersistsAvatarState() {
         ChannelSnapshot channel = channel();
-        Destination destination = destination(JsonNodeFactory.instance.objectNode());
+        Destination destination = destination(null);
         when(channelRepository.find(1)).thenReturn(java.util.Optional.of(channel));
         when(mirrorRepository.findProfileDestinations(1)).thenReturn(List.of(destination));
         when(moeraService.updateProfile(any(), any())).thenReturn(
@@ -97,19 +98,17 @@ class ProfileSynchronizerTest {
     @Test
     void skipsMoeraWhenRenderedFingerprintIsAlreadyStored() {
         ChannelSnapshot channel = channel();
-        Destination first = destination(JsonNodeFactory.instance.objectNode());
+        Destination first = destination(null);
         when(channelRepository.find(1)).thenReturn(java.util.Optional.of(channel));
         when(mirrorRepository.findProfileDestinations(1)).thenReturn(List.of(first));
         when(moeraService.updateProfile(any(), any())).thenReturn(
             new MoeraProfileAvatar("avatar-id", "avatar-media-id", "circle")
         );
         profileSynchronizer.synchronize(1);
-        ArgumentCaptor<com.fasterxml.jackson.databind.node.ObjectNode> state =
-            ArgumentCaptor.forClass(com.fasterxml.jackson.databind.node.ObjectNode.class);
+        ArgumentCaptor<DestinationProfileState> state = ArgumentCaptor.forClass(DestinationProfileState.class);
         verify(destinationRepository).saveProfileState(org.mockito.ArgumentMatchers.eq(2L), state.capture());
 
-        Destination synchronizedDestination = destination(JsonNodeFactory.instance.objectNode()
-            .set("profile", state.getValue()));
+        Destination synchronizedDestination = destination(state.getValue());
         when(mirrorRepository.findProfileDestinations(1)).thenReturn(List.of(synchronizedDestination));
         profileSynchronizer.synchronize(1);
 
@@ -119,7 +118,7 @@ class ProfileSynchronizerTest {
 
     private ChannelSnapshot channel() {
         ChannelMetadata metadata = new ChannelMetadata(
-            "News", "Description", "news",
+            "News", "<p>Description</p>", "news",
             new ChannelMetadata.Emblem("remote-photo", "unique-photo", "image/jpeg")
         );
         return new ChannelSnapshot(
@@ -130,9 +129,17 @@ class ProfileSynchronizerTest {
         );
     }
 
-    private Destination destination(com.fasterxml.jackson.databind.JsonNode data) {
+    private Destination destination(DestinationProfileState state) {
         return new Destination(
-            2, "news", JsonNodeFactory.instance.objectNode().put("profileSync", true), data,
+            2,
+            "news",
+            "env:TEST",
+            true,
+            state != null ? state.fingerprint() : null,
+            state != null ? state.sourceEmblemId() : null,
+            state != null ? state.avatarId() : null,
+            state != null ? state.avatarMediaId() : null,
+            state != null ? state.avatarShape() : null,
             Instant.EPOCH, Instant.EPOCH
         );
     }

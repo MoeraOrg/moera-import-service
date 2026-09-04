@@ -74,9 +74,9 @@ class TelegramSourceAdapterTest {
 
         assertThat(result.sourceId()).isEqualTo("-1001234567890");
         assertThat(result.sourceUri()).isEqualTo(URI.create("https://t.me/news"));
-        assertThat(result.sourceData().path("username").asText()).isEqualTo("news");
+        assertThat(result.sourceData()).isEmpty();
         assertThat(result.sourceData().has("profile")).isFalse();
-        assertThat(result.metadata().description()).isEqualTo("Channel description");
+        assertThat(result.metadata().descriptionHtml()).isEqualTo("Channel description");
         assertThat(result.metadata().emblem().uniqueId()).isEqualTo("photo-1");
         assertThat(result.accessState()).isEqualTo(AccessState.GRANTED);
         assertThat(result.subscriptionState()).isEqualTo(SubscriptionState.INACTIVE);
@@ -147,12 +147,12 @@ class TelegramSourceAdapterTest {
         );
 
         assertThat(result.sourceId()).isNull();
-        assertThat(result.sourceData().path("inviteLink").asText()).isEqualTo("https://t.me/+secret");
+        assertThat(result.sourceData()).isEmpty();
         assertThat(result.accessState()).isEqualTo(AccessState.UNKNOWN);
     }
 
     @Test
-    void channelResolutionPersistsRequestedInitialImportMode() {
+    void channelResolutionKeepsInitialImportModeOutOfAdapterState() {
         client.publicChannel = new TelegramClient.Channel(-1001234567890L, "News");
         client.membership = TelegramClient.Membership.INACTIVE;
 
@@ -160,7 +160,7 @@ class TelegramSourceAdapterTest {
             URI.create("https://t.me/news"), InitialImportMode.FULL
         );
 
-        assertThat(result.sourceData().path("initialImportMode").asText()).isEqualTo("FULL");
+        assertThat(result.sourceData()).isEmpty();
     }
 
     @Test

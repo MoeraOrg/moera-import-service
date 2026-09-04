@@ -32,6 +32,7 @@ public class TdLightTelegramClient implements TelegramClient, TelegramForwardMet
     private final boolean interactive;
     private final Supplier<ClientFactory> clientFactorySupplier;
     private final Supplier<TdLightLoginPrompt> loginPromptSupplier;
+    private final TelegramHtmlFormatter telegramHtmlFormatter = new TelegramHtmlFormatter();
     private ClientFactory factory;
     private it.tdlight.TelegramClient client;
     private TdLightAuthorization authorization;
@@ -241,35 +242,32 @@ public class TdLightTelegramClient implements TelegramClient, TelegramForwardMet
         ChannelMetadata.Emblem emblem = emblem(chat.photo);
         return new ChannelMetadata(
             ObjectUtils.isEmpty(chat.title) ? "" : chat.title,
-            ObjectUtils.isEmpty(description) ? "" : description,
-            descriptionEntities(description),
+            descriptionHtml(description),
             username,
             emblem
         );
     }
 
-    private List<ChannelMetadata.DescriptionEntity> descriptionEntities(String description) {
+    private String descriptionHtml(String description) {
         if (ObjectUtils.isEmpty(description)) {
-            return List.of();
+            return "";
         }
         TdApi.TextEntities detected = send(new TdApi.GetTextEntities(description));
         if (detected == null || detected.entities == null) {
-            return List.of();
+            return telegramHtmlFormatter.format(new TdApi.FormattedText(description, new TdApi.TextEntity[0]));
         }
-        return Arrays.stream(detected.entities)
-            .map(this::descriptionEntity)
-            .filter(Objects::nonNull)
-            .toList();
+        TdApi.TextEntity[] entities = Arrays.stream(detected.entities)
+            .filter(this::descriptionEntity)
+            .toArray(TdApi.TextEntity[]::new);
+        return telegramHtmlFormatter.format(new TdApi.FormattedText(description, entities));
     }
 
-    private ChannelMetadata.DescriptionEntity descriptionEntity(TdApi.TextEntity entity) {
-        ChannelMetadata.DescriptionEntityType type = switch (entity.type) {
-            case TdApi.TextEntityTypeUrl ignored -> ChannelMetadata.DescriptionEntityType.URL;
-            case TdApi.TextEntityTypeEmailAddress ignored -> ChannelMetadata.DescriptionEntityType.EMAIL;
-            case TdApi.TextEntityTypeMention ignored -> ChannelMetadata.DescriptionEntityType.MENTION;
-            default -> null;
-        };
-        return type != null ? new ChannelMetadata.DescriptionEntity(entity.offset, entity.length, type) : null;
+    private boolean descriptionEntity(TdApi.TextEntity entity) {
+        return entity != null && (
+            entity.type instanceof TdApi.TextEntityTypeUrl
+                || entity.type instanceof TdApi.TextEntityTypeEmailAddress
+                || entity.type instanceof TdApi.TextEntityTypeMention
+        );
     }
 
     private ChannelMetadata.Emblem emblem(TdApi.ChatPhotoInfo photo) {

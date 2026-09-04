@@ -37,8 +37,7 @@ public class MoeraClientFactory {
 
     public MoeraNode create(Destination destination) {
         String nodeUrl = resolve(destination.nodeName());
-        String credentialReference = destination.config().path("credentialRef").textValue();
-        String token = moeraCredentialStore.resolve(credentialReference);
+        String token = moeraCredentialStore.resolve(destination.credentialRef());
         MoeraNode moeraNode = new MoeraNode(new OkHttpTransport(), nodeUrl);
         moeraNode.token(token);
         moeraNode.authAdmin();

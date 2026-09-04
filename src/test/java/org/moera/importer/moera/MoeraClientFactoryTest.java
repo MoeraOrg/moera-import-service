@@ -4,7 +4,6 @@ import java.time.Instant;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 
-import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import org.junit.jupiter.api.Test;
 import org.mockito.MockedStatic;
 import org.moera.importer.model.Destination;
@@ -33,11 +32,8 @@ class MoeraClientFactoryTest {
         when(moeraCredentialStore.resolve("env:MOERA_TOKEN")).thenReturn("secret-token");
         MoeraClientFactory factory = new MoeraClientFactory();
         ReflectionTestUtils.setField(factory, "moeraCredentialStore", moeraCredentialStore);
-        var config = JsonNodeFactory.instance.objectNode().put("credentialRef", "env:MOERA_TOKEN");
         Instant now = Instant.parse("2026-08-27T12:00:00Z");
-        Destination destination = new Destination(
-            1, "alice", config, JsonNodeFactory.instance.objectNode(), now, now
-        );
+        Destination destination = new Destination(1, "alice", "env:MOERA_TOKEN", now, now);
 
         try (MockedStatic<MoeraNaming> naming = mockStatic(MoeraNaming.class)) {
             naming.when(() -> MoeraNaming.resolve(any(), any()))
@@ -93,9 +89,8 @@ class MoeraClientFactoryTest {
     }
 
     private Destination destination() {
-        var config = JsonNodeFactory.instance.objectNode().put("credentialRef", "env:MOERA_TOKEN");
         Instant now = Instant.parse("2026-08-27T12:00:00Z");
-        return new Destination(1, "alice", config, JsonNodeFactory.instance.objectNode(), now, now);
+        return new Destination(1, "alice", "env:MOERA_TOKEN", now, now);
     }
 
 }

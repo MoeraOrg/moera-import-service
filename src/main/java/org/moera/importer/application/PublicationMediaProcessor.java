@@ -9,8 +9,6 @@ import java.time.Duration;
 import java.time.Instant;
 import jakarta.inject.Inject;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import org.moera.importer.config.WorkerProperties;
 import org.moera.importer.model.Media;
 import org.moera.importer.model.MediaSkipReason;
@@ -174,7 +172,7 @@ public class PublicationMediaProcessor {
                 claim.processingToken(),
                 context.media().sourceHash(),
                 media.id(),
-                destinationData(media)
+                media.hash()
             );
             if (completed) {
                 importMetrics.mediaUploaded();
@@ -188,7 +186,7 @@ public class PublicationMediaProcessor {
                 claim.processingToken(),
                 context.media().sourceHash(),
                 media.id(),
-                destinationData(media),
+                media.hash(),
                 clock.instant().plus(workerProperties.getMediaCompressionPollInterval())
             );
             log(claim, completed ? "awaiting_compression" : "stale_claim");
@@ -215,7 +213,7 @@ public class PublicationMediaProcessor {
 
     private boolean compressionPending(PublicationMediaContext context) {
         return context.destinationMediaId() != null
-            && context.destinationData().path("compressionPending").asBoolean(false);
+            && context.compressionPending();
     }
 
     private Path stagingPath(PublicationMediaContext context) {
@@ -236,10 +234,6 @@ public class PublicationMediaProcessor {
             media.sourceHash(),
             media.sourceData()
         );
-    }
-
-    private JsonNode destinationData(UploadedMedia media) {
-        return JsonNodeFactory.instance.objectNode().put("hash", media.hash());
     }
 
     private void delete(Path path) {

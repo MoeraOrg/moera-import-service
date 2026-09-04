@@ -6,11 +6,9 @@ import java.util.List;
 import java.util.Optional;
 import jakarta.inject.Inject;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.node.JsonNodeFactory;
-import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.jooq.DSLContext;
 import org.moera.importer.model.Destination;
+import org.moera.importer.model.DestinationProfileState;
 import org.moera.importer.persistence.jooq.tables.records.DestinationsRecord;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
@@ -40,10 +38,11 @@ public class DestinationRepository {
             .fetch(jooqMappings::destination);
     }
 
-    public Destination create(String nodeName, JsonNode config) {
+    public Destination create(String nodeName, String credentialRef, boolean profileSync) {
         DestinationsRecord record = dslContext.insertInto(DESTINATIONS)
             .set(DESTINATIONS.NODE_NAME, nodeName)
-            .set(DESTINATIONS.CONFIG, jooqMappings.json(config))
+            .set(DESTINATIONS.CREDENTIAL_REF, credentialRef)
+            .set(DESTINATIONS.PROFILE_SYNC, profileSync)
             .returning()
             .fetchSingle();
         return jooqMappings.destination(record);
@@ -56,21 +55,13 @@ public class DestinationRepository {
     }
 
     @Transactional
-    public boolean saveProfileState(long destinationId, ObjectNode profileState) {
-        DestinationsRecord record = dslContext.selectFrom(DESTINATIONS)
-            .where(DESTINATIONS.ID.eq(destinationId))
-            .forUpdate()
-            .fetchOne();
-        if (record == null) {
-            return false;
-        }
-        JsonNode stored = jooqMappings.jsonNode(record.getData());
-        ObjectNode data = stored instanceof ObjectNode objectNode
-            ? objectNode.deepCopy()
-            : JsonNodeFactory.instance.objectNode();
-        data.set("profile", profileState.deepCopy());
+    public boolean saveProfileState(long destinationId, DestinationProfileState profileState) {
         return dslContext.update(DESTINATIONS)
-            .set(DESTINATIONS.DATA, jooqMappings.json(data))
+            .set(DESTINATIONS.PROFILE_FINGERPRINT, profileState.fingerprint())
+            .set(DESTINATIONS.PROFILE_SOURCE_EMBLEM_ID, profileState.sourceEmblemId())
+            .set(DESTINATIONS.AVATAR_ID, profileState.avatarId())
+            .set(DESTINATIONS.AVATAR_MEDIA_ID, profileState.avatarMediaId())
+            .set(DESTINATIONS.AVATAR_SHAPE, profileState.avatarShape())
             .set(DESTINATIONS.UPDATED_AT, currentOffsetDateTime())
             .where(DESTINATIONS.ID.eq(destinationId))
             .execute() == 1;

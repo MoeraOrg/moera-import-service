@@ -1,8 +1,7 @@
 # Moera Import Service — Agent Instructions
 
-Read `docs/architecture/import-service.md` before making architectural or persistence changes. It is the canonical
-design specification. Read `docs/implementation-plan.md` before implementation work and follow it task-by-task unless
-the user explicitly changes scope.
+Read `doc/architecture/import-service.md` before making architectural or persistence changes. It is the canonical
+design specification.
 
 ## Project constraints
 
@@ -81,7 +80,7 @@ the user explicitly changes scope.
 
 ## Change discipline
 
-- If implementation reveals that the agreed architecture must change, update `docs/architecture/import-service.md`
+- If implementation reveals that the agreed architecture must change, update `doc/architecture/import-service.md`
   first and call out the design change explicitly.
 - Do not add speculative abstractions for future RSS/Mastodon support. Add only the extension points already defined by
   the spec.
@@ -100,5 +99,6 @@ the user explicitly changes scope.
 
 ## Documents
 
+- Keep all project documentation under `doc/`. Do not create documentation files in `docs/` or elsewhere.
 - Format all documents with a maximum line length of 120 characters.
 - Use ObjectUtils.isEmpty(s) instead of s == null || s.isEmpty().

@@ -70,9 +70,7 @@ class MoeraServiceTest {
         moeraService = new MoeraService();
         ReflectionTestUtils.setField(moeraService, "clock", Clock.fixed(NOW, ZoneOffset.UTC));
         ReflectionTestUtils.setField(moeraService, "moeraClientFactory", moeraClientFactory);
-        destination = new Destination(
-            1, "alice", JsonNodeFactory.instance.objectNode(), JsonNodeFactory.instance.objectNode(), NOW, NOW
-        );
+        destination = new Destination(1, "alice", "env:TEST", NOW, NOW);
         when(moeraClientFactory.create(destination)).thenReturn(moeraNode);
     }
 
@@ -266,12 +264,8 @@ class MoeraServiceTest {
         PostingInfo created = new PostingInfo();
         created.setId("posting-id");
         when(moeraNode.createPosting(any())).thenReturn(created);
-        var data = JsonNodeFactory.instance.objectNode();
-        data.putObject("profile")
-            .put("avatarMediaId", "avatar-media-id")
-            .put("avatarShape", "circle");
         Destination destinationWithAvatar = new Destination(
-            1, "alice", JsonNodeFactory.instance.objectNode(), data, NOW, NOW
+            1, "alice", "env:TEST", true, null, null, "avatar-id", "avatar-media-id", "circle", NOW, NOW
         );
         when(moeraClientFactory.create(destinationWithAvatar)).thenReturn(moeraNode);
 

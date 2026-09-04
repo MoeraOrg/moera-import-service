@@ -4,7 +4,6 @@ import java.util.List;
 import java.util.Optional;
 import jakarta.inject.Inject;
 
-import com.fasterxml.jackson.databind.JsonNode;
 import org.jooq.DSLContext;
 import org.moera.importer.model.Mirror;
 import org.moera.importer.model.Destination;
@@ -13,7 +12,6 @@ import org.moera.importer.persistence.jooq.tables.records.MirrorsRecord;
 import org.springframework.stereotype.Repository;
 
 import static org.jooq.impl.DSL.exists;
-import static org.jooq.impl.DSL.condition;
 import static org.jooq.impl.DSL.min;
 import static org.jooq.impl.DSL.notExists;
 import static org.jooq.impl.DSL.selectOne;
@@ -66,7 +64,7 @@ public class MirrorRepository {
             .join(DESTINATIONS).on(DESTINATIONS.ID.eq(MIRRORS.DESTINATION_ID))
             .where(MIRRORS.CHANNEL_ID.eq(channelId))
             .and(MIRRORS.ENABLED.isTrue())
-            .and(condition("coalesce(({0}->>'profileSync')::boolean, true)", DESTINATIONS.CONFIG))
+            .and(DESTINATIONS.PROFILE_SYNC.isTrue())
             .and(MIRRORS.ID.eq(dslContext.select(min(profileOwner.ID))
                 .from(profileOwner)
                 .where(profileOwner.DESTINATION_ID.eq(MIRRORS.DESTINATION_ID))
@@ -81,11 +79,11 @@ public class MirrorRepository {
         );
     }
 
-    public Mirror create(long channelId, long destinationId, JsonNode config) {
+    public Mirror create(long channelId, long destinationId, List<String> feeds) {
         MirrorsRecord record = dslContext.insertInto(MIRRORS)
             .set(MIRRORS.CHANNEL_ID, channelId)
             .set(MIRRORS.DESTINATION_ID, destinationId)
-            .set(MIRRORS.CONFIG, jooqMappings.json(config))
+            .set(MIRRORS.FEEDS, feeds.toArray(String[]::new))
             .returning()
             .fetchSingle();
         return jooqMappings.mirror(record);

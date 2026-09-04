@@ -6,11 +6,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import jakarta.inject.Inject;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.node.JsonNodeFactory;
-import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.moera.importer.config.StorageProperties;
 import org.moera.importer.model.Destination;
+import org.moera.importer.model.DestinationProfileState;
 import org.moera.importer.moera.MoeraProfileAvatar;
 import org.moera.importer.moera.MoeraProfileUpdate;
 import org.moera.importer.moera.MoeraService;
@@ -79,12 +77,11 @@ public class ProfileSynchronizer {
         throws IOException {
         RenderedChannelProfile rendered = channelProfileRenderer.render(metadata);
         String fingerprint = fingerprint(rendered, metadata);
-        JsonNode stored = destination.data().path("profile");
-        if (fingerprint.equals(stored.path("fingerprint").textValue())) {
+        if (fingerprint.equals(destination.profileFingerprint())) {
             return;
         }
 
-        boolean emblemChanged = emblemChanged(metadata.emblem(), stored);
+        boolean emblemChanged = emblemChanged(metadata.emblem(), destination);
         Path emblemFile = null;
         try {
             if (metadata.emblem() != null && emblemChanged) {
@@ -98,8 +95,8 @@ public class ProfileSynchronizer {
                 rendered.bioHtml(),
                 emblemFile,
                 metadata.emblem() != null ? metadata.emblem().mimeType() : null,
-                stored.path("avatarId").textValue(),
-                stored.path("avatarMediaId").textValue(),
+                destination.avatarId(),
+                destination.avatarMediaId(),
                 metadata.emblem() != null
             ));
             destinationRepository.saveProfileState(destination.id(), profileState(fingerprint, metadata, avatar));
@@ -110,34 +107,31 @@ public class ProfileSynchronizer {
         }
     }
 
-    private boolean emblemChanged(ChannelMetadata.Emblem emblem, JsonNode stored) {
+    private boolean emblemChanged(ChannelMetadata.Emblem emblem, Destination destination) {
         if (emblem == null) {
-            return !ObjectUtils.isEmpty(stored.path("sourceEmblemUniqueId").textValue());
+            return !ObjectUtils.isEmpty(destination.profileSourceEmblemId());
         }
-        return !emblem.uniqueId().equals(stored.path("sourceEmblemUniqueId").textValue())
-            || ObjectUtils.isEmpty(stored.path("avatarId").textValue())
-            || ObjectUtils.isEmpty(stored.path("avatarMediaId").textValue());
+        return !emblem.uniqueId().equals(destination.profileSourceEmblemId())
+            || ObjectUtils.isEmpty(destination.avatarId())
+            || ObjectUtils.isEmpty(destination.avatarMediaId());
     }
 
-    private ObjectNode profileState(
+    private DestinationProfileState profileState(
         String fingerprint,
         ChannelMetadata metadata,
         MoeraProfileAvatar avatar
     ) {
-        ObjectNode state = JsonNodeFactory.instance.objectNode().put("fingerprint", fingerprint);
-        if (metadata.emblem() != null) {
-            state.put("sourceEmblemUniqueId", metadata.emblem().uniqueId());
-        }
-        if (!ObjectUtils.isEmpty(avatar.avatarId())) {
-            state.put("avatarId", avatar.avatarId());
-        }
-        if (!ObjectUtils.isEmpty(avatar.mediaId())) {
-            state.put("avatarMediaId", avatar.mediaId());
-        }
-        if (!ObjectUtils.isEmpty(avatar.shape())) {
-            state.put("avatarShape", avatar.shape());
-        }
-        return state;
+        return new DestinationProfileState(
+            fingerprint,
+            metadata.emblem() != null ? metadata.emblem().uniqueId() : null,
+            emptyToNull(avatar.avatarId()),
+            emptyToNull(avatar.mediaId()),
+            emptyToNull(avatar.shape())
+        );
+    }
+
+    private String emptyToNull(String value) {
+        return ObjectUtils.isEmpty(value) ? null : value;
     }
 
     private String fingerprint(RenderedChannelProfile rendered, ChannelMetadata metadata) {

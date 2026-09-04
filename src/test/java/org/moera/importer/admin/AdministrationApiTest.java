@@ -86,12 +86,20 @@ class AdministrationApiTest extends PostgresIntegrationTest {
         assertThat(channel.path("subscriptionState").asText()).isEqualTo("INACTIVE");
         assertThat(fakeSourceAdapter.resolvedOutsideTransaction).isTrue();
         assertThat(fakeSourceAdapter.resolvedOnVirtualThread).isTrue();
-        var channelData = dslContext.select(CHANNELS.SOURCE_DATA, CHANNELS.METADATA).from(CHANNELS).fetchSingle();
+        var channelData = dslContext.select(
+            CHANNELS.SOURCE_DATA,
+            CHANNELS.INITIAL_IMPORT_MODE,
+            CHANNELS.TITLE,
+            CHANNELS.DESCRIPTION_HTML,
+            CHANNELS.PUBLIC_USERNAME
+        ).from(CHANNELS).fetchSingle();
         assertThat(objectMapper.readTree(channelData.value1().data()).path("adapterState").asText())
             .isEqualTo("kept-separate");
         assertThat(objectMapper.readTree(channelData.value1().data()).has("profile")).isFalse();
-        assertThat(objectMapper.readTree(channelData.value2().data()).path("title").asText())
-            .isEqualTo("Canonical channel");
+        assertThat(channelData.value2().getLiteral()).isEqualTo("RECENT");
+        assertThat(channelData.value3()).isEqualTo("Canonical channel");
+        assertThat(channelData.value4()).isEqualTo("<p>Description</p>");
+        assertThat(channelData.value5()).isEqualTo("canonical");
         assertThat(dslContext.select(CHANNELS.ACCESS_RETRY_AT, CHANNELS.SUBSCRIPTION_RETRY_AT,
                 CHANNELS.NEXT_POLL_AT)
             .from(CHANNELS)
@@ -135,11 +143,8 @@ class AdministrationApiTest extends PostgresIntegrationTest {
             JsonNodeFactory.instance.textNode("timeline"),
             JsonNodeFactory.instance.textNode("news")
         );
-        ObjectNode expectedConfig = objectNode();
-        expectedConfig.set("feeds", mirrorRequest.path("feeds"));
-        assertThat(objectMapper.readTree(
-            dslContext.select(MIRRORS.CONFIG).from(MIRRORS).fetchSingle(MIRRORS.CONFIG).data()
-        )).isEqualTo(expectedConfig);
+        assertThat(dslContext.select(MIRRORS.FEEDS).from(MIRRORS).fetchSingle(MIRRORS.FEEDS))
+            .containsExactly("timeline", "news");
 
         assertThat(request("DELETE", "/api/mirrors/1/1", null).statusCode()).isEqualTo(204);
         assertThat(dslContext.fetchCount(MIRRORS)).isZero();
@@ -180,10 +185,11 @@ class AdministrationApiTest extends PostgresIntegrationTest {
 
         assertThat(response.statusCode()).isEqualTo(201);
         assertThat(json(response).path("profileSync").asBoolean()).isFalse();
-        JsonNode config = objectMapper.readTree(
-            dslContext.select(DESTINATIONS.CONFIG).from(DESTINATIONS).fetchSingle(DESTINATIONS.CONFIG).data()
-        );
-        assertThat(config.path("profileSync").asBoolean()).isFalse();
+        var stored = dslContext.select(DESTINATIONS.CREDENTIAL_REF, DESTINATIONS.PROFILE_SYNC)
+            .from(DESTINATIONS)
+            .fetchSingle();
+        assertThat(stored.value1()).isEqualTo("env:MOERA_ADMIN_TOKEN");
+        assertThat(stored.value2()).isFalse();
     }
 
     @Test
@@ -312,7 +318,7 @@ class AdministrationApiTest extends PostgresIntegrationTest {
                 objectNode(),
                 SubscriptionState.INACTIVE,
                 objectNode(),
-                new ChannelMetadata("Canonical channel", "Description", "canonical", null)
+                new ChannelMetadata("Canonical channel", "<p>Description</p>", "canonical", null)
             );
         }
 

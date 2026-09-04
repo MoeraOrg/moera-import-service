@@ -8,7 +8,6 @@ import java.util.List;
 import java.util.regex.Pattern;
 import jakarta.inject.Inject;
 
-import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.jooq.exception.IntegrityConstraintViolationException;
@@ -78,10 +77,10 @@ public class AdministrationService {
             throw unavailable("Source adapter is unavailable");
         }
         ChannelResolution resolution;
+        InitialImportMode initialImportMode = request.fullHistory()
+            ? InitialImportMode.FULL
+            : InitialImportMode.RECENT;
         try {
-            InitialImportMode initialImportMode = request.fullHistory()
-                ? InitialImportMode.FULL
-                : InitialImportMode.RECENT;
             resolution = sourceAdapter.resolveChannel(sourceUri, initialImportMode);
         } catch (SourcePermanentException | IllegalArgumentException e) {
             throw badRequest("Source channel cannot be resolved");
@@ -92,7 +91,7 @@ public class AdministrationService {
             throw badRequest("Canonical source URI is too long");
         }
         try {
-            return channelView(channelRepository.create(request.sourceType(), resolution));
+            return channelView(channelRepository.create(request.sourceType(), initialImportMode, resolution));
         } catch (RuntimeException e) {
             if (isIntegrityViolation(e)) {
                 throw conflict("Channel already exists");
@@ -114,11 +113,10 @@ public class AdministrationService {
 
     public DestinationView createDestination(DestinationCreate request) {
         validateDestination(request);
-        ObjectNode config = objectNode()
-            .put("credentialRef", request.credentialRef())
-            .put("profileSync", request.profileSync());
         try {
-            return destinationView(destinationRepository.create(request.nodeName(), config));
+            return destinationView(destinationRepository.create(
+                request.nodeName(), request.credentialRef(), request.profileSync()
+            ));
         } catch (RuntimeException e) {
             if (isIntegrityViolation(e)) {
                 throw conflict("Destination already exists");
@@ -146,11 +144,9 @@ public class AdministrationService {
         if (profileSyncEnabled(destination) && mirrorRepository.hasMirror(request.destinationId())) {
             throw conflict("Profile-synchronized destination already has a mirror");
         }
-        ObjectNode config = objectNode();
-        feeds.forEach(config.putArray("feeds")::add);
         try {
             MirrorView mirror = mirrorView(mirrorRepository.create(
-                request.channelId(), request.destinationId(), config
+                request.channelId(), request.destinationId(), feeds
             ));
             profileSynchronizer.synchronize(request.channelId());
             return mirror;
@@ -185,22 +181,17 @@ public class AdministrationService {
         return new DestinationView(
             destination.id(),
             destination.nodeName(),
-            destination.config().path("credentialRef").textValue(),
-            profileSyncEnabled(destination)
+            destination.credentialRef(),
+            destination.profileSync()
         );
     }
 
     private boolean profileSyncEnabled(Destination destination) {
-        JsonNode setting = destination.config().get("profileSync");
-        return setting == null || !setting.isBoolean() || setting.booleanValue();
+        return destination.profileSync();
     }
 
     private MirrorView mirrorView(Mirror mirror) {
-        List<String> feeds = mirror.config().path("feeds").isArray()
-            ? mirror.config().path("feeds").valueStream().filter(JsonNode::isTextual)
-                .map(JsonNode::textValue).toList()
-            : List.of();
-        return new MirrorView(mirror.id(), mirror.channelId(), mirror.destinationId(), feeds);
+        return new MirrorView(mirror.id(), mirror.channelId(), mirror.destinationId(), mirror.feeds());
     }
 
     private void validateDestination(DestinationCreate request) {

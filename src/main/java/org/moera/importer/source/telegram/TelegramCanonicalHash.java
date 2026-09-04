@@ -11,6 +11,7 @@ import java.util.Locale;
 import com.fasterxml.jackson.databind.JsonNode;
 import it.tdlight.jni.TdApi;
 import org.moera.importer.application.Sha256;
+import org.moera.importer.source.ForwardAttribution;
 import org.springframework.util.ObjectUtils;
 
 public final class TelegramCanonicalHash {
@@ -23,6 +24,15 @@ public final class TelegramCanonicalHash {
     }
 
     static byte[] body(TdApi.Message message, JsonNode normalizedSourceData) {
+        return body(message, normalizedSourceData, null, null);
+    }
+
+    static byte[] body(
+        TdApi.Message message,
+        JsonNode normalizedSourceData,
+        String externalSourceUri,
+        ForwardAttribution forwardAttribution
+    ) {
         return digest(output -> {
             writeString(output, contentType(message.content));
             writeContent(output, message.content);
@@ -35,6 +45,9 @@ public final class TelegramCanonicalHash {
             if (normalizedSourceData != null && normalizedSourceData.size() > 0) {
                 writeJson(output, normalizedSourceData);
             }
+            writeString(output, externalSourceUri);
+            writeString(output, forwardAttribution != null ? forwardAttribution.name() : null);
+            writeString(output, forwardAttribution != null ? forwardAttribution.uri() : null);
         });
     }
 

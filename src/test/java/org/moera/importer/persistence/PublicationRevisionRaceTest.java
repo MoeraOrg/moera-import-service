@@ -5,6 +5,7 @@ import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import jakarta.inject.Inject;
 
@@ -33,6 +34,7 @@ import static org.moera.importer.persistence.jooq.tables.Messages.MESSAGES;
 import static org.moera.importer.persistence.jooq.tables.Mirrors.MIRRORS;
 import static org.moera.importer.persistence.jooq.tables.PublicationMedia.PUBLICATION_MEDIA;
 import static org.moera.importer.persistence.jooq.tables.Publications.PUBLICATIONS;
+import static org.moera.importer.persistence.jooq.tables.PublicationStories.PUBLICATION_STORIES;
 
 @SpringBootTest
 class PublicationRevisionRaceTest extends PostgresIntegrationTest {
@@ -127,18 +129,19 @@ class PublicationRevisionRaceTest extends PostgresIntegrationTest {
         dslContext.update(PUBLICATIONS)
             .set(PUBLICATIONS.REVISION, 5)
             .set(PUBLICATIONS.DESTINATION_POST_ID, "existing-post")
-            .set(PUBLICATIONS.DESTINATION_DATA, jooqMappings.json(JsonNodeFactory.instance.objectNode()
-                .put("pinned", false)
-                .set("storyIds", JsonNodeFactory.instance.objectNode().put("timeline", "story-1"))))
+            .set(PUBLICATIONS.DESTINATION_PINNED, false)
             .set(PUBLICATIONS.NEXT_ATTEMPT_AT, OffsetDateTime.now(ZoneOffset.UTC).minusSeconds(1))
             .where(PUBLICATIONS.ID.eq(publicationId))
+            .execute();
+        dslContext.insertInto(PUBLICATION_STORIES)
+            .set(PUBLICATION_STORIES.PUBLICATION_ID, publicationId)
+            .set(PUBLICATION_STORIES.FEED_NAME, "timeline")
+            .set(PUBLICATION_STORIES.STORY_ID, "story-1")
             .execute();
         dslContext.update(PUBLICATION_MEDIA)
             .set(PUBLICATION_MEDIA.STATUS, UPLOADED)
             .set(PUBLICATION_MEDIA.DESTINATION_MEDIA_ID, "uploaded-id")
-            .set(PUBLICATION_MEDIA.DESTINATION_DATA, jooqMappings.json(
-                JsonNodeFactory.instance.objectNode().put("hash", "uploaded-hash")
-            ))
+            .set(PUBLICATION_MEDIA.DESTINATION_HASH, "uploaded-hash")
             .setNull(PUBLICATION_MEDIA.NEXT_ATTEMPT_AT)
             .execute();
         PublicationClaim claim = publicationRepository.claimReady(1, Duration.ofMinutes(5)).getFirst();
@@ -149,14 +152,15 @@ class PublicationRevisionRaceTest extends PostgresIntegrationTest {
             publicationId,
             claim.processingToken(),
             claim.targetRevision(),
-            JsonNodeFactory.instance.objectNode().put("pinned", false)
+            new PublicationDestinationState(false, Map.of("timeline", "story-1"))
         );
 
         assertThat(completed).isTrue();
         assertThat(context.targetRevision()).isEqualTo(5);
         assertThat(context.destinationPostId()).isEqualTo("existing-post");
-        assertThat(context.destinationData().path("storyIds").path("timeline").asText()).isEqualTo("story-1");
-        assertThat(context.mirrorConfig().path("feeds").get(0).asText()).isEqualTo("timeline");
+        assertThat(context.destinationPinned()).isFalse();
+        assertThat(context.destinationStoryIds()).containsEntry("timeline", "story-1");
+        assertThat(context.mirrorFeeds()).containsExactly("timeline");
         assertThat(context.members()).singleElement().satisfies(member -> {
             assertThat(member.message().body()).isEqualTo("Old body");
             assertThat(member.message().pinned()).isFalse();
@@ -212,14 +216,14 @@ class PublicationRevisionRaceTest extends PostgresIntegrationTest {
             null
         );
         PublicationClaim createClaim = publicationRepository.claimReady(1, Duration.ofMinutes(5)).getFirst();
-        var createdData = JsonNodeFactory.instance.objectNode().put("pinned", true);
+        var createdState = new PublicationDestinationState(true, Map.of("timeline", "story-1"));
 
         boolean created = publicationRepository.created(
             publicationId,
             createClaim.processingToken(),
             createClaim.targetRevision(),
             "posting-1",
-            createdData
+            createdState
         );
 
         assertThat(created).isTrue();
@@ -227,7 +231,8 @@ class PublicationRevisionRaceTest extends PostgresIntegrationTest {
             .where(PUBLICATIONS.ID.eq(publicationId))
             .fetchSingle();
         assertThat(afterCreate.getDestinationPostId()).isEqualTo("posting-1");
-        assertThat(jooqMappings.jsonNode(afterCreate.getDestinationData())).isEqualTo(createdData);
+        assertThat(afterCreate.getDestinationPinned()).isTrue();
+        assertThat(dslContext.selectFrom(PUBLICATION_STORIES).fetchSingle().getStoryId()).isEqualTo("story-1");
         assertThat(afterCreate.getPublishedRevision()).isEqualTo(1);
         assertThat(afterCreate.getNextAttemptAt()).isNull();
         assertThat(afterCreate.getAttempts()).isZero();
@@ -242,14 +247,14 @@ class PublicationRevisionRaceTest extends PostgresIntegrationTest {
             publicationId,
             UUID.randomUUID(),
             deleteClaim.targetRevision(),
-            JsonNodeFactory.instance.objectNode()
+            new PublicationDestinationState(null, Map.of())
         )).isFalse();
 
         boolean deleted = publicationRepository.deleted(
             publicationId,
             deleteClaim.processingToken(),
             deleteClaim.targetRevision(),
-            JsonNodeFactory.instance.objectNode()
+            new PublicationDestinationState(null, Map.of())
         );
 
         assertThat(deleted).isTrue();
@@ -257,8 +262,8 @@ class PublicationRevisionRaceTest extends PostgresIntegrationTest {
             .where(PUBLICATIONS.ID.eq(publicationId))
             .fetchSingle();
         assertThat(afterDelete.getDestinationPostId()).isNull();
-        assertThat(jooqMappings.jsonNode(afterDelete.getDestinationData()))
-            .isEqualTo(JsonNodeFactory.instance.objectNode());
+        assertThat(afterDelete.getDestinationPinned()).isNull();
+        assertThat(dslContext.fetchCount(PUBLICATION_STORIES)).isZero();
         assertThat(afterDelete.getPublishedRevision()).isEqualTo(2);
         assertThat(afterDelete.getNextAttemptAt()).isNull();
     }
@@ -298,6 +303,7 @@ class PublicationRevisionRaceTest extends PostgresIntegrationTest {
     private long insertDestination() {
         return dslContext.insertInto(DESTINATIONS)
             .set(DESTINATIONS.NODE_NAME, "destination.example")
+            .set(DESTINATIONS.CREDENTIAL_REF, "env:TEST")
             .returningResult(DESTINATIONS.ID)
             .fetchSingle(DESTINATIONS.ID);
     }
@@ -306,15 +312,9 @@ class PublicationRevisionRaceTest extends PostgresIntegrationTest {
         return dslContext.insertInto(MIRRORS)
             .set(MIRRORS.CHANNEL_ID, channelId)
             .set(MIRRORS.DESTINATION_ID, destinationId)
-            .set(MIRRORS.CONFIG, jooqMappings.json(mirrorConfig()))
+            .set(MIRRORS.FEEDS, new String[] { "timeline" })
             .returningResult(MIRRORS.ID)
             .fetchSingle(MIRRORS.ID);
-    }
-
-    private com.fasterxml.jackson.databind.JsonNode mirrorConfig() {
-        var config = JsonNodeFactory.instance.objectNode();
-        config.putArray("feeds").add("timeline");
-        return config;
     }
 
     private SourceMessage sourceMessage(String body, boolean pinned, byte[] bodyHash) {
@@ -378,9 +378,7 @@ class PublicationRevisionRaceTest extends PostgresIntegrationTest {
             .set(PUBLICATION_MEDIA.MEDIA_ID, mediaId)
             .set(PUBLICATION_MEDIA.STATUS, status)
             .set(PUBLICATION_MEDIA.DESTINATION_MEDIA_ID, destinationMediaId)
-            .set(PUBLICATION_MEDIA.DESTINATION_DATA, jooqMappings.json(
-                JsonNodeFactory.instance.objectNode().put("compressionPending", compressionPending)
-            ))
+            .set(PUBLICATION_MEDIA.COMPRESSION_PENDING, compressionPending)
             .execute();
     }
 

@@ -18,7 +18,7 @@ import org.moera.importer.model.Message;
 import org.moera.importer.persistence.jooq.tables.records.MediaRecord;
 import org.moera.importer.persistence.jooq.tables.records.MessagesRecord;
 import org.moera.importer.source.PollResult;
-import org.moera.importer.source.ChannelMetadataJson;
+import org.moera.importer.source.ChannelMetadata;
 import org.moera.importer.source.SourceLinkPreview;
 import org.moera.importer.source.SourceMedia;
 import org.moera.importer.source.SourceMessage;
@@ -95,6 +95,11 @@ public class MessageRepository {
             .set(MESSAGES.BODY, message.body())
             .set(MESSAGES.BODY_FORMAT, jooqMappings.bodyFormat(message.bodyFormat()))
             .set(MESSAGES.SOURCE_BODY_HASH, message.sourceBodyHash())
+            .set(MESSAGES.EXTERNAL_SOURCE_URI, message.externalSourceUri())
+            .set(MESSAGES.FORWARD_NAME,
+                message.forwardAttribution() != null ? message.forwardAttribution().name() : null)
+            .set(MESSAGES.FORWARD_URI,
+                message.forwardAttribution() != null ? message.forwardAttribution().uri() : null)
             .set(MESSAGES.SOURCE_DATA, jooqMappings.json(message.sourceData()))
             .returning()
             .fetchSingle();
@@ -169,11 +174,10 @@ public class MessageRepository {
         }
 
         result.messages().forEach(message -> ingest(channelId, message));
-        org.jooq.Field<org.jooq.JSON> metadata = result.metadata() == null
-            ? CHANNELS.METADATA
-            : org.jooq.impl.DSL.val(jooqMappings.json(ChannelMetadataJson.write(result.metadata())));
+        if (result.metadata() != null) {
+            persistMetadata(channelId, result.metadata());
+        }
         int updated = dslContext.update(CHANNELS)
-            .set(CHANNELS.METADATA, metadata)
             .set(CHANNELS.WATERLINE, jooqMappings.json(result.waterline()))
             .set(CHANNELS.LAST_POLL_AT, jooqMappings.offsetDateTime(Instant.now()))
             .set(CHANNELS.NEXT_POLL_AT, jooqMappings.offsetDateTime(nextPollAt))
@@ -220,6 +224,9 @@ public class MessageRepository {
         return record.getDeleted() != message.deleted()
             || record.getPinned() != message.pinned()
             || !Arrays.equals(record.getSourceBodyHash(), message.sourceBodyHash())
+            || !Objects.equals(record.getExternalSourceUri(), message.externalSourceUri())
+            || !Objects.equals(record.getForwardName(), forwardName(message))
+            || !Objects.equals(record.getForwardUri(), forwardUri(message))
             || !linkPreviewsEqual(storedLinkPreviews, message.linkPreviews());
     }
 
@@ -340,6 +347,9 @@ public class MessageRepository {
             .set(MESSAGES.PUBLISHED_AT, jooqMappings.offsetDateTime(message.publishedAt()))
             .set(MESSAGES.BODY, message.body())
             .set(MESSAGES.BODY_FORMAT, jooqMappings.bodyFormat(message.bodyFormat()))
+            .set(MESSAGES.EXTERNAL_SOURCE_URI, message.externalSourceUri())
+            .set(MESSAGES.FORWARD_NAME, forwardName(message))
+            .set(MESSAGES.FORWARD_URI, forwardUri(message))
             .set(MESSAGES.SOURCE_DATA, jooqMappings.json(message.sourceData()))
             .set(MESSAGES.UPDATED_AT, jooqMappings.offsetDateTime(Instant.now()))
             .where(MESSAGES.ID.eq(messageId))
@@ -355,6 +365,9 @@ public class MessageRepository {
             .set(MESSAGES.BODY, message.body())
             .set(MESSAGES.BODY_FORMAT, jooqMappings.bodyFormat(message.bodyFormat()))
             .set(MESSAGES.SOURCE_BODY_HASH, message.sourceBodyHash())
+            .set(MESSAGES.EXTERNAL_SOURCE_URI, message.externalSourceUri())
+            .set(MESSAGES.FORWARD_NAME, forwardName(message))
+            .set(MESSAGES.FORWARD_URI, forwardUri(message))
             .set(MESSAGES.SOURCE_DATA, jooqMappings.json(message.sourceData()))
             .set(MESSAGES.UPDATED_AT, jooqMappings.offsetDateTime(Instant.now()))
             .where(MESSAGES.ID.eq(messageId))
@@ -367,6 +380,29 @@ public class MessageRepository {
         records.stream()
             .filter(record -> mediaMetadataChanged(record, sourceMediaBySourceId.get(record.getSourceId())))
             .forEach(record -> updateMedia(record.getId(), sourceMediaBySourceId.get(record.getSourceId())));
+    }
+
+    private void persistMetadata(long channelId, ChannelMetadata metadata) {
+        dslContext.update(CHANNELS)
+            .set(CHANNELS.TITLE, metadata.title())
+            .set(CHANNELS.DESCRIPTION_HTML, metadata.descriptionHtml())
+            .set(CHANNELS.PUBLIC_USERNAME, metadata.publicUsername())
+            .set(CHANNELS.EMBLEM_REMOTE_ID,
+                metadata.emblem() != null ? metadata.emblem().remoteId() : null)
+            .set(CHANNELS.EMBLEM_UNIQUE_ID,
+                metadata.emblem() != null ? metadata.emblem().uniqueId() : null)
+            .set(CHANNELS.EMBLEM_MIME_TYPE,
+                metadata.emblem() != null ? metadata.emblem().mimeType() : null)
+            .where(CHANNELS.ID.eq(channelId))
+            .execute();
+    }
+
+    private String forwardName(SourceMessage message) {
+        return message.forwardAttribution() != null ? message.forwardAttribution().name() : null;
+    }
+
+    private String forwardUri(SourceMessage message) {
+        return message.forwardAttribution() != null ? message.forwardAttribution().uri() : null;
     }
 
     private boolean mediaChanged(MediaRecord record, SourceMedia media) {

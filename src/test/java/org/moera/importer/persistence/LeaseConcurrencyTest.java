@@ -111,7 +111,7 @@ class LeaseConcurrencyTest extends PostgresIntegrationTest {
             AccessState.GRANTED,
             "resolved-channel",
             JsonNodeFactory.instance.objectNode().put("member", true),
-            new ChannelMetadata("Channel title", "Description", "channel", null)
+            new ChannelMetadata("Channel title", "<p>Description</p>", "channel", null)
         );
 
         boolean completed = channelRepository.completeAccess(channelId, claim.processingToken(), result);
@@ -125,7 +125,8 @@ class LeaseConcurrencyTest extends PostgresIntegrationTest {
         assertThat(channel.getProcessingToken()).isNull();
         assertThat(jooqMappings.jsonNode(channel.getSourceData()).path("adapterState").asText()).isEqualTo("kept");
         assertThat(jooqMappings.jsonNode(channel.getSourceData()).has("profile")).isFalse();
-        assertThat(jooqMappings.jsonNode(channel.getMetadata()).path("title").asText()).isEqualTo("Channel title");
+        assertThat(channel.getTitle()).isEqualTo("Channel title");
+        assertThat(channel.getDescriptionHtml()).isEqualTo("<p>Description</p>");
     }
 
     @Test

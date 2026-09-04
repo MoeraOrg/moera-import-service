@@ -111,7 +111,7 @@ class PublicationMediaProcessorTest {
 
     @Test
     void skipsKnownOversizedMediaWithoutDownloading() {
-        publicationMediaRepository.context = context(4L, JsonNodeFactory.instance.objectNode(), null);
+        publicationMediaRepository.context = context(4L, null, false, null);
         moeraService.capabilities = capabilities(3);
 
         publicationMediaProcessor.process(claim());
@@ -125,7 +125,7 @@ class PublicationMediaProcessorTest {
 
     @Test
     void skipsOversizedMediaAfterDownloadingAndDeletesStaging() {
-        publicationMediaRepository.context = context(null, JsonNodeFactory.instance.objectNode(), null);
+        publicationMediaRepository.context = context(null, null, false, null);
         moeraService.capabilities = capabilities(3);
         sourceAdapter.content = new byte[] {1, 2, 3, 4};
         Path path = stagingPath();
@@ -139,7 +139,7 @@ class PublicationMediaProcessorTest {
 
     @Test
     void reusesExistingStagingAndStoresSeparateUploadIdAndHash() throws IOException {
-        publicationMediaRepository.context = context(null, JsonNodeFactory.instance.objectNode(), null);
+        publicationMediaRepository.context = context(null, null, false, null);
         moeraService.capabilities = capabilities(10);
         moeraService.uploadResult = new MediaUpload.Ready(new UploadedMedia("media-id", "media-hash"));
         Path path = stagingPath();
@@ -149,7 +149,7 @@ class PublicationMediaProcessorTest {
 
         assertThat(sourceAdapter.downloads).isZero();
         assertThat(publicationMediaRepository.uploadedId).isEqualTo("media-id");
-        assertThat(publicationMediaRepository.destinationData.path("hash").asText()).isEqualTo("media-hash");
+        assertThat(publicationMediaRepository.destinationHash).isEqualTo("media-hash");
         assertThat(path).doesNotExist();
         assertThat(meterRegistry.get("media_uploaded_total").counter().count()).isEqualTo(1);
         assertThat(meterRegistry.get("media_upload_bytes").summary().totalAmount()).isEqualTo(2);
@@ -157,7 +157,7 @@ class PublicationMediaProcessorTest {
 
     @Test
     void persistsCompressionWaitAndDeletesStaging() {
-        publicationMediaRepository.context = context(2L, JsonNodeFactory.instance.objectNode(), null);
+        publicationMediaRepository.context = context(2L, null, false, null);
         moeraService.capabilities = capabilities(10);
         moeraService.uploadResult = new MediaUpload.AwaitingCompression(
             new UploadedMedia("original-id", "original-hash")
@@ -167,17 +167,14 @@ class PublicationMediaProcessorTest {
         publicationMediaProcessor.process(claim());
 
         assertThat(publicationMediaRepository.awaitingId).isEqualTo("original-id");
-        assertThat(publicationMediaRepository.destinationData.path("hash").asText()).isEqualTo("original-hash");
+        assertThat(publicationMediaRepository.destinationHash).isEqualTo("original-hash");
         assertThat(publicationMediaRepository.nextAttemptAt).isEqualTo(NOW.plusSeconds(10));
         assertThat(path).doesNotExist();
     }
 
     @Test
     void compressionNotReadyIsRescheduledWithoutSourceOrUpload() {
-        JsonNode data = JsonNodeFactory.instance.objectNode()
-            .put("hash", "original-hash")
-            .put("compressionPending", true);
-        publicationMediaRepository.context = context(2L, data, "original-id");
+        publicationMediaRepository.context = context(2L, "original-hash", true, "original-id");
         moeraService.compressionResult = new MediaUpload.AwaitingCompression(
             new UploadedMedia("original-id", "original-hash")
         );
@@ -195,10 +192,7 @@ class PublicationMediaProcessorTest {
 
     @Test
     void compressionReadyReplacesOriginalIdAndHash() {
-        JsonNode data = JsonNodeFactory.instance.objectNode()
-            .put("hash", "original-hash")
-            .put("compressionPending", true);
-        publicationMediaRepository.context = context(2L, data, "original-id");
+        publicationMediaRepository.context = context(2L, "original-hash", true, "original-id");
         moeraService.compressionResult = new MediaUpload.Ready(
             new UploadedMedia("compressed-id", "compressed-hash")
         );
@@ -206,15 +200,14 @@ class PublicationMediaProcessorTest {
         publicationMediaProcessor.process(claim());
 
         assertThat(publicationMediaRepository.uploadedId).isEqualTo("compressed-id");
-        assertThat(publicationMediaRepository.destinationData.path("hash").asText()).isEqualTo("compressed-hash");
-        assertThat(publicationMediaRepository.destinationData.has("compressionPending")).isFalse();
+        assertThat(publicationMediaRepository.destinationHash).isEqualTo("compressed-hash");
         assertThat(sourceAdapter.downloads).isZero();
         assertThat(moeraService.uploads).isZero();
     }
 
     @Test
     void temporaryUploadFailureSchedulesRetryAndRetainsStaging() {
-        publicationMediaRepository.context = context(2L, JsonNodeFactory.instance.objectNode(), null);
+        publicationMediaRepository.context = context(2L, null, false, null);
         moeraService.capabilities = capabilities(10);
         moeraService.failure = new MoeraTemporaryException("temporary", null);
         Path path = stagingPath();
@@ -247,7 +240,7 @@ class PublicationMediaProcessorTest {
 
     @Test
     void permanentUploadFailureStopsSchedulingAndDeletesStaging() {
-        publicationMediaRepository.context = context(2L, JsonNodeFactory.instance.objectNode(), null);
+        publicationMediaRepository.context = context(2L, null, false, null);
         moeraService.capabilities = capabilities(10);
         moeraService.failure = new MoeraPermanentException("permanent", null);
         Path path = stagingPath();
@@ -261,7 +254,7 @@ class PublicationMediaProcessorTest {
 
     @Test
     void staleFinalCompletionUsesExpectedSourceHashAndDeletesOldStaging() {
-        publicationMediaRepository.context = context(2L, JsonNodeFactory.instance.objectNode(), null);
+        publicationMediaRepository.context = context(2L, null, false, null);
         publicationMediaRepository.completionAccepted = false;
         moeraService.capabilities = capabilities(10);
         moeraService.uploadResult = new MediaUpload.Ready(new UploadedMedia("media-id", "media-hash"));
@@ -279,7 +272,12 @@ class PublicationMediaProcessorTest {
         return new PublicationMediaClaim(17, 23, UUID.randomUUID(), 3);
     }
 
-    private PublicationMediaContext context(Long size, JsonNode destinationData, String destinationMediaId) {
+    private PublicationMediaContext context(
+        Long size,
+        String destinationHash,
+        boolean compressionPending,
+        String destinationMediaId
+    ) {
         JsonNode empty = JsonNodeFactory.instance.objectNode();
         ChannelSnapshot channel = new ChannelSnapshot(
             5,
@@ -293,7 +291,7 @@ class PublicationMediaProcessorTest {
             empty,
             empty
         );
-        Destination destination = new Destination(7, "destination.example", empty, empty, NOW, NOW);
+        Destination destination = new Destination(7, "destination.example", "env:TEST", NOW, NOW);
         Media media = new Media(
             23,
             11,
@@ -307,7 +305,9 @@ class PublicationMediaProcessorTest {
             NOW,
             NOW
         );
-        return new PublicationMediaContext(17, destination, channel, media, destinationMediaId, destinationData);
+        return new PublicationMediaContext(
+            17, destination, channel, media, destinationMediaId, destinationHash, compressionPending
+        );
     }
 
     private DestinationCapabilities capabilities(long mediaMaxSize) {
@@ -345,7 +345,7 @@ class PublicationMediaProcessorTest {
         private MediaSkipReason skippedReason;
         private String awaitingId;
         private String uploadedId;
-        private JsonNode destinationData;
+        private String destinationHash;
         private byte[] expectedSourceHash;
         private Instant nextAttemptAt;
         private String error;
@@ -364,12 +364,12 @@ class PublicationMediaProcessorTest {
             UUID token,
             byte[] expectedSourceHash,
             String originalMediaId,
-            JsonNode destinationData,
+            String destinationHash,
             Instant nextAttemptAt
         ) {
             this.expectedSourceHash = expectedSourceHash.clone();
             awaitingId = originalMediaId;
-            this.destinationData = destinationData;
+            this.destinationHash = destinationHash;
             this.nextAttemptAt = nextAttemptAt;
             return completionAccepted;
         }
@@ -381,11 +381,11 @@ class PublicationMediaProcessorTest {
             UUID token,
             byte[] expectedSourceHash,
             String destinationMediaId,
-            JsonNode destinationData
+            String destinationHash
         ) {
             this.expectedSourceHash = expectedSourceHash.clone();
             uploadedId = destinationMediaId;
-            this.destinationData = destinationData;
+            this.destinationHash = destinationHash;
             return completionAccepted;
         }
 

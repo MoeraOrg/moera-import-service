@@ -53,6 +53,15 @@ export DATABASE_PASSWORD='replace-with-the-generated-password'
 Flyway validates and applies `src/main/resources/db/migration` automatically during startup. Do not create or modify
 application tables manually.
 
+Schema migration `V005` adds typed columns and backfills them while retaining the old JSONB state. Migration `V006`
+validates the retained state, repeats the backfill to include valid changes made after `V005`, removes migrated keys
+from adapter-owned JSON, and drops the six obsolete JSONB columns. Unknown keys or malformed values stop `V006`
+before any legacy column is removed; correct the reported table, row, and field, then restart the application.
+
+If the migrations are deployed separately, keep the legacy application version running after `V005`. Deploy the typed
+application only together with `V006`; Flyway must complete `V006` before that application starts. Do not run a
+typed-only build against a database stopped at `V005`.
+
 ## Filesystem state and permissions
 
 Run the daemon as a dedicated operating-system user. The TDLight database is persistent and credential-equivalent;
@@ -191,7 +200,7 @@ secret before it expires.
 
 ### Store the token outside PostgreSQL
 
-`destinations.config` stores only a reference to a Moera admin token. The supported forms are:
+`destinations.credential_ref` stores only a reference to a Moera admin token. The supported forms are:
 
 - `env:VARIABLE_NAME`, resolved from the daemon environment;
 - `file:/absolute/path`, read from a mounted secret file.
@@ -210,13 +219,8 @@ sudo chmod 0400 /run/secrets/moera-admin-token
 ```
 
 The database value is then respectively `env:MOERA_ADMIN_TOKEN` or
-`file:/run/secrets/moera-admin-token`; the token itself must not be stored in PostgreSQL.
-
-For the file-backed variant, use the following destination configuration in the SQL below:
-
-```sql
-'{"credentialRef":"file:/run/secrets/moera-admin-token"}'::jsonb
-```
+`file:/run/secrets/moera-admin-token`; the token itself must not be stored in PostgreSQL. Pass either reference as the
+second argument to `destination add` below.
 
 For local development, the environment-backed variant can be placed in `.env.local`:
 
@@ -272,8 +276,8 @@ This creates three related objects:
 
 - `channels` tells the Telegram adapter which public channel URL or private invite link to resolve and poll;
 - `destinations` tells `MoeraService` which registered node to resolve and where to obtain its admin token;
-- `mirrors` connects that source to that destination. Every name in `config.feeds` creates a feed story for the posting;
-  `timeline` publishes it to the node's timeline.
+- `mirrors` connects that source to that destination. Every name in `mirrors.feeds` creates a feed story for the
+  posting; `timeline` publishes it to the node's timeline.
 
 One Telegram channel may be connected to several Moera nodes by creating a destination and mirror for each node. A
 profile-synchronized destination accepts one mirror, because that channel owns its profile. A destination created with
@@ -339,9 +343,10 @@ LEFT JOIN publications p ON p.mirror_id = r.id
 ORDER BY r.id, p.id;
 ```
 
-If `publication_last_error` reports a missing or unavailable credential, check that `credentialRef` names an existing
-environment variable in the daemon process or an absolute file readable by the daemon user. If node resolution fails,
-check that `node_name` is registered in the naming service selected by `MOERA_NAMING_SERVER` and is not a URL.
+If `publication_last_error` reports a missing or unavailable credential, check that `destinations.credential_ref`
+names an existing environment variable in the daemon process or an absolute file readable by the daemon user. If node
+resolution fails, check that `node_name` is registered in the naming service selected by `MOERA_NAMING_SERVER` and is
+not a URL.
 
 ## Import flow control
 
@@ -434,13 +439,25 @@ ORDER BY id DESC;
 
 ### Moera smoke
 
-Use a test node and admin token, provision the destination/mirror with the SQL above, and publish a message with an
+Use a test node and admin token, provision the destination and mirror with the CLI above, and publish a message with an
 image and a video in the test Telegram channel. Wait for the pipeline and inspect durable delivery state:
 
 ```sql
-SELECT revision, published_revision, destination_post_id, destination_data, last_error
-FROM publications
-ORDER BY id DESC;
+SELECT
+    p.revision,
+    p.published_revision,
+    p.destination_post_id,
+    p.destination_pinned,
+    s.feed_name,
+    s.story_id,
+    pm.destination_media_id,
+    pm.destination_hash,
+    pm.compression_pending,
+    p.last_error
+FROM publications p
+LEFT JOIN publication_stories s ON s.publication_id = p.id
+LEFT JOIN publication_media pm ON pm.publication_id = p.id
+ORDER BY p.id DESC, s.feed_name, pm.media_id;
 ```
 
 The smoke succeeds when `destination_post_id` is non-null, `published_revision = revision`, `last_error` is null, and

@@ -12,7 +12,6 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import jakarta.inject.Inject;
 
-import com.fasterxml.jackson.databind.JsonNode;
 import org.moera.importer.application.PublicationPayload;
 import org.moera.importer.model.Destination;
 import org.moera.importer.model.Media;
@@ -189,14 +188,13 @@ public class MoeraService {
     }
 
     private void applyProfileAvatar(PostingText posting, Destination destination) {
-        JsonNode profile = destination.data().path("profile");
-        String mediaId = profile.path("avatarMediaId").textValue();
+        String mediaId = destination.avatarMediaId();
         if (ObjectUtils.isEmpty(mediaId)) {
             return;
         }
         AvatarDescription avatar = new AvatarDescription();
         avatar.setMediaId(mediaId);
-        avatar.setShape(profile.path("avatarShape").asText("circle"));
+        avatar.setShape(ObjectUtils.isEmpty(destination.avatarShape()) ? "circle" : destination.avatarShape());
         avatar.setOptional(true);
         posting.setOwnerAvatar(avatar);
     }

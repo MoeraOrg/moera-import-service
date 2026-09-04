@@ -13,6 +13,7 @@ import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import it.tdlight.jni.TdApi;
 import org.moera.importer.model.BodyFormat;
+import org.moera.importer.source.ForwardAttribution;
 import org.moera.importer.source.SourceLinkPreview;
 import org.moera.importer.source.SourceMedia;
 import org.moera.importer.source.SourceMessage;
@@ -89,19 +90,15 @@ public class TelegramMessageMapper {
                 sourceData.put("mediaAlbumId", message.mediaAlbumId);
             }
             String externalSourceUri = metadataResolver.messageLink(message.chatId, message.id);
-            if (externalSourceUri != null && !externalSourceUri.isBlank()) {
-                sourceData.put("externalSourceUri", externalSourceUri);
-            }
-            if (attribution != null) {
-                ObjectNode node = sourceData.putObject("forwardAttribution").put("name", attribution.name());
-                if (attribution.url() != null) {
-                    node.put("url", attribution.url());
-                }
-            }
+            externalSourceUri = emptyToNull(externalSourceUri);
+            ForwardAttribution forwardAttribution = attribution != null
+                ? new ForwardAttribution(attribution.name(), attribution.url())
+                : null;
             return new TelegramMappingResult.Mapped(new SourceMessage(
                 Long.toString(message.id), false, message.isPinned, Instant.ofEpochSecond(message.date),
-                body, BodyFormat.HTML, TelegramCanonicalHash.body(message, sourceData), sourceData,
-                content.media(), content.linkPreviews()
+                body, BodyFormat.HTML,
+                TelegramCanonicalHash.body(message, sourceData, externalSourceUri, forwardAttribution),
+                externalSourceUri, forwardAttribution, sourceData, content.media(), content.linkPreviews()
             ));
         } catch (InvalidContentException e) {
             return skipped(TelegramSkipReason.INVALID_CONTENT);

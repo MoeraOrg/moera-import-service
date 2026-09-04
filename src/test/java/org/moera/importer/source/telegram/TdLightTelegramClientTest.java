@@ -259,7 +259,7 @@ class TdLightTelegramClientTest {
         TdApi.Supergroup supergroup = new TdApi.Supergroup();
         supergroup.usernames = new TdApi.Usernames(new String[] {"news"}, new String[0], "", new String[0]);
         TdApi.SupergroupFullInfo fullInfo = new TdApi.SupergroupFullInfo();
-        fullInfo.description = "Visit https://example.org, mail news@example.org, ask @admin and #ignored";
+        fullInfo.description = "😀 Visit https://example.org, mail news@example.org, ask @admin and #ignored";
         doReturn(CompletableFuture.completedFuture(chat))
             .when(nativeClient).sendAsync(isA(TdApi.GetChat.class));
         doReturn(CompletableFuture.completedFuture(supergroup))
@@ -281,13 +281,11 @@ class TdLightTelegramClientTest {
         var metadata = client.channelMetadata(chat.id);
 
         assertThat(metadata.title()).isEqualTo("News");
-        assertThat(metadata.description()).isEqualTo(fullInfo.description);
-        assertThat(metadata.descriptionEntities()).extracting(ChannelMetadata.DescriptionEntity::type)
-            .containsExactly(
-                ChannelMetadata.DescriptionEntityType.URL,
-                ChannelMetadata.DescriptionEntityType.EMAIL,
-                ChannelMetadata.DescriptionEntityType.MENTION
-            );
+        assertThat(metadata.descriptionHtml()).isEqualTo(
+            "<p>😀 Visit <a href=\"https://example.org\">https://example.org</a>, mail "
+                + "<a href=\"mailto:news@example.org\">news@example.org</a>, ask "
+                + "<a href=\"https://t.me/admin\">@admin</a> and #ignored</p>"
+        );
         assertThat(metadata.publicUsername()).isEqualTo("news");
         assertThat(metadata.emblem().remoteId()).isEqualTo("remote-photo");
         assertThat(metadata.emblem().uniqueId()).isEqualTo("unique-photo");

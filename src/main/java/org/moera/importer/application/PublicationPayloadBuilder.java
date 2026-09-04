@@ -11,7 +11,6 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.regex.Pattern;
 
-import com.fasterxml.jackson.databind.JsonNode;
 import com.vladsch.flexmark.html.HtmlRenderer;
 import com.vladsch.flexmark.parser.Parser;
 import org.jsoup.Jsoup;
@@ -22,6 +21,7 @@ import org.moera.importer.model.Message;
 import org.moera.importer.moera.DestinationCapabilities;
 import org.moera.importer.persistence.MessageLinkPreview;
 import org.moera.importer.persistence.PublicationContext;
+import org.moera.importer.source.ForwardAttribution;
 import org.moera.lib.node.types.MediaToAttach;
 import org.moera.lib.node.types.SourceFormat;
 import org.moera.lib.node.types.StoryAttributes;
@@ -53,16 +53,15 @@ public class PublicationPayloadBuilder {
             .map(Message::publishedAt).min(Instant::compareTo).orElse(null);
 
         return new PublicationPayload(
-            body, format, media, publications(context.mirrorConfig(), publishedAt, pinned), pinned,
+            body, format, media, publications(context.mirrorFeeds(), publishedAt, pinned), pinned,
             externalSourceUri(members)
         );
     }
 
     private List<String> externalSourceUri(List<PublicationContext.Member> members) {
         return members.stream()
-            .map(member -> member.message().sourceData().path("externalSourceUri"))
-            .filter(JsonNode::isTextual)
-            .map(JsonNode::textValue)
+            .map(member -> member.message().externalSourceUri())
+            .filter(Objects::nonNull)
             .filter(uri -> !uri.isBlank())
             .toList();
     }
@@ -88,7 +87,7 @@ public class PublicationPayloadBuilder {
 
     private String joinBodies(List<PublicationContext.Member> members, SourceFormat format) {
         var result = new StringBuilder();
-        JsonNode previousAttribution = null;
+        ForwardAttribution previousAttribution = null;
         boolean first = true;
         for (PublicationContext.Member member : members) {
             Message message = member.message();
@@ -98,7 +97,7 @@ public class PublicationPayloadBuilder {
             String converted = convert(message.body(), message.bodyFormat(), format);
             if (!first) {
                 if (format == SourceFormat.HTML) {
-                    JsonNode attribution = attribution(message);
+                    ForwardAttribution attribution = attribution(message);
                     if (!Objects.equals(previousAttribution, attribution)) {
                         result.append("<hr>");
                     }
@@ -113,9 +112,8 @@ public class PublicationPayloadBuilder {
         return result.toString();
     }
 
-    private JsonNode attribution(Message message) {
-        JsonNode attribution = message.sourceData().get("forwardAttribution");
-        return attribution == null || attribution.isNull() ? null : attribution;
+    private ForwardAttribution attribution(Message message) {
+        return message.forwardAttribution();
     }
 
     private String convert(String body, BodyFormat from, SourceFormat to) {
@@ -207,18 +205,14 @@ public class PublicationPayloadBuilder {
         return List.copyOf(attachments);
     }
 
-    private List<StoryAttributes> publications(JsonNode config, Instant publishedAt, boolean pinned) {
-        JsonNode feeds = config.path("feeds");
-        if (!feeds.isArray() || publishedAt == null) {
+    private List<StoryAttributes> publications(List<String> feeds, Instant publishedAt, boolean pinned) {
+        if (publishedAt == null) {
             return List.of();
         }
         List<StoryAttributes> publications = new ArrayList<>();
-        for (JsonNode feed : feeds) {
-            if (!feed.isTextual() || feed.textValue().isBlank()) {
-                continue;
-            }
+        for (String feed : feeds) {
             StoryAttributes publication = new StoryAttributes();
-            publication.setFeedName(feed.textValue());
+            publication.setFeedName(feed);
             publication.setPublishAt(publishedAt.getEpochSecond());
             publication.setPinned(pinned);
             publications.add(publication);
