@@ -61,13 +61,13 @@ class ProfileSynchronizerTest {
         StorageProperties storageProperties = new StorageProperties();
         storageProperties.setStagingDirectory(temporaryDirectory);
         ChannelProfileRenderer channelProfileRenderer = new ChannelProfileRenderer();
-        ReflectionTestUtils.setField(channelProfileRenderer, "profileProperties", profileProperties);
         profileSynchronizer = new ProfileSynchronizer();
         ReflectionTestUtils.setField(profileSynchronizer, "channelProfileRenderer", channelProfileRenderer);
         ReflectionTestUtils.setField(profileSynchronizer, "channelRepository", channelRepository);
         ReflectionTestUtils.setField(profileSynchronizer, "destinationRepository", destinationRepository);
         ReflectionTestUtils.setField(profileSynchronizer, "mirrorRepository", mirrorRepository);
         ReflectionTestUtils.setField(profileSynchronizer, "moeraService", moeraService);
+        ReflectionTestUtils.setField(profileSynchronizer, "profileProperties", profileProperties);
         ReflectionTestUtils.setField(profileSynchronizer, "sourceAdapterRegistry", sourceAdapterRegistry);
         ReflectionTestUtils.setField(profileSynchronizer, "storageProperties", storageProperties);
     }
@@ -88,8 +88,10 @@ class ProfileSynchronizerTest {
         ArgumentCaptor<MoeraProfileUpdate> update = ArgumentCaptor.forClass(MoeraProfileUpdate.class);
         verify(moeraService).updateProfile(any(), update.capture());
         org.assertj.core.api.Assertions.assertThat(update.getValue().fullName()).isEqualTo("News");
-        org.assertj.core.api.Assertions.assertThat(update.getValue().bioHtml())
-            .contains("Description", "import@moera.example", "https://t.me/news");
+        org.assertj.core.api.Assertions.assertThat(update.getValue().bioHtml()).isEqualTo("<p>Description</p>");
+        org.assertj.core.api.Assertions.assertThat(update.getValue().sourceUri())
+            .isEqualTo(URI.create("https://t.me/news"));
+        org.assertj.core.api.Assertions.assertThat(update.getValue().viaEmail()).isEqualTo("import@moera.example");
         verify(destinationRepository).saveProfileState(
             org.mockito.ArgumentMatchers.eq(2L), any()
         );

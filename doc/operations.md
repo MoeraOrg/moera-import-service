@@ -237,19 +237,16 @@ CLI. Replace the source URI and registered destination node name:
 ./scripts/moera-import-admin mirror list
 ```
 
-By default, the mirror also keeps the Moera profile synchronized with the Telegram channel. Configure the English
-attribution paragraph and its contact address before starting the daemon:
+By default, the mirror also keeps the Moera profile synchronized with the Telegram channel. Configure the contact
+address used in the profile source URI before starting the daemon:
 
 ```dotenv
 MOERA_PROFILE_CONTACT_EMAIL=balu@moera.org
-MOERA_PROFILE_ATTRIBUTION_HTML=<p>This profile mirrors {channelLink}. To import another channel, or your own channel \
-into your Moera account, contact {contactLink}.</p>
 ```
 
-`{channelLink}` becomes a safe link to a public Telegram channel, or unlinked text for a private channel.
-`{contactLink}` becomes a `mailto:` link. The Telegram title is used as the Moera full name; the description and the
-configured paragraph form the HTML bio. The large Telegram channel photo becomes the global Moera avatar and is
-captured in each newly created posting.
+The Telegram title is used as the Moera full name, and its description becomes the HTML bio. The channel address is
+stored as the profile source URI with `via_email` set to the configured contact address. The large Telegram channel
+photo becomes the global Moera avatar and is captured in each newly created posting.
 
 Disable profile synchronization when a destination is intended to aggregate several channels:
 

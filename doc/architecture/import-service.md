@@ -1853,9 +1853,8 @@ profile. Destinations with profile synchronization disabled may have multiple mi
 
 After persisted channel metadata changes, and after a mirror is created, the service reconciles the corresponding
 Moera profile. Failures do not roll back source ingestion or mirror creation; a later poll retries reconciliation. The
-profile full name is the Telegram channel title. The profile bio is the channel description followed by a configurable
-English HTML paragraph that identifies the Telegram mirror and gives a configurable contact e-mail address. Private
-invite links must not be exposed in the profile; only an active public Telegram username may produce a public link.
+profile full name is the Telegram channel title, and the profile bio is the channel description. The profile source URI
+uses the channel address and includes the configured contact e-mail address in its `via_email` parameter.
 
 When the Telegram emblem changes, the service reacquires and downloads the large JPEG through TDLib, uploads it as
 public Moera media, creates a circular 200-pixel avatar, and sets it as the global profile avatar. It stores the source
@@ -1864,9 +1863,9 @@ ID and shape are put into `PostingText.ownerAvatar` for every newly created post
 because existing postings may refer to its media ID. Removing the Telegram emblem clears the global profile avatar and
 the stored per-post avatar while retaining the public media referenced by existing posts.
 
-Profile reconciliation uses a fingerprint of all rendered profile input, including the configured attribution text.
-An unchanged fingerprint causes no Moera mutation. No PostgreSQL transaction is held while downloading the Telegram
-photo or calling Moera.
+Profile reconciliation uses a fingerprint of all rendered profile input, including the channel address and configured
+contact e-mail address. An unchanged fingerprint causes no Moera mutation. No PostgreSQL transaction is held while
+downloading the Telegram photo or calling Moera.
 
 ## 36. Design principles
 

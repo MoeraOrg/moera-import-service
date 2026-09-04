@@ -6,6 +6,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import jakarta.inject.Inject;
 
+import org.moera.importer.config.ProfileProperties;
 import org.moera.importer.config.StorageProperties;
 import org.moera.importer.model.Destination;
 import org.moera.importer.model.DestinationProfileState;
@@ -45,6 +46,9 @@ public class ProfileSynchronizer {
     private MoeraService moeraService;
 
     @Inject
+    private ProfileProperties profileProperties;
+
+    @Inject
     private SourceAdapterRegistry sourceAdapterRegistry;
 
     @Inject
@@ -76,7 +80,7 @@ public class ProfileSynchronizer {
     private void synchronize(ChannelSnapshot channel, ChannelMetadata metadata, Destination destination)
         throws IOException {
         RenderedChannelProfile rendered = channelProfileRenderer.render(metadata);
-        String fingerprint = fingerprint(rendered, metadata);
+        String fingerprint = fingerprint(channel, rendered, metadata);
         if (fingerprint.equals(destination.profileFingerprint())) {
             return;
         }
@@ -93,6 +97,8 @@ public class ProfileSynchronizer {
             MoeraProfileAvatar avatar = moeraService.updateProfile(destination, new MoeraProfileUpdate(
                 rendered.fullName(),
                 rendered.bioHtml(),
+                channel.sourceUri(),
+                profileProperties.getContactEmail(),
                 emblemFile,
                 metadata.emblem() != null ? metadata.emblem().mimeType() : null,
                 destination.avatarId(),
@@ -134,9 +140,14 @@ public class ProfileSynchronizer {
         return ObjectUtils.isEmpty(value) ? null : value;
     }
 
-    private String fingerprint(RenderedChannelProfile rendered, ChannelMetadata metadata) {
+    private String fingerprint(
+        ChannelSnapshot channel,
+        RenderedChannelProfile rendered,
+        ChannelMetadata metadata
+    ) {
         String emblemId = metadata.emblem() != null ? metadata.emblem().uniqueId() : "";
-        String value = rendered.fullName() + '\u0000' + rendered.bioHtml() + '\u0000' + emblemId;
+        String value = rendered.fullName() + '\u0000' + rendered.bioHtml() + '\u0000' + channel.sourceUri() + '\u0000'
+            + profileProperties.getContactEmail() + '\u0000' + emblemId;
         return Sha256.hex(value.getBytes(StandardCharsets.UTF_8));
     }
 

@@ -11,8 +11,6 @@ import org.springframework.util.ObjectUtils;
 public class ProfileProperties {
 
     private String contactEmail = "balu@moera.org";
-    private String attributionHtml = "<p><b>This profile mirrors {channelLink}.</b> To import another channel, or your "
-        + "own channel into your Moera account, contact {contactLink}.</p>";
 
     public String getContactEmail() {
         return contactEmail;
@@ -22,21 +20,10 @@ public class ProfileProperties {
         this.contactEmail = contactEmail;
     }
 
-    public String getAttributionHtml() {
-        return attributionHtml;
-    }
-
-    public void setAttributionHtml(String attributionHtml) {
-        this.attributionHtml = attributionHtml;
-    }
-
     @PostConstruct
     void validate() {
         if (ObjectUtils.isEmpty(contactEmail) || contactEmail.isBlank()) {
             throw new IllegalStateException("Moera profile contact e-mail must be configured");
-        }
-        if (ObjectUtils.isEmpty(attributionHtml) || attributionHtml.isBlank()) {
-            throw new IllegalStateException("Moera profile attribution HTML must be configured");
         }
     }
 

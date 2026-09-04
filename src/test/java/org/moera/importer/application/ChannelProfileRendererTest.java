@@ -1,28 +1,16 @@
 package org.moera.importer.application;
 
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.moera.importer.config.ProfileProperties;
 import org.moera.importer.source.ChannelMetadata;
-import org.springframework.test.util.ReflectionTestUtils;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 class ChannelProfileRendererTest {
 
-    private ProfileProperties properties;
-    private ChannelProfileRenderer renderer;
-
-    @BeforeEach
-    void setUp() {
-        properties = new ProfileProperties();
-        properties.setContactEmail("import@moera.example");
-        renderer = new ChannelProfileRenderer();
-        ReflectionTestUtils.setField(renderer, "profileProperties", properties);
-    }
+    private final ChannelProfileRenderer renderer = new ChannelProfileRenderer();
 
     @Test
-    void rendersDescriptionAndEnglishAttributionWithPublicLinks() {
+    void rendersChannelTitleAndDescription() {
         var profile = renderer.render(new ChannelMetadata(
             "News & reports",
             "<p>First paragraph<br>line two</p><p>Second &lt;paragraph&gt;</p>",
@@ -33,29 +21,6 @@ class ChannelProfileRendererTest {
         assertThat(profile.fullName()).isEqualTo("News & reports");
         assertThat(profile.bioHtml()).isEqualTo(
             "<p>First paragraph<br>line two</p><p>Second &lt;paragraph&gt;</p>"
-                + "<p><b>This profile mirrors Telegram channel <a href=\"https://t.me/news_reports\">"
-                + "News &amp; reports</a>.</b> To import another channel, or your own channel into your Moera "
-                + "account, contact <a href=\"mailto:import@moera.example\">import@moera.example</a>.</p>"
-        );
-    }
-
-    @Test
-    void neverExposesPrivateInviteLinkWhenNoPublicUsernameExists() {
-        var profile = renderer.render(new ChannelMetadata("Private", "", null, null));
-
-        assertThat(profile.bioHtml()).contains("Telegram channel &quot;Private&quot;");
-        assertThat(profile.bioHtml()).doesNotContain("t.me/+", "href=\"https://t.me/");
-    }
-
-    @Test
-    void usesConfiguredEnglishHtmlTemplate() {
-        properties.setAttributionHtml("<p>Mirror: {channelLink}; requests: {contactLink}.</p>");
-
-        var profile = renderer.render(new ChannelMetadata("News", "", "news", null));
-
-        assertThat(profile.bioHtml()).isEqualTo(
-            "<p>Mirror: Telegram channel <a href=\"https://t.me/news\">News</a>; requests: "
-                + "<a href=\"mailto:import@moera.example\">import@moera.example</a>.</p>"
         );
     }
 
@@ -86,7 +51,7 @@ class ChannelProfileRendererTest {
 
         assertThat(profile.bioHtml().codePointCount(0, profile.bioHtml().length())).isLessThanOrEqualTo(4096);
         assertThat(profile.bioHtml()).startsWith("<p><a href=\"https://example.org\">");
-        assertThat(profile.bioHtml()).contains("</a></p><p><b>This profile mirrors");
+        assertThat(profile.bioHtml()).endsWith("</a></p>");
     }
 
 }

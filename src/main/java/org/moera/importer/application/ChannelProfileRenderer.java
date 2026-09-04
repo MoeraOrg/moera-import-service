@@ -1,16 +1,11 @@
 package org.moera.importer.application;
 
-import jakarta.inject.Inject;
-
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Element;
-import org.jsoup.nodes.Entities;
 import org.jsoup.nodes.Node;
 import org.jsoup.nodes.TextNode;
-import org.moera.importer.config.ProfileProperties;
 import org.moera.importer.source.ChannelMetadata;
 import org.springframework.stereotype.Component;
-import org.springframework.util.ObjectUtils;
 
 @Component
 public class ChannelProfileRenderer {
@@ -18,37 +13,9 @@ public class ChannelProfileRenderer {
     private static final int MAX_FULL_NAME = 96;
     private static final int MAX_BIO = 4096;
 
-    @Inject
-    private ProfileProperties profileProperties;
-
     public RenderedChannelProfile render(ChannelMetadata metadata) {
         String fullName = truncate(metadata.title(), MAX_FULL_NAME);
-        String attribution = profileProperties.getAttributionHtml()
-            .replace("{channelLink}", channelLink(metadata))
-            .replace("{contactLink}", contactLink());
-        if (attribution.length() > MAX_BIO) {
-            throw new IllegalStateException("Configured Moera profile attribution is too long");
-        }
-        String description = truncateHtml(metadata.descriptionHtml(), MAX_BIO - attribution.length());
-        String bio = description + attribution;
-        return new RenderedChannelProfile(fullName, bio);
-    }
-
-    private String channelLink(ChannelMetadata metadata) {
-        if (ObjectUtils.isEmpty(metadata.publicUsername())) {
-            return "Telegram channel &quot;" + escape(metadata.title()) + "&quot;";
-        }
-        String url = "https://t.me/" + metadata.publicUsername();
-        return "Telegram channel " + "<a href=\"" + escape(url) + "\">" + escape(metadata.title()) + "</a>";
-    }
-
-    private String contactLink() {
-        String email = escape(profileProperties.getContactEmail());
-        return "<a href=\"mailto:" + email + "\">" + email + "</a>";
-    }
-
-    private String escape(String value) {
-        return Entities.escape(value);
+        return new RenderedChannelProfile(fullName, truncateHtml(metadata.descriptionHtml(), MAX_BIO));
     }
 
     private String truncate(String value, int maxCodePoints) {

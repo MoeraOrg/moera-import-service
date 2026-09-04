@@ -23,6 +23,7 @@ import org.moera.importer.application.PublicationPayload;
 import org.moera.importer.model.Destination;
 import org.moera.importer.model.Media;
 import org.moera.lib.node.MoeraNode;
+import org.moera.lib.node.NodeSourceUri;
 import org.moera.lib.node.exception.MoeraNodeApiException;
 import org.moera.lib.node.exception.MoeraNodeApiNotFoundException;
 import org.moera.lib.node.exception.MoeraNodeException;
@@ -233,6 +234,10 @@ public class MoeraService {
             MoeraProfileAvatar avatar = profileAvatar(moeraNode, update);
             ProfileAttributes profile = new ProfileAttributes();
             profile.setFullName(update.fullName());
+            NodeSourceUri sourceUri = new NodeSourceUri();
+            sourceUri.setUri(update.sourceUri().toString());
+            sourceUri.setParameter(NodeSourceUri.VIA_EMAIL, update.viaEmail());
+            profile.setSourceUri(sourceUri.toString());
             profile.setBioSrc(update.bioHtml());
             profile.setBioSrcFormat(org.moera.lib.node.types.SourceFormat.HTML);
             if (update.hasEmblem()) {

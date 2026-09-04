@@ -1,6 +1,7 @@
 package org.moera.importer.moera;
 
 import java.io.IOException;
+import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Clock;
@@ -391,7 +392,8 @@ class MoeraServiceTest {
         when(moeraNode.createAvatar(any())).thenReturn(avatar);
 
         MoeraProfileAvatar result = moeraService.updateProfile(destination, new MoeraProfileUpdate(
-            "Telegram News", "<p>Channel description</p><p>Mirror attribution</p>", emblem,
+            "Telegram News", "<p>Channel description</p>", URI.create("https://t.me/news"),
+            "import+telegram@moera.example", emblem,
             "image/jpeg", null, null, true
         ));
 
@@ -407,9 +409,9 @@ class MoeraServiceTest {
         ArgumentCaptor<ProfileAttributes> profile = ArgumentCaptor.forClass(ProfileAttributes.class);
         verify(moeraNode).updateProfile(profile.capture());
         assertThat(profile.getValue().getFullName()).isEqualTo("Telegram News");
-        assertThat(profile.getValue().getBioSrc()).isEqualTo(
-            "<p>Channel description</p><p>Mirror attribution</p>"
-        );
+        assertThat(profile.getValue().getSourceUri())
+            .isEqualTo("https://t.me/news;via_email=import%2Btelegram%40moera.example");
+        assertThat(profile.getValue().getBioSrc()).isEqualTo("<p>Channel description</p>");
         assertThat(profile.getValue().getBioSrcFormat()).isEqualTo(SourceFormat.HTML);
         assertThat(profile.getValue().getAvatarId()).isEqualTo("avatar-id");
     }
@@ -417,7 +419,7 @@ class MoeraServiceTest {
     @Test
     void removesGlobalAvatarWhenChannelEmblemDisappears() throws Exception {
         MoeraProfileAvatar result = moeraService.updateProfile(destination, new MoeraProfileUpdate(
-            "Telegram News", "<p>Mirror attribution</p>", null, null,
+            "Telegram News", "", URI.create("https://t.me/news"), "import@moera.example", null, null,
             "avatar-id", "avatar-media-id", false
         ));
 
