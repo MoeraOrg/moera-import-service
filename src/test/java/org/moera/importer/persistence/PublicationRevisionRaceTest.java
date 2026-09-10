@@ -90,6 +90,71 @@ class PublicationRevisionRaceTest extends PostgresIntegrationTest {
     }
 
     @Test
+    void waitsForFirstProfileSynchronizationBeforeClaimingNewPublication() {
+        Fixture fixture = insertFixture(true, null);
+        long publicationId = insertPublication(
+            fixture.mirrorId(),
+            1,
+            null,
+            OffsetDateTime.now(ZoneOffset.UTC).minusSeconds(1),
+            null,
+            null
+        );
+
+        assertThat(publicationRepository.claimReady(1, Duration.ofMinutes(5))).isEmpty();
+
+        dslContext.update(DESTINATIONS)
+            .set(DESTINATIONS.PROFILE_FINGERPRINT, "profile-fingerprint")
+            .where(DESTINATIONS.ID.eq(fixture.destinationId()))
+            .execute();
+
+        assertThat(publicationRepository.claimReady(1, Duration.ofMinutes(5)))
+            .singleElement()
+            .extracting(PublicationClaim::publicationId)
+            .isEqualTo(publicationId);
+    }
+
+    @Test
+    void claimsNewPublicationWhenProfileSynchronizationIsDisabled() {
+        Fixture fixture = insertFixture(false, null);
+        long publicationId = insertPublication(
+            fixture.mirrorId(),
+            1,
+            null,
+            OffsetDateTime.now(ZoneOffset.UTC).minusSeconds(1),
+            null,
+            null
+        );
+
+        assertThat(publicationRepository.claimReady(1, Duration.ofMinutes(5)))
+            .singleElement()
+            .extracting(PublicationClaim::publicationId)
+            .isEqualTo(publicationId);
+    }
+
+    @Test
+    void claimsExistingPostingWithoutSuccessfulProfileSynchronization() {
+        Fixture fixture = insertFixture(true, null);
+        long publicationId = insertPublication(
+            fixture.mirrorId(),
+            2,
+            1,
+            OffsetDateTime.now(ZoneOffset.UTC).minusSeconds(1),
+            null,
+            null
+        );
+        dslContext.update(PUBLICATIONS)
+            .set(PUBLICATIONS.DESTINATION_POST_ID, "existing-post")
+            .where(PUBLICATIONS.ID.eq(publicationId))
+            .execute();
+
+        assertThat(publicationRepository.claimReady(1, Duration.ofMinutes(5)))
+            .singleElement()
+            .extracting(PublicationClaim::publicationId)
+            .isEqualTo(publicationId);
+    }
+
+    @Test
     void reclaimsExpiredLeaseWithNewTokenAndIncrementedAttempt() {
         Fixture fixture = insertFixture();
         UUID expiredToken = UUID.randomUUID();
@@ -269,6 +334,10 @@ class PublicationRevisionRaceTest extends PostgresIntegrationTest {
     }
 
     private Fixture insertFixture() {
+        return insertFixture(true, "profile-fingerprint");
+    }
+
+    private Fixture insertFixture(boolean profileSync, String profileFingerprint) {
         long channelId = insertChannel();
         long messageId = dslContext.insertInto(MESSAGES)
             .set(MESSAGES.CHANNEL_ID, channelId)
@@ -284,9 +353,9 @@ class PublicationRevisionRaceTest extends PostgresIntegrationTest {
             .set(MEDIA.SOURCE_HASH, hash(2))
             .returningResult(MEDIA.ID)
             .fetchSingle(MEDIA.ID);
-        long destinationId = insertDestination();
+        long destinationId = insertDestination(profileSync, profileFingerprint);
         long mirrorId = insertMirror(channelId, destinationId);
-        return new Fixture(mirrorId, mediaId);
+        return new Fixture(mirrorId, mediaId, destinationId);
     }
 
     private long insertChannel() {
@@ -301,8 +370,14 @@ class PublicationRevisionRaceTest extends PostgresIntegrationTest {
     }
 
     private long insertDestination() {
+        return insertDestination(true, "profile-fingerprint");
+    }
+
+    private long insertDestination(boolean profileSync, String profileFingerprint) {
         return dslContext.insertInto(DESTINATIONS)
             .set(DESTINATIONS.NODE_NAME, "destination.example")
+            .set(DESTINATIONS.PROFILE_SYNC, profileSync)
+            .set(DESTINATIONS.PROFILE_FINGERPRINT, profileFingerprint)
             .returningResult(DESTINATIONS.ID)
             .fetchSingle(DESTINATIONS.ID);
     }
@@ -387,7 +462,7 @@ class PublicationRevisionRaceTest extends PostgresIntegrationTest {
         return hash;
     }
 
-    private record Fixture(long mirrorId, long mediaId) {
+    private record Fixture(long mirrorId, long mediaId, long destinationId) {
     }
 
 }

@@ -1856,6 +1856,11 @@ Moera profile. Failures do not roll back source ingestion or mirror creation; a 
 profile full name is the Telegram channel title, and the profile bio is the channel description. The profile source URI
 uses the channel address and includes the configured contact e-mail address in its `via_email` parameter.
 
+Until a profile-enabled destination has completed at least one profile reconciliation (`profile_fingerprint IS NOT
+NULL`), the publication scheduler does not claim publications that have no `destination_post_id`. This gate applies
+only to initial posting delivery: media processing continues, and existing postings remain available for update or
+deletion.
+
 When the Telegram emblem changes, the service reacquires and downloads the large JPEG through TDLib, uploads it as
 public Moera media, creates a circular 200-pixel avatar, and sets it as the global profile avatar. It stores the source
 emblem identity, Moera avatar ID, Moera media ID, and avatar shape in dedicated destination columns. The stored media

@@ -315,6 +315,7 @@ class ImportPipelineTest extends PostgresIntegrationTest {
         )).id();
         long destinationId = dslContext.insertInto(DESTINATIONS)
             .set(DESTINATIONS.NODE_NAME, "destination.example")
+            .set(DESTINATIONS.PROFILE_SYNC, false)
             .returningResult(DESTINATIONS.ID)
             .fetchSingle(DESTINATIONS.ID);
         long mirrorId = dslContext.insertInto(MIRRORS)
