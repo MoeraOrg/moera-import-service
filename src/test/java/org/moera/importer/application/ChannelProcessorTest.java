@@ -197,6 +197,42 @@ class ChannelProcessorTest {
     }
 
     @Test
+    void stopsSchedulingAfterSameTemporaryFailureTypeForOneDay() {
+        var cause = new IllegalStateException("network down");
+        sourceAdapter.failure = new SourceTemporaryException("Telegram unavailable", cause);
+        ChannelClaim claim = new ChannelClaim(
+            channel(),
+            ChannelOperation.POLL,
+            UUID.randomUUID(),
+            3,
+            new FailureSeries(cause.getClass().getName(), NOW.minus(Duration.ofDays(1)))
+        );
+
+        channelProcessor.process(claim);
+
+        assertThat(channelRepository.failedOperation).isEqualTo(ChannelOperation.POLL);
+        assertThat(channelRepository.nextAttemptAt).isNull();
+        assertThat(meterRegistry.get("source_operations_total")
+            .tags("source", "telegram", "operation", "poll", "result", "permanent_failure")
+            .counter().count()).isEqualTo(1);
+    }
+
+    @Test
+    void reportsStaleClaimWhenTemporaryFailureCompletionRejectsToken() {
+        sourceAdapter.failure = new SourceTemporaryException("Telegram unavailable");
+        channelRepository.completionAccepted = false;
+
+        channelProcessor.process(claim(ChannelOperation.ACCESS));
+
+        assertThat(meterRegistry.get("source_operations_total")
+            .tags("source", "telegram", "operation", "access", "result", "stale_claim")
+            .counter().count()).isEqualTo(1);
+        assertThat(meterRegistry.find("source_operations_total")
+            .tags("source", "telegram", "operation", "access", "result", "temporary_failure")
+            .counter()).isNull();
+    }
+
+    @Test
     void doesNotSchedulePollFailureAfterHeartbeatLosesLease() {
         SourceTemporaryException failure = new SourceTemporaryException("Telegram unavailable");
         sourceAdapter.failure = failure;
@@ -306,17 +342,35 @@ class ChannelProcessorTest {
         }
 
         @Override
-        public boolean failAccess(long channelId, UUID token, Instant nextAttemptAt, String error) {
+        public boolean failAccess(
+            long channelId,
+            UUID token,
+            Instant nextAttemptAt,
+            String error,
+            FailureSeries failureSeries
+        ) {
             return recordFailure(ChannelOperation.ACCESS, token, nextAttemptAt, error);
         }
 
         @Override
-        public boolean failSubscription(long channelId, UUID token, Instant nextAttemptAt, String error) {
+        public boolean failSubscription(
+            long channelId,
+            UUID token,
+            Instant nextAttemptAt,
+            String error,
+            FailureSeries failureSeries
+        ) {
             return recordFailure(ChannelOperation.SUBSCRIPTION, token, nextAttemptAt, error);
         }
 
         @Override
-        public boolean failPoll(long channelId, UUID token, Instant nextAttemptAt, String error) {
+        public boolean failPoll(
+            long channelId,
+            UUID token,
+            Instant nextAttemptAt,
+            String error,
+            FailureSeries failureSeries
+        ) {
             return recordFailure(ChannelOperation.POLL, token, nextAttemptAt, error);
         }
 

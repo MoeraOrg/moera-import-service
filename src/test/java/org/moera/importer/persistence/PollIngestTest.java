@@ -76,6 +76,10 @@ class PollIngestTest extends PostgresIntegrationTest {
     void ingestsPollAndCompletesMatchingLeaseAtomically() {
         UUID processingToken = UUID.randomUUID();
         long channelId = insertLeasedChannel(processingToken, "initial-waterline");
+        dslContext.update(CHANNELS)
+            .set(CHANNELS.POLL_FAILURE_TYPE, "failure.Type")
+            .set(CHANNELS.POLL_FAILURE_STARTED_AT, OffsetDateTime.now(ZoneOffset.UTC).minusHours(1))
+            .execute();
         Instant nextPollAt = Instant.parse("2026-08-25T10:30:00Z");
         PollResult result = new PollResult(
             List.of(sourceMessage()),
@@ -101,6 +105,8 @@ class PollIngestTest extends PostgresIntegrationTest {
         assertThat(channel.getNextPollAt().toInstant()).isEqualTo(nextPollAt);
         assertThat(channel.getPollAttempts()).isZero();
         assertThat(channel.getPollLastError()).isNull();
+        assertThat(channel.getPollFailureType()).isNull();
+        assertThat(channel.getPollFailureStartedAt()).isNull();
         assertThat(channel.getProcessingOperation()).isNull();
         assertThat(channel.getProcessingToken()).isNull();
         assertThat(channel.getProcessingUntil()).isNull();

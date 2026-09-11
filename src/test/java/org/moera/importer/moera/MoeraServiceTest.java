@@ -22,6 +22,7 @@ import org.moera.importer.model.Destination;
 import org.moera.importer.model.Media;
 import org.moera.lib.node.MoeraNode;
 import org.moera.lib.node.exception.MoeraNodeApiException;
+import org.moera.lib.node.exception.MoeraNodeApiAuthenticationException;
 import org.moera.lib.node.exception.MoeraNodeApiNotFoundException;
 import org.moera.lib.node.exception.MoeraNodeApiOperationException;
 import org.moera.lib.node.exception.MoeraNodeApiValidationException;
@@ -591,6 +592,25 @@ class MoeraServiceTest {
 
         assertThatThrownBy(() -> moeraService.uploadMedia(destination, file, media()))
             .isInstanceOf(MoeraTemporaryException.class);
+    }
+
+    @Test
+    void mapsAuthenticationFailureToRetryableOutcomeForReadRequest() throws Exception {
+        when(moeraNode.getFeatures()).thenThrow(new MoeraNodeApiAuthenticationException());
+
+        assertThatThrownBy(() -> moeraService.capabilities(destination))
+            .isInstanceOf(MoeraTemporaryException.class)
+            .hasCauseInstanceOf(MoeraNodeApiAuthenticationException.class);
+    }
+
+    @Test
+    void mapsAuthenticationFailureToRetryableOutcomeForMutatingRequest() throws Exception {
+        when(moeraNode.updatePosting(anyString(), any()))
+            .thenThrow(new MoeraNodeApiAuthenticationException());
+
+        assertThatThrownBy(() -> moeraService.updatePost(destination, "posting-id", payload()))
+            .isInstanceOf(MoeraTemporaryException.class)
+            .hasCauseInstanceOf(MoeraNodeApiAuthenticationException.class);
     }
 
     @Test

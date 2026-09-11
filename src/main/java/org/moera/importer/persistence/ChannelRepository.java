@@ -13,6 +13,7 @@ import jakarta.inject.Inject;
 import com.fasterxml.jackson.databind.JsonNode;
 import org.jooq.Condition;
 import org.jooq.DSLContext;
+import org.moera.importer.application.FailureSeries;
 import org.jooq.Field;
 import org.jooq.TableField;
 import org.moera.importer.model.ChannelOperation;
@@ -148,6 +149,8 @@ public class ChannelRepository {
             org.moera.importer.persistence.jooq.enums.ChannelOperation.ACCESS,
             CHANNELS.ACCESS_RETRY_AT,
             CHANNELS.ACCESS_ATTEMPTS,
+            CHANNELS.ACCESS_FAILURE_TYPE,
+            CHANNELS.ACCESS_FAILURE_STARTED_AT,
             CHANNELS.ACCESS_RETRY_AT.isNotNull()
         );
     }
@@ -161,6 +164,8 @@ public class ChannelRepository {
             org.moera.importer.persistence.jooq.enums.ChannelOperation.SUBSCRIPTION,
             CHANNELS.SUBSCRIPTION_RETRY_AT,
             CHANNELS.SUBSCRIPTION_ATTEMPTS,
+            CHANNELS.SUBSCRIPTION_FAILURE_TYPE,
+            CHANNELS.SUBSCRIPTION_FAILURE_STARTED_AT,
             CHANNELS.SUBSCRIPTION_RETRY_AT.isNotNull().and(
                 CHANNELS.ACCESS_STATE.eq(org.moera.importer.persistence.jooq.enums.AccessState.GRANTED)
             )
@@ -176,6 +181,8 @@ public class ChannelRepository {
             org.moera.importer.persistence.jooq.enums.ChannelOperation.POLL,
             CHANNELS.NEXT_POLL_AT,
             CHANNELS.POLL_ATTEMPTS,
+            CHANNELS.POLL_FAILURE_TYPE,
+            CHANNELS.POLL_FAILURE_STARTED_AT,
             CHANNELS.NEXT_POLL_AT.isNotNull().and(
                 CHANNELS.ACCESS_STATE.eq(org.moera.importer.persistence.jooq.enums.AccessState.GRANTED)
             )
@@ -221,6 +228,8 @@ public class ChannelRepository {
             .set(CHANNELS.ACCESS_ATTEMPTS, 0)
             .setNull(CHANNELS.ACCESS_RETRY_AT)
             .setNull(CHANNELS.ACCESS_LAST_ERROR)
+            .setNull(CHANNELS.ACCESS_FAILURE_TYPE)
+            .setNull(CHANNELS.ACCESS_FAILURE_STARTED_AT)
             .set(CHANNELS.ACCESS_DATA, jooqMappings.json(result.data()))
             .setNull(CHANNELS.PROCESSING_OPERATION)
             .setNull(CHANNELS.PROCESSING_TOKEN)
@@ -244,6 +253,8 @@ public class ChannelRepository {
             .set(CHANNELS.SUBSCRIPTION_ATTEMPTS, 0)
             .setNull(CHANNELS.SUBSCRIPTION_RETRY_AT)
             .setNull(CHANNELS.SUBSCRIPTION_LAST_ERROR)
+            .setNull(CHANNELS.SUBSCRIPTION_FAILURE_TYPE)
+            .setNull(CHANNELS.SUBSCRIPTION_FAILURE_STARTED_AT)
             .set(CHANNELS.SUBSCRIPTION_DATA, jooqMappings.json(result.data()))
             .setNull(CHANNELS.PROCESSING_OPERATION)
             .setNull(CHANNELS.PROCESSING_TOKEN)
@@ -258,39 +269,66 @@ public class ChannelRepository {
         return updated == 1;
     }
 
-    public boolean failAccess(long channelId, UUID token, Instant nextAttemptAt, String error) {
+    public boolean failAccess(
+        long channelId,
+        UUID token,
+        Instant nextAttemptAt,
+        String error,
+        FailureSeries failureSeries
+    ) {
         return fail(
             channelId,
             token,
             org.moera.importer.persistence.jooq.enums.ChannelOperation.ACCESS,
             CHANNELS.ACCESS_RETRY_AT,
             CHANNELS.ACCESS_LAST_ERROR,
+            CHANNELS.ACCESS_FAILURE_TYPE,
+            CHANNELS.ACCESS_FAILURE_STARTED_AT,
             nextAttemptAt,
-            error
+            error,
+            failureSeries
         );
     }
 
-    public boolean failSubscription(long channelId, UUID token, Instant nextAttemptAt, String error) {
+    public boolean failSubscription(
+        long channelId,
+        UUID token,
+        Instant nextAttemptAt,
+        String error,
+        FailureSeries failureSeries
+    ) {
         return fail(
             channelId,
             token,
             org.moera.importer.persistence.jooq.enums.ChannelOperation.SUBSCRIPTION,
             CHANNELS.SUBSCRIPTION_RETRY_AT,
             CHANNELS.SUBSCRIPTION_LAST_ERROR,
+            CHANNELS.SUBSCRIPTION_FAILURE_TYPE,
+            CHANNELS.SUBSCRIPTION_FAILURE_STARTED_AT,
             nextAttemptAt,
-            error
+            error,
+            failureSeries
         );
     }
 
-    public boolean failPoll(long channelId, UUID token, Instant nextAttemptAt, String error) {
+    public boolean failPoll(
+        long channelId,
+        UUID token,
+        Instant nextAttemptAt,
+        String error,
+        FailureSeries failureSeries
+    ) {
         return fail(
             channelId,
             token,
             org.moera.importer.persistence.jooq.enums.ChannelOperation.POLL,
             CHANNELS.NEXT_POLL_AT,
             CHANNELS.POLL_LAST_ERROR,
+            CHANNELS.POLL_FAILURE_TYPE,
+            CHANNELS.POLL_FAILURE_STARTED_AT,
             nextAttemptAt,
-            error
+            error,
+            failureSeries
         );
     }
 
@@ -302,15 +340,21 @@ public class ChannelRepository {
             .set(CHANNELS.ACCESS_ATTEMPTS, 0)
             .set(CHANNELS.ACCESS_RETRY_AT, now)
             .setNull(CHANNELS.ACCESS_LAST_ERROR)
+            .setNull(CHANNELS.ACCESS_FAILURE_TYPE)
+            .setNull(CHANNELS.ACCESS_FAILURE_STARTED_AT)
             .set(CHANNELS.ACCESS_DATA, jooqMappings.json(data))
             .set(CHANNELS.SUBSCRIPTION_STATE,
                 org.moera.importer.persistence.jooq.enums.SubscriptionState.LOST)
             .set(CHANNELS.SUBSCRIPTION_ATTEMPTS, 0)
             .set(CHANNELS.SUBSCRIPTION_RETRY_AT, now)
             .setNull(CHANNELS.SUBSCRIPTION_LAST_ERROR)
+            .setNull(CHANNELS.SUBSCRIPTION_FAILURE_TYPE)
+            .setNull(CHANNELS.SUBSCRIPTION_FAILURE_STARTED_AT)
             .set(CHANNELS.POLL_ATTEMPTS, 0)
             .set(CHANNELS.NEXT_POLL_AT, now)
             .setNull(CHANNELS.POLL_LAST_ERROR)
+            .setNull(CHANNELS.POLL_FAILURE_TYPE)
+            .setNull(CHANNELS.POLL_FAILURE_STARTED_AT)
             .setNull(CHANNELS.PROCESSING_OPERATION)
             .setNull(CHANNELS.PROCESSING_TOKEN)
             .setNull(CHANNELS.PROCESSING_UNTIL)
@@ -330,10 +374,14 @@ public class ChannelRepository {
             .set(CHANNELS.SUBSCRIPTION_ATTEMPTS, 0)
             .set(CHANNELS.SUBSCRIPTION_RETRY_AT, now)
             .setNull(CHANNELS.SUBSCRIPTION_LAST_ERROR)
+            .setNull(CHANNELS.SUBSCRIPTION_FAILURE_TYPE)
+            .setNull(CHANNELS.SUBSCRIPTION_FAILURE_STARTED_AT)
             .set(CHANNELS.SUBSCRIPTION_DATA, jooqMappings.json(data))
             .set(CHANNELS.POLL_ATTEMPTS, 0)
             .set(CHANNELS.NEXT_POLL_AT, now)
             .setNull(CHANNELS.POLL_LAST_ERROR)
+            .setNull(CHANNELS.POLL_FAILURE_TYPE)
+            .setNull(CHANNELS.POLL_FAILURE_STARTED_AT)
             .setNull(CHANNELS.PROCESSING_OPERATION)
             .setNull(CHANNELS.PROCESSING_TOKEN)
             .setNull(CHANNELS.PROCESSING_UNTIL)
@@ -351,6 +399,8 @@ public class ChannelRepository {
         org.moera.importer.persistence.jooq.enums.ChannelOperation generatedOperation,
         TableField<ChannelsRecord, OffsetDateTime> dueAt,
         TableField<ChannelsRecord, Integer> attempts,
+        TableField<ChannelsRecord, String> failureType,
+        TableField<ChannelsRecord, OffsetDateTime> failureStartedAt,
         Condition valid
     ) {
         if (limit <= 0) {
@@ -392,7 +442,8 @@ public class ChannelRepository {
                 jooqMappings.channelSnapshot(record),
                 operation,
                 processingToken,
-                claimedAttempts
+                claimedAttempts,
+                failureSeries(record.get(failureType), record.get(failureStartedAt))
             ));
         }
         return List.copyOf(claims);
@@ -404,12 +455,20 @@ public class ChannelRepository {
         org.moera.importer.persistence.jooq.enums.ChannelOperation operation,
         TableField<ChannelsRecord, OffsetDateTime> nextAttemptAtField,
         TableField<ChannelsRecord, String> errorField,
+        TableField<ChannelsRecord, String> failureTypeField,
+        TableField<ChannelsRecord, OffsetDateTime> failureStartedAtField,
         Instant nextAttemptAt,
-        String error
+        String error,
+        FailureSeries failureSeries
     ) {
         int updated = dslContext.update(CHANNELS)
             .set(nextAttemptAtField, jooqMappings.offsetDateTime(nextAttemptAt))
             .set(errorField, error)
+            .set(failureTypeField, failureSeries != null ? failureSeries.type() : null)
+            .set(
+                failureStartedAtField,
+                failureSeries != null ? jooqMappings.offsetDateTime(failureSeries.startedAt()) : null
+            )
             .setNull(CHANNELS.PROCESSING_OPERATION)
             .setNull(CHANNELS.PROCESSING_TOKEN)
             .setNull(CHANNELS.PROCESSING_UNTIL)
@@ -419,6 +478,10 @@ public class ChannelRepository {
             .and(CHANNELS.PROCESSING_TOKEN.eq(token))
             .execute();
         return updated == 1;
+    }
+
+    private FailureSeries failureSeries(String type, OffsetDateTime startedAt) {
+        return type != null && startedAt != null ? new FailureSeries(type, startedAt.toInstant()) : null;
     }
 
     private Field<String> metadataTitle(ChannelMetadata metadata) {

@@ -11,6 +11,7 @@ import java.util.UUID;
 import jakarta.inject.Inject;
 
 import org.jooq.DSLContext;
+import org.moera.importer.application.FailureSeries;
 import org.moera.importer.model.Message;
 import org.moera.importer.observability.ImportMetrics;
 import org.springframework.stereotype.Repository;
@@ -56,6 +57,8 @@ public class PublicationRepository {
                 PUBLICATIONS.ID,
                 PUBLICATIONS.REVISION,
                 PUBLICATIONS.ATTEMPTS,
+                PUBLICATIONS.FAILURE_TYPE,
+                PUBLICATIONS.FAILURE_STARTED_AT,
                 PUBLICATIONS.PROCESSING_UNTIL
             )
             .from(PUBLICATIONS)
@@ -94,7 +97,16 @@ public class PublicationRepository {
                 .set(PUBLICATIONS.UPDATED_AT, jooqMappings.offsetDateTime(now))
                 .where(PUBLICATIONS.ID.eq(publicationId))
                 .execute();
-            return new PublicationClaim(publicationId, targetRevision, processingToken, attempts);
+            return new PublicationClaim(
+                publicationId,
+                targetRevision,
+                processingToken,
+                attempts,
+                failureSeries(
+                    record.get(PUBLICATIONS.FAILURE_TYPE),
+                    record.get(PUBLICATIONS.FAILURE_STARTED_AT)
+                )
+            );
         }).toList();
     }
 
@@ -186,22 +198,31 @@ public class PublicationRepository {
         return complete(publicationId, token, targetRevision, null, true, destinationState);
     }
 
+    @Transactional
     public boolean retry(
         long publicationId,
         UUID token,
+        int targetRevision,
         Instant nextAttemptAt,
-        String error
+        String error,
+        FailureSeries failureSeries
     ) {
         Instant now = clock.instant();
         return dslContext.update(PUBLICATIONS)
             .set(PUBLICATIONS.NEXT_ATTEMPT_AT, jooqMappings.offsetDateTime(nextAttemptAt))
             .set(PUBLICATIONS.LAST_ERROR, error)
+            .set(PUBLICATIONS.FAILURE_TYPE, failureSeries != null ? failureSeries.type() : null)
+            .set(
+                PUBLICATIONS.FAILURE_STARTED_AT,
+                failureSeries != null ? jooqMappings.offsetDateTime(failureSeries.startedAt()) : null
+            )
             .setNull(PUBLICATIONS.PROCESSING_TOKEN)
             .setNull(PUBLICATIONS.PROCESSING_UNTIL)
             .set(PUBLICATIONS.UPDATED_AT, jooqMappings.offsetDateTime(now))
             .where(PUBLICATIONS.ID.eq(publicationId))
             .and(PUBLICATIONS.PROCESSING_TOKEN.eq(token))
-            .execute() == 1;
+            .and(PUBLICATIONS.REVISION.eq(targetRevision))
+            .execute() == 1 || releaseChangedRevision(publicationId, token, targetRevision, now);
     }
 
     public boolean deferCreateRate(long publicationId, UUID token, Instant nextAttemptAt) {
@@ -220,17 +241,30 @@ public class PublicationRepository {
             .execute() == 1;
     }
 
-    public boolean fail(long publicationId, UUID token, String error) {
+    @Transactional
+    public boolean fail(
+        long publicationId,
+        UUID token,
+        int targetRevision,
+        String error,
+        FailureSeries failureSeries
+    ) {
         Instant now = clock.instant();
         return dslContext.update(PUBLICATIONS)
             .setNull(PUBLICATIONS.NEXT_ATTEMPT_AT)
             .set(PUBLICATIONS.LAST_ERROR, error)
+            .set(PUBLICATIONS.FAILURE_TYPE, failureSeries != null ? failureSeries.type() : null)
+            .set(
+                PUBLICATIONS.FAILURE_STARTED_AT,
+                failureSeries != null ? jooqMappings.offsetDateTime(failureSeries.startedAt()) : null
+            )
             .setNull(PUBLICATIONS.PROCESSING_TOKEN)
             .setNull(PUBLICATIONS.PROCESSING_UNTIL)
             .set(PUBLICATIONS.UPDATED_AT, jooqMappings.offsetDateTime(now))
             .where(PUBLICATIONS.ID.eq(publicationId))
             .and(PUBLICATIONS.PROCESSING_TOKEN.eq(token))
-            .execute() == 1;
+            .and(PUBLICATIONS.REVISION.eq(targetRevision))
+            .execute() == 1 || releaseChangedRevision(publicationId, token, targetRevision, now);
     }
 
     @Transactional
@@ -262,6 +296,8 @@ public class PublicationRepository {
             .set(PUBLICATIONS.REVISION, PUBLICATIONS.REVISION.plus(1))
             .set(PUBLICATIONS.ATTEMPTS, 0)
             .setNull(PUBLICATIONS.LAST_ERROR)
+            .setNull(PUBLICATIONS.FAILURE_TYPE)
+            .setNull(PUBLICATIONS.FAILURE_STARTED_AT)
             .set(PUBLICATIONS.NEXT_ATTEMPT_AT, jooqMappings.offsetDateTime(now))
             .set(PUBLICATIONS.UPDATED_AT, jooqMappings.offsetDateTime(now))
             .where(PUBLICATIONS.ID.in(dslContext.select(PUBLICATION_MESSAGES.PUBLICATION_ID)
@@ -301,6 +337,22 @@ public class PublicationRepository {
         return hash;
     }
 
+    private FailureSeries failureSeries(String type, java.time.OffsetDateTime startedAt) {
+        return type != null && startedAt != null ? new FailureSeries(type, startedAt.toInstant()) : null;
+    }
+
+    private boolean releaseChangedRevision(long publicationId, UUID token, int targetRevision, Instant now) {
+        dslContext.update(PUBLICATIONS)
+            .setNull(PUBLICATIONS.PROCESSING_TOKEN)
+            .setNull(PUBLICATIONS.PROCESSING_UNTIL)
+            .set(PUBLICATIONS.UPDATED_AT, jooqMappings.offsetDateTime(now))
+            .where(PUBLICATIONS.ID.eq(publicationId))
+            .and(PUBLICATIONS.PROCESSING_TOKEN.eq(token))
+            .and(PUBLICATIONS.REVISION.ne(targetRevision))
+            .execute();
+        return false;
+    }
+
     private Map<String, String> destinationStories(long publicationId) {
         return dslContext.select(PUBLICATION_STORIES.FEED_NAME, PUBLICATION_STORIES.STORY_ID)
             .from(PUBLICATION_STORIES)
@@ -328,6 +380,8 @@ public class PublicationRepository {
                     .otherwise(jooqMappings.offsetDateTime(now))
             )
             .setNull(PUBLICATIONS.LAST_ERROR)
+            .setNull(PUBLICATIONS.FAILURE_TYPE)
+            .setNull(PUBLICATIONS.FAILURE_STARTED_AT)
             .setNull(PUBLICATIONS.PROCESSING_TOKEN)
             .setNull(PUBLICATIONS.PROCESSING_UNTIL)
             .set(PUBLICATIONS.UPDATED_AT, jooqMappings.offsetDateTime(now));

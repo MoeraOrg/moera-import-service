@@ -98,4 +98,5 @@ moera:
   retry:
     base-delay: 1s
     max-delay: 1h
+    fatal-after: 24h
     jitter-fraction: 0.2

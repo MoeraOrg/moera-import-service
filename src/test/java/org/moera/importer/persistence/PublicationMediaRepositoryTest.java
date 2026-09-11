@@ -18,6 +18,7 @@ import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import org.jooq.DSLContext;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.moera.importer.application.FailureSeries;
 import org.moera.importer.model.MediaSkipReason;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -159,6 +160,10 @@ class PublicationMediaRepositoryTest extends PostgresIntegrationTest {
         byte[] originalHash = hash(1);
         Fixture fixture = insertFixture(originalHash);
         PublicationMediaClaim firstClaim = publicationMediaRepository.claimPending(1, Duration.ofMinutes(5)).getFirst();
+        dslContext.update(PUBLICATION_MEDIA)
+            .set(PUBLICATION_MEDIA.FAILURE_TYPE, "failure.Type")
+            .set(PUBLICATION_MEDIA.FAILURE_STARTED_AT, OffsetDateTime.now(ZoneOffset.UTC).minusHours(1))
+            .execute();
         Instant nextCheck = Instant.now().plusSeconds(10).truncatedTo(ChronoUnit.MICROS);
 
         boolean waiting = publicationMediaRepository.awaitingCompression(
@@ -179,6 +184,8 @@ class PublicationMediaRepositoryTest extends PostgresIntegrationTest {
         assertThat(waitingRecord.getCompressionPending()).isTrue();
         assertThat(waitingRecord.getNextAttemptAt().toInstant()).isEqualTo(nextCheck);
         assertThat(waitingRecord.getLastError()).isNull();
+        assertThat(waitingRecord.getFailureType()).isNull();
+        assertThat(waitingRecord.getFailureStartedAt()).isNull();
         assertThat(waitingRecord.getProcessingToken()).isNull();
 
         dslContext.update(PUBLICATION_MEDIA)
@@ -226,22 +233,28 @@ class PublicationMediaRepositoryTest extends PostgresIntegrationTest {
             fixture.mediaId(),
             claim.processingToken(),
             Instant.now().plusSeconds(30),
-            "temporary"
+            "temporary",
+            new FailureSeries("failure.Type", Instant.now())
         )).isTrue();
         var retryRecord = dslContext.selectFrom(PUBLICATION_MEDIA).fetchSingle();
         assertThat(retryRecord.getLastError()).isEqualTo("temporary");
+        assertThat(retryRecord.getFailureType()).isEqualTo("failure.Type");
+        assertThat(retryRecord.getFailureStartedAt()).isNotNull();
         assertThat(retryRecord.getProcessingToken()).isNull();
 
         dslContext.update(PUBLICATION_MEDIA)
             .set(PUBLICATION_MEDIA.NEXT_ATTEMPT_AT, OffsetDateTime.now(ZoneOffset.UTC).minusSeconds(1))
             .execute();
         claim = publicationMediaRepository.claimPending(1, Duration.ofMinutes(5)).getFirst();
+        assertThat(claim.failureSeries().type()).isEqualTo("failure.Type");
         assertThat(publicationMediaRepository.fail(
-            fixture.publicationId(), fixture.mediaId(), claim.processingToken(), "permanent"
+            fixture.publicationId(), fixture.mediaId(), claim.processingToken(), "permanent", null
         )).isTrue();
         var failedRecord = dslContext.selectFrom(PUBLICATION_MEDIA).fetchSingle();
         assertThat(failedRecord.getNextAttemptAt()).isNull();
         assertThat(failedRecord.getLastError()).isEqualTo("permanent");
+        assertThat(failedRecord.getFailureType()).isNull();
+        assertThat(failedRecord.getFailureStartedAt()).isNull();
         assertThat(failedRecord.getProcessingToken()).isNull();
     }
 

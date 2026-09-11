@@ -137,12 +137,16 @@ access_state
 access_attempts
 access_retry_at
 access_last_error
+access_failure_type
+access_failure_started_at
 access_data JSONB
 
 subscription_state
 subscription_attempts
 subscription_retry_at
 subscription_last_error
+subscription_failure_type
+subscription_failure_started_at
 subscription_data JSONB
 
 waterline JSONB
@@ -151,6 +155,8 @@ last_poll_at
 next_poll_at
 poll_attempts
 poll_last_error
+poll_failure_type
+poll_failure_started_at
 
 processing_operation
 processing_token
@@ -197,7 +203,8 @@ Meaning:
 
 Source-specific details stay in `access_data`.
 
-`access_attempts`, `access_retry_at`, and `access_last_error` are universal scheduler/diagnostic state.
+`access_attempts`, `access_retry_at`, `access_last_error`, `access_failure_type`, and
+`access_failure_started_at` are universal scheduler/diagnostic state.
 
 ## 8. Subscription lifecycle
 
@@ -227,6 +234,9 @@ Meaning:
 represent loss of membership/access assumptions or another condition requiring live state to be established again.
 
 Source-specific details stay in `subscription_data`.
+
+`subscription_attempts`, `subscription_retry_at`, `subscription_last_error`, `subscription_failure_type`, and
+`subscription_failure_started_at` are universal scheduler/diagnostic state.
 
 ## 9. Polling
 
@@ -258,6 +268,8 @@ last_poll_at
 next_poll_at
 poll_attempts
 poll_last_error
+poll_failure_type
+poll_failure_started_at
 ```
 
 A successful poll calculates the next regular poll using the source adapter's policy.
@@ -671,6 +683,8 @@ destination_pinned
 attempts
 next_attempt_at
 last_error
+failure_type
+failure_started_at
 processing_token
 processing_until
 created_at
@@ -741,6 +755,8 @@ compression_pending
 attempts
 next_attempt_at
 last_error
+failure_type
+failure_started_at
 processing_token
 processing_until
 created_at
@@ -1176,6 +1192,8 @@ On success:
 attempts = 0
 next_attempt_at = NULL
 last_error = NULL
+failure_type = NULL
+failure_started_at = NULL
 ```
 
 For regularly recurring polling, success instead schedules the next normal poll through
@@ -1213,7 +1231,18 @@ A transient/unknown-outcome failure clears the lease and sets:
 ```text
 next_attempt_at = now + retry delay
 last_error = concise diagnostic text
+failure_type = deepest cause class name
+failure_started_at = start of the current same-type failure series
 ```
+
+The first transient/unknown-outcome failure starts a durable failure series. A later failure with a different
+`failure_type` starts a new series. If the same operation continues to fail with the same `failure_type` for the
+configured `fatal-after` duration (24 hours by default), the latest failure is promoted to permanent and automatic
+scheduling stops. This time limit applies to source access, source subscription, source polling, publication delivery,
+and publication-media processing. Error messages may change without resetting the series.
+
+The type is the fully qualified class name of the deepest exception cause. This distinguishes, for example, Moera
+authentication failures from Moera connection failures even though both cross the core boundary as temporary errors.
 
 A permanent failure clears the lease and leaves:
 
@@ -1233,6 +1262,8 @@ When the input changes, retry state is reset:
 ```text
 attempts = 0
 last_error = NULL
+failure_type = NULL
+failure_started_at = NULL
 next_attempt_at = now()
 ```
 
@@ -2063,6 +2094,8 @@ Network processors use the same failure pattern:
 
 - temporary failures are rescheduled using `RetryPolicy`;
 - outcome-unknown failures are rescheduled the same way but are separately logged and metered;
+- a continuous series of same-type temporary or outcome-unknown failures becomes permanent after the configured
+  `fatal-after` duration;
 - permanent failures clear automatic scheduling and retain `last_error`;
 - normal terminal media outcomes such as `TOO_LARGE`, `UNSUPPORTED`, and `SOURCE_UNAVAILABLE` become `SKIPPED` rather
   than failures.

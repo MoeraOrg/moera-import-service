@@ -22,6 +22,7 @@ public class MoeraImportApplication {
         return new RetryPolicy(
             retryProperties.getBaseDelay(),
             retryProperties.getMaxDelay(),
+            retryProperties.getFatalAfter(),
             retryProperties.getJitterFraction()
         );
     }

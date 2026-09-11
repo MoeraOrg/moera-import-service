@@ -15,6 +15,7 @@ import jakarta.inject.Inject;
 import org.jooq.DSLContext;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.moera.importer.application.FailureSeries;
 import org.moera.importer.model.AccessState;
 import org.moera.importer.model.SubscriptionState;
 import org.moera.importer.source.AccessResult;
@@ -106,6 +107,10 @@ class LeaseConcurrencyTest extends PostgresIntegrationTest {
     @Test
     void matchingAccessCompletionResetsAttemptAndClearsLease() {
         long channelId = insertExpiredAccess(UUID.randomUUID());
+        dslContext.update(CHANNELS)
+            .set(CHANNELS.ACCESS_FAILURE_TYPE, "failure.Type")
+            .set(CHANNELS.ACCESS_FAILURE_STARTED_AT, OffsetDateTime.now(ZoneOffset.UTC).minusHours(1))
+            .execute();
         ChannelClaim claim = channelRepository.claimAccess(1, Duration.ofMinutes(5)).getFirst();
         AccessResult result = new AccessResult(
             AccessState.GRANTED,
@@ -122,6 +127,8 @@ class LeaseConcurrencyTest extends PostgresIntegrationTest {
         assertThat(channel.getSourceId()).isEqualTo("resolved-channel");
         assertThat(channel.getAccessAttempts()).isZero();
         assertThat(channel.getAccessRetryAt()).isNull();
+        assertThat(channel.getAccessFailureType()).isNull();
+        assertThat(channel.getAccessFailureStartedAt()).isNull();
         assertThat(channel.getProcessingToken()).isNull();
         assertThat(jooqMappings.jsonNode(channel.getSourceData()).path("adapterState").asText()).isEqualTo("kept");
         assertThat(jooqMappings.jsonNode(channel.getSourceData()).has("profile")).isFalse();
@@ -132,6 +139,10 @@ class LeaseConcurrencyTest extends PostgresIntegrationTest {
     @Test
     void matchingSubscriptionCompletionResetsAttemptAndClearsLease() {
         insertDueSubscription();
+        dslContext.update(CHANNELS)
+            .set(CHANNELS.SUBSCRIPTION_FAILURE_TYPE, "failure.Type")
+            .set(CHANNELS.SUBSCRIPTION_FAILURE_STARTED_AT, OffsetDateTime.now(ZoneOffset.UTC).minusHours(1))
+            .execute();
         ChannelClaim claim = channelRepository.claimSubscriptions(1, Duration.ofMinutes(5)).getFirst();
         SubscriptionResult result = new SubscriptionResult(
             SubscriptionState.ACTIVE,
@@ -147,6 +158,8 @@ class LeaseConcurrencyTest extends PostgresIntegrationTest {
         assertThat(channel.getSubscriptionState()).isEqualTo(ACTIVE);
         assertThat(channel.getSubscriptionAttempts()).isZero();
         assertThat(channel.getSubscriptionRetryAt()).isNull();
+        assertThat(channel.getSubscriptionFailureType()).isNull();
+        assertThat(channel.getSubscriptionFailureStartedAt()).isNull();
         assertThat(channel.getProcessingToken()).isNull();
     }
 
@@ -157,7 +170,11 @@ class LeaseConcurrencyTest extends PostgresIntegrationTest {
         Instant nextAttemptAt = Instant.now().plus(Duration.ofMinutes(5)).truncatedTo(ChronoUnit.MICROS);
 
         boolean failed = channelRepository.failPoll(
-            claim.channel().id(), claim.processingToken(), nextAttemptAt, "temporary"
+            claim.channel().id(),
+            claim.processingToken(),
+            nextAttemptAt,
+            "temporary",
+            new FailureSeries("failure.Type", Instant.now())
         );
 
         assertThat(failed).isTrue();
@@ -165,7 +182,15 @@ class LeaseConcurrencyTest extends PostgresIntegrationTest {
         assertThat(channel.getPollAttempts()).isEqualTo(1);
         assertThat(channel.getNextPollAt().toInstant()).isEqualTo(nextAttemptAt);
         assertThat(channel.getPollLastError()).isEqualTo("temporary");
+        assertThat(channel.getPollFailureType()).isEqualTo("failure.Type");
+        assertThat(channel.getPollFailureStartedAt()).isNotNull();
         assertThat(channel.getProcessingToken()).isNull();
+
+        dslContext.update(CHANNELS)
+            .set(CHANNELS.NEXT_POLL_AT, OffsetDateTime.now(ZoneOffset.UTC).minusSeconds(1))
+            .execute();
+        ChannelClaim retryClaim = channelRepository.claimPolls(1, Duration.ofMinutes(5)).getFirst();
+        assertThat(retryClaim.failureSeries().type()).isEqualTo("failure.Type");
     }
 
     @Test

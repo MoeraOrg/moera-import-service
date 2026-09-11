@@ -12,6 +12,7 @@ import java.util.UUID;
 import jakarta.inject.Inject;
 
 import org.jooq.DSLContext;
+import org.moera.importer.application.FailureSeries;
 import org.moera.importer.model.MediaSkipReason;
 import org.moera.importer.observability.ImportMetrics;
 import org.slf4j.Logger;
@@ -60,6 +61,8 @@ public class PublicationMediaRepository {
                 PUBLICATION_MEDIA.PUBLICATION_ID,
                 PUBLICATION_MEDIA.MEDIA_ID,
                 PUBLICATION_MEDIA.ATTEMPTS,
+                PUBLICATION_MEDIA.FAILURE_TYPE,
+                PUBLICATION_MEDIA.FAILURE_STARTED_AT,
                 PUBLICATION_MEDIA.PROCESSING_TOKEN,
                 PUBLICATION_MEDIA.PROCESSING_UNTIL
             )
@@ -106,7 +109,16 @@ public class PublicationMediaRepository {
                     attempts
                 );
             }
-            return new PublicationMediaClaim(publicationId, mediaId, processingToken, attempts);
+            return new PublicationMediaClaim(
+                publicationId,
+                mediaId,
+                processingToken,
+                attempts,
+                failureSeries(
+                    record.get(PUBLICATION_MEDIA.FAILURE_TYPE),
+                    record.get(PUBLICATION_MEDIA.FAILURE_STARTED_AT)
+                )
+            );
         }).toList();
     }
 
@@ -211,6 +223,8 @@ public class PublicationMediaRepository {
             .set(PUBLICATION_MEDIA.COMPRESSION_PENDING, true)
             .set(PUBLICATION_MEDIA.NEXT_ATTEMPT_AT, jooqMappings.offsetDateTime(nextAttemptAt))
             .setNull(PUBLICATION_MEDIA.LAST_ERROR)
+            .setNull(PUBLICATION_MEDIA.FAILURE_TYPE)
+            .setNull(PUBLICATION_MEDIA.FAILURE_STARTED_AT)
             .setNull(PUBLICATION_MEDIA.PROCESSING_TOKEN)
             .setNull(PUBLICATION_MEDIA.PROCESSING_UNTIL)
             .set(PUBLICATION_MEDIA.UPDATED_AT, jooqMappings.offsetDateTime(now))
@@ -236,6 +250,8 @@ public class PublicationMediaRepository {
             .set(PUBLICATION_MEDIA.COMPRESSION_PENDING, false)
             .setNull(PUBLICATION_MEDIA.NEXT_ATTEMPT_AT)
             .setNull(PUBLICATION_MEDIA.LAST_ERROR)
+            .setNull(PUBLICATION_MEDIA.FAILURE_TYPE)
+            .setNull(PUBLICATION_MEDIA.FAILURE_STARTED_AT)
             .setNull(PUBLICATION_MEDIA.PROCESSING_TOKEN)
             .setNull(PUBLICATION_MEDIA.PROCESSING_UNTIL)
             .set(PUBLICATION_MEDIA.UPDATED_AT, jooqMappings.offsetDateTime(now))
@@ -261,6 +277,8 @@ public class PublicationMediaRepository {
             .set(PUBLICATION_MEDIA.COMPRESSION_PENDING, false)
             .setNull(PUBLICATION_MEDIA.NEXT_ATTEMPT_AT)
             .setNull(PUBLICATION_MEDIA.LAST_ERROR)
+            .setNull(PUBLICATION_MEDIA.FAILURE_TYPE)
+            .setNull(PUBLICATION_MEDIA.FAILURE_STARTED_AT)
             .setNull(PUBLICATION_MEDIA.PROCESSING_TOKEN)
             .setNull(PUBLICATION_MEDIA.PROCESSING_UNTIL)
             .set(PUBLICATION_MEDIA.UPDATED_AT, jooqMappings.offsetDateTime(now))
@@ -274,12 +292,15 @@ public class PublicationMediaRepository {
         long mediaId,
         UUID token,
         Instant nextAttemptAt,
-        String error
+        String error,
+        FailureSeries failureSeries
     ) {
         Instant now = clock.instant();
         return dslContext.update(PUBLICATION_MEDIA)
             .set(PUBLICATION_MEDIA.NEXT_ATTEMPT_AT, jooqMappings.offsetDateTime(nextAttemptAt))
             .set(PUBLICATION_MEDIA.LAST_ERROR, error)
+            .set(PUBLICATION_MEDIA.FAILURE_TYPE, failureSeries.type())
+            .set(PUBLICATION_MEDIA.FAILURE_STARTED_AT, jooqMappings.offsetDateTime(failureSeries.startedAt()))
             .setNull(PUBLICATION_MEDIA.PROCESSING_TOKEN)
             .setNull(PUBLICATION_MEDIA.PROCESSING_UNTIL)
             .set(PUBLICATION_MEDIA.UPDATED_AT, jooqMappings.offsetDateTime(now))
@@ -287,11 +308,22 @@ public class PublicationMediaRepository {
             .execute() == 1;
     }
 
-    public boolean fail(long publicationId, long mediaId, UUID token, String error) {
+    public boolean fail(
+        long publicationId,
+        long mediaId,
+        UUID token,
+        String error,
+        FailureSeries failureSeries
+    ) {
         Instant now = clock.instant();
         return dslContext.update(PUBLICATION_MEDIA)
             .setNull(PUBLICATION_MEDIA.NEXT_ATTEMPT_AT)
             .set(PUBLICATION_MEDIA.LAST_ERROR, error)
+            .set(PUBLICATION_MEDIA.FAILURE_TYPE, failureSeries != null ? failureSeries.type() : null)
+            .set(
+                PUBLICATION_MEDIA.FAILURE_STARTED_AT,
+                failureSeries != null ? jooqMappings.offsetDateTime(failureSeries.startedAt()) : null
+            )
             .setNull(PUBLICATION_MEDIA.PROCESSING_TOKEN)
             .setNull(PUBLICATION_MEDIA.PROCESSING_UNTIL)
             .set(PUBLICATION_MEDIA.UPDATED_AT, jooqMappings.offsetDateTime(now))
@@ -321,6 +353,8 @@ public class PublicationMediaRepository {
                 .set(PUBLICATION_MEDIA.ATTEMPTS, 0)
                 .set(PUBLICATION_MEDIA.NEXT_ATTEMPT_AT, jooqMappings.offsetDateTime(now))
                 .setNull(PUBLICATION_MEDIA.LAST_ERROR)
+                .setNull(PUBLICATION_MEDIA.FAILURE_TYPE)
+                .setNull(PUBLICATION_MEDIA.FAILURE_STARTED_AT)
                 .setNull(PUBLICATION_MEDIA.PROCESSING_TOKEN)
                 .setNull(PUBLICATION_MEDIA.PROCESSING_UNTIL)
                 .set(PUBLICATION_MEDIA.UPDATED_AT, jooqMappings.offsetDateTime(now))
@@ -394,6 +428,10 @@ public class PublicationMediaRepository {
         return PUBLICATION_MEDIA.PUBLICATION_ID.eq(publicationId)
             .and(PUBLICATION_MEDIA.MEDIA_ID.eq(mediaId))
             .and(PUBLICATION_MEDIA.PROCESSING_TOKEN.eq(token));
+    }
+
+    private FailureSeries failureSeries(String type, java.time.OffsetDateTime startedAt) {
+        return type != null && startedAt != null ? new FailureSeries(type, startedAt.toInstant()) : null;
     }
 
     private org.jooq.Condition sourceHashMatches(long mediaId, byte[] expectedSourceHash) {

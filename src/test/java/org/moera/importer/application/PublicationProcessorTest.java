@@ -204,6 +204,50 @@ class PublicationProcessorTest {
     }
 
     @Test
+    void stopsSchedulingAfterSameRetryableFailureTypeForOneDay() {
+        publicationRepository.context = context(null, destinationState(null, Map.of()), "Body", false, false);
+        var cause = new IllegalStateException("connection reset");
+        moeraService.createFailure = new MoeraOutcomeUnknownException("create outcome unknown", cause);
+        PublicationClaim claim = new PublicationClaim(
+            17,
+            5,
+            UUID.randomUUID(),
+            3,
+            new FailureSeries(cause.getClass().getName(), NOW.minus(Duration.ofDays(1)))
+        );
+
+        publicationProcessor.process(claim);
+
+        assertThat(publicationRepository.failed).isTrue();
+        assertThat(publicationRepository.nextAttemptAt).isNull();
+        assertThat(meterRegistry.get("publication_failures_total")
+            .tag("result", "permanent").counter().count()).isEqualTo(1);
+    }
+
+    @Test
+    void reportsStaleClaimWhenRetryableFailureCompletionRejectsToken() {
+        publicationRepository.context = context(null, destinationState(null, Map.of()), "Body", false, false);
+        publicationRepository.failureAccepted = false;
+        moeraService.createFailure = new MoeraOutcomeUnknownException("create outcome unknown", null);
+        Logger logger = (Logger) LoggerFactory.getLogger(PublicationProcessor.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+
+        try {
+            publicationProcessor.process(claim());
+        } finally {
+            logger.detachAppender(appender);
+            appender.stop();
+        }
+
+        assertThat(meterRegistry.find("publication_unknown_outcomes_total").counter()).isNull();
+        assertThat(meterRegistry.find("publication_failures_total").counter()).isNull();
+        assertThat(appender.list).anySatisfy(event -> assertThat(event.getFormattedMessage())
+            .contains("result=stale_claim"));
+    }
+
+    @Test
     void pinsEveryStoredStoryAfterUpdatingPost() {
         publicationRepository.context = context(
             "posting-1",
@@ -389,6 +433,7 @@ class PublicationProcessorTest {
         private boolean failed;
         private boolean snapshotChanged;
         private boolean deferAccepted = true;
+        private boolean failureAccepted = true;
 
         @Override
         public PublicationContext loadContext(long publicationId, int targetRevision) {
@@ -440,12 +485,14 @@ class PublicationProcessorTest {
         public boolean retry(
             long publicationId,
             UUID token,
+            int targetRevision,
             Instant nextAttemptAt,
-            String error
+            String error,
+            FailureSeries failureSeries
         ) {
             this.nextAttemptAt = nextAttemptAt;
             this.error = error;
-            return true;
+            return failureAccepted;
         }
 
         @Override
@@ -455,10 +502,16 @@ class PublicationProcessorTest {
         }
 
         @Override
-        public boolean fail(long publicationId, UUID token, String error) {
+        public boolean fail(
+            long publicationId,
+            UUID token,
+            int targetRevision,
+            String error,
+            FailureSeries failureSeries
+        ) {
             failed = true;
             this.error = error;
-            return true;
+            return failureAccepted;
         }
 
     }

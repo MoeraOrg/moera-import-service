@@ -11,6 +11,7 @@ public class RetryProperties {
 
     private Duration baseDelay = Duration.ofSeconds(1);
     private Duration maxDelay = Duration.ofHours(1);
+    private Duration fatalAfter = Duration.ofDays(1);
     private double jitterFraction = 0.2;
 
     public Duration getBaseDelay() {
@@ -27,6 +28,14 @@ public class RetryProperties {
 
     public void setMaxDelay(Duration maxDelay) {
         this.maxDelay = maxDelay;
+    }
+
+    public Duration getFatalAfter() {
+        return fatalAfter;
+    }
+
+    public void setFatalAfter(Duration fatalAfter) {
+        this.fatalAfter = fatalAfter;
     }
 
     public double getJitterFraction() {

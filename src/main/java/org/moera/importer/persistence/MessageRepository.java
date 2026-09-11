@@ -183,6 +183,8 @@ public class MessageRepository {
             .set(CHANNELS.NEXT_POLL_AT, jooqMappings.offsetDateTime(nextPollAt))
             .set(CHANNELS.POLL_ATTEMPTS, 0)
             .setNull(CHANNELS.POLL_LAST_ERROR)
+            .setNull(CHANNELS.POLL_FAILURE_TYPE)
+            .setNull(CHANNELS.POLL_FAILURE_STARTED_AT)
             .setNull(CHANNELS.PROCESSING_OPERATION)
             .setNull(CHANNELS.PROCESSING_TOKEN)
             .setNull(CHANNELS.PROCESSING_UNTIL)

@@ -13,6 +13,7 @@ import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import org.jooq.DSLContext;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.moera.importer.application.FailureSeries;
 import org.moera.importer.model.BodyFormat;
 import org.moera.importer.model.Message;
 import org.moera.importer.source.SourceLinkPreview;
@@ -33,6 +34,7 @@ import static org.moera.importer.persistence.jooq.tables.Media.MEDIA;
 import static org.moera.importer.persistence.jooq.tables.Messages.MESSAGES;
 import static org.moera.importer.persistence.jooq.tables.Mirrors.MIRRORS;
 import static org.moera.importer.persistence.jooq.tables.PublicationMedia.PUBLICATION_MEDIA;
+import static org.moera.importer.persistence.jooq.tables.PublicationMessages.PUBLICATION_MESSAGES;
 import static org.moera.importer.persistence.jooq.tables.Publications.PUBLICATIONS;
 import static org.moera.importer.persistence.jooq.tables.PublicationStories.PUBLICATION_STORIES;
 
@@ -168,6 +170,8 @@ class PublicationRevisionRaceTest extends PostgresIntegrationTest {
         );
         dslContext.update(PUBLICATIONS)
             .set(PUBLICATIONS.ATTEMPTS, 2)
+            .set(PUBLICATIONS.FAILURE_TYPE, "failure.Type")
+            .set(PUBLICATIONS.FAILURE_STARTED_AT, OffsetDateTime.now(ZoneOffset.UTC).minusHours(2))
             .where(PUBLICATIONS.ID.eq(publicationId))
             .execute();
 
@@ -177,6 +181,7 @@ class PublicationRevisionRaceTest extends PostgresIntegrationTest {
         assertThat(claim.targetRevision()).isEqualTo(4);
         assertThat(claim.attempts()).isEqualTo(3);
         assertThat(claim.processingToken()).isNotEqualTo(expiredToken);
+        assertThat(claim.failureSeries().type()).isEqualTo("failure.Type");
     }
 
     @Test
@@ -196,6 +201,8 @@ class PublicationRevisionRaceTest extends PostgresIntegrationTest {
             .set(PUBLICATIONS.DESTINATION_POST_ID, "existing-post")
             .set(PUBLICATIONS.DESTINATION_PINNED, false)
             .set(PUBLICATIONS.NEXT_ATTEMPT_AT, OffsetDateTime.now(ZoneOffset.UTC).minusSeconds(1))
+            .set(PUBLICATIONS.FAILURE_TYPE, "failure.Type")
+            .set(PUBLICATIONS.FAILURE_STARTED_AT, OffsetDateTime.now(ZoneOffset.UTC).minusHours(1))
             .where(PUBLICATIONS.ID.eq(publicationId))
             .execute();
         dslContext.insertInto(PUBLICATION_STORIES)
@@ -245,6 +252,8 @@ class PublicationRevisionRaceTest extends PostgresIntegrationTest {
         assertThat(publication.getRevision()).isEqualTo(6);
         assertThat(publication.getPublishedRevision()).isEqualTo(5);
         assertThat(publication.getNextAttemptAt()).isNotNull();
+        assertThat(publication.getFailureType()).isNull();
+        assertThat(publication.getFailureStartedAt()).isNull();
         assertThat(publication.getProcessingToken()).isNull();
     }
 
@@ -267,6 +276,46 @@ class PublicationRevisionRaceTest extends PostgresIntegrationTest {
 
         assertThatThrownBy(() -> publicationRepository.loadContext(publicationId, claim.targetRevision()))
             .isInstanceOf(PublicationSnapshotChangedException.class);
+    }
+
+    @Test
+    void oldFatalFailureReleasesLeaseWithoutOverwritingNewRevisionSchedule() {
+        Fixture fixture = insertFixture();
+        long publicationId = insertPublication(
+            fixture.mirrorId(),
+            5,
+            4,
+            OffsetDateTime.now(ZoneOffset.UTC).minusSeconds(1),
+            null,
+            null
+        );
+        dslContext.insertInto(PUBLICATION_MESSAGES)
+            .set(PUBLICATION_MESSAGES.PUBLICATION_ID, publicationId)
+            .set(PUBLICATION_MESSAGES.MESSAGE_ID, fixture.messageId())
+            .set(PUBLICATION_MESSAGES.POSITION, 0)
+            .execute();
+        PublicationClaim claim = publicationRepository.claimReady(1, Duration.ofMinutes(5)).getFirst();
+
+        publicationRepository.reviseForMessage(fixture.messageId());
+        boolean failed = publicationRepository.fail(
+            publicationId,
+            claim.processingToken(),
+            claim.targetRevision(),
+            "temporary failure",
+            new FailureSeries("failure.Type", Instant.now().minus(Duration.ofDays(1)))
+        );
+
+        assertThat(failed).isFalse();
+        var publication = dslContext.selectFrom(PUBLICATIONS)
+            .where(PUBLICATIONS.ID.eq(publicationId))
+            .fetchSingle();
+        assertThat(publication.getRevision()).isEqualTo(6);
+        assertThat(publication.getNextAttemptAt()).isNotNull();
+        assertThat(publication.getLastError()).isNull();
+        assertThat(publication.getFailureType()).isNull();
+        assertThat(publication.getFailureStartedAt()).isNull();
+        assertThat(publication.getProcessingToken()).isNull();
+        assertThat(publication.getProcessingUntil()).isNull();
     }
 
     @Test
@@ -355,7 +404,7 @@ class PublicationRevisionRaceTest extends PostgresIntegrationTest {
             .fetchSingle(MEDIA.ID);
         long destinationId = insertDestination(profileSync, profileFingerprint);
         long mirrorId = insertMirror(channelId, destinationId);
-        return new Fixture(mirrorId, mediaId, destinationId);
+        return new Fixture(mirrorId, messageId, mediaId, destinationId);
     }
 
     private long insertChannel() {
@@ -462,7 +511,7 @@ class PublicationRevisionRaceTest extends PostgresIntegrationTest {
         return hash;
     }
 
-    private record Fixture(long mirrorId, long mediaId, long destinationId) {
+    private record Fixture(long mirrorId, long messageId, long mediaId, long destinationId) {
     }
 
 }

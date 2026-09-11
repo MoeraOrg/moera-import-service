@@ -25,6 +25,7 @@ import org.moera.importer.model.Media;
 import org.moera.lib.node.MoeraNode;
 import org.moera.lib.node.NodeSourceUri;
 import org.moera.lib.node.exception.MoeraNodeApiException;
+import org.moera.lib.node.exception.MoeraNodeApiAuthenticationException;
 import org.moera.lib.node.exception.MoeraNodeApiNotFoundException;
 import org.moera.lib.node.exception.MoeraNodeException;
 import org.moera.lib.node.types.Features;
@@ -449,6 +450,9 @@ public class MoeraService {
     }
 
     private RuntimeException externalFailure(String message, MoeraNodeException exception) {
+        if (exception instanceof MoeraNodeApiAuthenticationException) {
+            return new MoeraTemporaryException(message, exception);
+        }
         if (exception instanceof MoeraNodeApiException apiException) {
             String detailedMessage = apiFailureMessage(message, apiException);
             if ("media.wrong-size".equals(apiException.getErrorCode())) {
@@ -475,6 +479,9 @@ public class MoeraService {
     }
 
     private RuntimeException mutatingFailure(String message, MoeraNodeException exception) {
+        if (exception instanceof MoeraNodeApiAuthenticationException) {
+            return new MoeraTemporaryException(message, exception);
+        }
         if (exception instanceof MoeraNodeApiException apiException) {
             if (apiException.getStatus() == 429) {
                 return new MoeraTemporaryException(message, exception);

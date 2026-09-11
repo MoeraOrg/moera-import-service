@@ -13,7 +13,7 @@
 
     <groupId>org.moera</groupId>
     <artifactId>moera-import</artifactId>
-    <version>0.2.0-SNAPSHOT</version>
+    <version>0.2.0</version>
     <name>Moera Import Service</name>
     <description>Import external channels into Moera</description>
 
@@ -25,7 +25,7 @@
         <flexmark.version>0.64.8</flexmark.version>
         <jsoup.version>1.23.1</jsoup.version>
         <moeralib.compatible.version>0.19.0</moeralib.compatible.version>
-        <moeralib.version>0.19.2-SNAPSHOT</moeralib.version>
+        <moeralib.version>0.19.2</moeralib.version>
         <tdlight.version>3.5.4+td.1.8.66</tdlight.version>
     </properties>
 

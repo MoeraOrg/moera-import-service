@@ -62,13 +62,11 @@ public class ChannelProcessor {
             };
             result = completed ? "success" : "stale_claim";
         } catch (SourceTemporaryException e) {
-            result = "temporary_failure";
             error = diagnostic(e);
-            temporaryFailure(claim, e);
+            result = temporaryFailure(claim, e);
         } catch (SourcePermanentException e) {
-            result = "permanent_failure";
             error = diagnostic(e);
-            permanentFailure(claim, e);
+            result = permanentFailure(claim, e) ? "permanent_failure" : "stale_claim";
         } finally {
             importMetrics.sourceOperation(claim.channel().sourceType(), claim.operation(), result, sample);
             if (error == null) {
@@ -134,27 +132,37 @@ public class ChannelProcessor {
         return completed;
     }
 
-    private void temporaryFailure(ChannelClaim claim, SourceTemporaryException exception) {
-        Duration delay = retryPolicy.delay(claim.attempts(), exception.retryAfter());
-        fail(claim, clock.instant().plus(delay), diagnostic(exception));
+    private String temporaryFailure(ChannelClaim claim, SourceTemporaryException exception) {
+        RetryDecision decision = retryPolicy.failure(
+            claim.attempts(),
+            exception.retryAfter(),
+            claim.failureSeries(),
+            exception,
+            clock.instant()
+        );
+        boolean accepted = fail(claim, decision.nextAttemptAt(), diagnostic(exception), decision.series());
+        if (!accepted) {
+            return "stale_claim";
+        }
+        return decision.fatal() ? "permanent_failure" : "temporary_failure";
     }
 
-    private void permanentFailure(ChannelClaim claim, SourcePermanentException exception) {
-        fail(claim, null, diagnostic(exception));
+    private boolean permanentFailure(ChannelClaim claim, SourcePermanentException exception) {
+        return fail(claim, null, diagnostic(exception), null);
     }
 
-    private void fail(ChannelClaim claim, Instant nextAttemptAt, String error) {
-        switch (claim.operation()) {
+    private boolean fail(ChannelClaim claim, Instant nextAttemptAt, String error, FailureSeries failureSeries) {
+        return switch (claim.operation()) {
             case ACCESS -> channelRepository.failAccess(
-                claim.channel().id(), claim.processingToken(), nextAttemptAt, error
+                claim.channel().id(), claim.processingToken(), nextAttemptAt, error, failureSeries
             );
             case SUBSCRIPTION -> channelRepository.failSubscription(
-                claim.channel().id(), claim.processingToken(), nextAttemptAt, error
+                claim.channel().id(), claim.processingToken(), nextAttemptAt, error, failureSeries
             );
             case POLL -> channelRepository.failPoll(
-                claim.channel().id(), claim.processingToken(), nextAttemptAt, error
+                claim.channel().id(), claim.processingToken(), nextAttemptAt, error, failureSeries
             );
-        }
+        };
     }
 
     private String diagnostic(RuntimeException exception) {

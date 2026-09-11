@@ -6,7 +6,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Duration;
-import java.time.Instant;
 import jakarta.inject.Inject;
 
 import org.moera.importer.config.WorkerProperties;
@@ -131,26 +130,26 @@ public class PublicationMediaProcessor {
             delete(stagingPath);
         } catch (MoeraPermanentException | MoeraConfigurationException e) {
             boolean completed = publicationMediaRepository.fail(
-                claim.publicationId(), claim.mediaId(), claim.processingToken(), e.getMessage()
+                claim.publicationId(), claim.mediaId(), claim.processingToken(), e.getMessage(), null
             );
             log(claim, completed ? "permanent_failure" : "stale_claim", e.getMessage());
             delete(stagingPath);
         } catch (SourceTemporaryException e) {
-            boolean completed = retry(claim, e.retryAfter(), e.getMessage());
-            log(claim, completed ? "temporary_failure" : "stale_claim", e.getMessage());
-            if (!uploadStarted) {
+            RetryOutcome outcome = retry(claim, e.retryAfter(), e.getMessage(), e);
+            log(claim, outcome.result(), e.getMessage());
+            if (!uploadStarted || outcome.fatal()) {
                 delete(stagingPath);
             }
         } catch (MoeraTemporaryException | MoeraOutcomeUnknownException e) {
-            boolean completed = retry(claim, null, e.getMessage());
-            log(claim, completed ? "temporary_failure" : "stale_claim", e.getMessage());
-            if (!uploadStarted) {
+            RetryOutcome outcome = retry(claim, null, e.getMessage(), e);
+            log(claim, outcome.result(), e.getMessage());
+            if (!uploadStarted || outcome.fatal()) {
                 delete(stagingPath);
             }
         } catch (IOException | UncheckedIOException e) {
-            boolean completed = retry(claim, null, "Cannot access staging file");
-            log(claim, completed ? "staging_failure" : "stale_claim", "Cannot access staging file");
-            if (!uploadStarted) {
+            RetryOutcome outcome = retry(claim, null, "Cannot access staging file", e);
+            log(claim, outcome.result("staging_failure"), "Cannot access staging file");
+            if (!uploadStarted || outcome.fatal()) {
                 delete(stagingPath);
             }
         }
@@ -166,12 +165,12 @@ public class PublicationMediaProcessor {
             completeUpload(claim, context, upload);
         } catch (MoeraPermanentException | MoeraConfigurationException e) {
             boolean completed = publicationMediaRepository.fail(
-                claim.publicationId(), claim.mediaId(), claim.processingToken(), e.getMessage()
+                claim.publicationId(), claim.mediaId(), claim.processingToken(), e.getMessage(), null
             );
             log(claim, completed ? "permanent_failure" : "stale_claim", e.getMessage());
         } catch (MoeraTemporaryException | MoeraOutcomeUnknownException e) {
-            boolean completed = retry(claim, null, e.getMessage());
-            log(claim, completed ? "temporary_failure" : "stale_claim", e.getMessage());
+            RetryOutcome outcome = retry(claim, null, e.getMessage(), e);
+            log(claim, outcome.result(), e.getMessage());
         }
     }
 
@@ -220,11 +219,28 @@ public class PublicationMediaProcessor {
         skipped(claim, MediaSkipReason.TOO_LARGE, completed);
     }
 
-    private boolean retry(PublicationMediaClaim claim, Duration retryAfter, String error) {
-        Instant nextAttemptAt = clock.instant().plus(retryPolicy.delay(claim.attempts(), retryAfter));
-        return publicationMediaRepository.retry(
-            claim.publicationId(), claim.mediaId(), claim.processingToken(), nextAttemptAt, error
+    private RetryOutcome retry(
+        PublicationMediaClaim claim,
+        Duration retryAfter,
+        String error,
+        Throwable failure
+    ) {
+        RetryDecision decision = retryPolicy.failure(
+            claim.attempts(), retryAfter, claim.failureSeries(), failure, clock.instant()
         );
+        boolean accepted = decision.fatal()
+            ? publicationMediaRepository.fail(
+                claim.publicationId(), claim.mediaId(), claim.processingToken(), error, decision.series()
+            )
+            : publicationMediaRepository.retry(
+                claim.publicationId(),
+                claim.mediaId(),
+                claim.processingToken(),
+                decision.nextAttemptAt(),
+                error,
+                decision.series()
+            );
+        return new RetryOutcome(accepted, decision.fatal());
     }
 
     private boolean compressionPending(PublicationMediaContext context) {
@@ -313,6 +329,18 @@ public class PublicationMediaProcessor {
             claim.publicationId(), claim.mediaId(), claim.processingToken(), claim.attempts(),
             failure.getClass().getSimpleName(), failure.getMessage(), failure
         );
+    }
+
+    private record RetryOutcome(boolean accepted, boolean fatal) {
+
+        private String result() {
+            return result("temporary_failure");
+        }
+
+        private String result(String retryResult) {
+            return accepted ? fatal ? "permanent_failure" : retryResult : "stale_claim";
+        }
+
     }
 
 }

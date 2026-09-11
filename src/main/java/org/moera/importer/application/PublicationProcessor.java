@@ -70,23 +70,29 @@ public class PublicationProcessor {
         } catch (PublicationSnapshotChangedException e) {
             log(claim, "revision_changed");
             publicationRepository.retry(
-                claim.publicationId(), claim.processingToken(), clock.instant(), null
+                claim.publicationId(), claim.processingToken(), claim.targetRevision(), clock.instant(), null, null
             );
         } catch (MoeraOutcomeUnknownException e) {
-            importMetrics.publicationUnknownOutcome();
-            importMetrics.publicationFailure("outcome_unknown");
-            log(claim, "outcome_unknown", e.getMessage());
-            retry(claim, e.getMessage());
+            RetryOutcome outcome = retry(claim, e);
+            if (outcome.accepted()) {
+                importMetrics.publicationUnknownOutcome();
+                importMetrics.publicationFailure(outcome.fatal() ? "permanent" : "outcome_unknown");
+            }
+            log(claim, outcome.result("outcome_unknown"), e.getMessage());
         } catch (MoeraTemporaryException e) {
-            importMetrics.publicationFailure("temporary");
-            log(claim, "temporary_failure", e.getMessage());
-            retry(claim, e.getMessage());
+            RetryOutcome outcome = retry(claim, e);
+            if (outcome.accepted()) {
+                importMetrics.publicationFailure(outcome.fatal() ? "permanent" : "temporary");
+            }
+            log(claim, outcome.result("temporary_failure"), e.getMessage());
         } catch (MoeraPermanentException | MoeraConfigurationException e) {
-            importMetrics.publicationFailure("permanent");
-            log(claim, "permanent_failure", e.getMessage());
-            publicationRepository.fail(
-                claim.publicationId(), claim.processingToken(), e.getMessage()
+            boolean accepted = publicationRepository.fail(
+                claim.publicationId(), claim.processingToken(), claim.targetRevision(), e.getMessage(), null
             );
+            if (accepted) {
+                importMetrics.publicationFailure("permanent");
+            }
+            log(claim, accepted ? "permanent_failure" : "stale_claim", e.getMessage());
         }
     }
 
@@ -168,11 +174,30 @@ public class PublicationProcessor {
         return new PublicationDestinationState(pinned, created.storyIds());
     }
 
-    private void retry(PublicationClaim claim, String error) {
-        Instant nextAttemptAt = clock.instant().plus(retryPolicy.delay(claim.attempts(), null));
-        publicationRepository.retry(
-            claim.publicationId(), claim.processingToken(), nextAttemptAt, error
+    private RetryOutcome retry(PublicationClaim claim, RuntimeException exception) {
+        RetryDecision decision = retryPolicy.failure(
+            claim.attempts(), null, claim.failureSeries(), exception, clock.instant()
         );
+        boolean accepted;
+        if (decision.fatal()) {
+            accepted = publicationRepository.fail(
+                claim.publicationId(),
+                claim.processingToken(),
+                claim.targetRevision(),
+                exception.getMessage(),
+                decision.series()
+            );
+        } else {
+            accepted = publicationRepository.retry(
+                claim.publicationId(),
+                claim.processingToken(),
+                claim.targetRevision(),
+                decision.nextAttemptAt(),
+                exception.getMessage(),
+                decision.series()
+            );
+        }
+        return new RetryOutcome(accepted, decision.fatal());
     }
 
     private void complete(PublicationClaim claim, String operation, boolean completed) {
@@ -201,6 +226,17 @@ public class PublicationProcessor {
                 claim.publicationId(), claim.processingToken(), claim.attempts(), claim.targetRevision(), result, error
             );
         }
+    }
+
+    private record RetryOutcome(boolean accepted, boolean fatal) {
+
+        private String result(String retryableResult) {
+            if (!accepted) {
+                return "stale_claim";
+            }
+            return fatal ? "permanent_failure" : retryableResult;
+        }
+
     }
 
 }

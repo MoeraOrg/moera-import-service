@@ -366,6 +366,28 @@ class PublicationMediaProcessorTest {
     }
 
     @Test
+    void stopsSchedulingAndDeletesStagingAfterSameRetryableFailureTypeForOneDay() throws Exception {
+        publicationMediaRepository.context = context(2L, null, false, null);
+        moeraService.capabilities = capabilities(10);
+        var cause = new IllegalStateException("connection reset");
+        moeraService.failure = new MoeraTemporaryException("temporary", cause);
+        Files.write(stagingPath(), new byte[] { 1, 2 });
+        PublicationMediaClaim claim = new PublicationMediaClaim(
+            17,
+            23,
+            PROCESSING_TOKEN,
+            3,
+            new FailureSeries(cause.getClass().getName(), NOW.minus(Duration.ofDays(1)))
+        );
+
+        publicationMediaProcessor.process(claim);
+
+        assertThat(publicationMediaRepository.failed).isTrue();
+        assertThat(publicationMediaRepository.nextAttemptAt).isNull();
+        assertThat(stagingPath()).doesNotExist();
+    }
+
+    @Test
     void logsStaleClaimWhenFailureTransitionIsRejected() {
         publicationMediaRepository.context = context(2L, null, false, null);
         publicationMediaRepository.completionAccepted = false;
@@ -537,7 +559,8 @@ class PublicationMediaProcessorTest {
             long mediaId,
             UUID token,
             Instant nextAttemptAt,
-            String error
+            String error,
+            FailureSeries failureSeries
         ) {
             this.nextAttemptAt = nextAttemptAt;
             this.error = error;
@@ -545,7 +568,13 @@ class PublicationMediaProcessorTest {
         }
 
         @Override
-        public boolean fail(long publicationId, long mediaId, UUID token, String error) {
+        public boolean fail(
+            long publicationId,
+            long mediaId,
+            UUID token,
+            String error,
+            FailureSeries failureSeries
+        ) {
             failed = true;
             this.error = error;
             return completionAccepted;
