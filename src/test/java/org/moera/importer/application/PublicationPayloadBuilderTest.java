@@ -135,13 +135,48 @@ class PublicationPayloadBuilderTest {
     }
 
     @Test
-    void insertsRuleBetweenDifferentForwardAttributions() {
+    void addsFirstOriginalPostAttributionOnceForMessagesFromTheSameChannel() {
         PublicationContext context = context(
             config("timeline"),
             List.of(
-                member(message(1, "<p>First</p><p>one</p>", false, null,
+                member(message(1, "<p>one</p>", false, null,
+                    new ForwardAttribution("Origin", "https://t.me/origin/10"))),
+                member(message(2, "<p>two</p>", false, null,
+                    new ForwardAttribution("Origin", "https://t.me/origin/11")))
+            ),
+            List.of()
+        );
+
+        PublicationPayload payload = publicationPayloadBuilder.build(context, capabilities(HTML));
+
+        assertThat(payload.bodySrc().getText())
+            .isEqualTo("<p><a href=\"https://t.me/origin/10\">Origin</a></p><p>one</p><p>two</p>");
+    }
+
+    @Test
+    void escapesAttributionWithoutAUriAndAddsItOnce() {
+        PublicationContext context = context(
+            config("timeline"),
+            List.of(
+                member(message(1, "<p>one</p>", false, null, new ForwardAttribution("Origin <&>", null))),
+                member(message(2, "<p>two</p>", false, null, new ForwardAttribution("Origin <&>", null)))
+            ),
+            List.of()
+        );
+
+        PublicationPayload payload = publicationPayloadBuilder.build(context, capabilities(HTML));
+
+        assertThat(payload.bodySrc().getText()).isEqualTo("<p>Origin &lt;&amp;&gt;</p><p>one</p><p>two</p>");
+    }
+
+    @Test
+    void retainsEachSourceAttributionWithoutRulesInAnExistingMixedPublication() {
+        PublicationContext context = context(
+            config("timeline"),
+            List.of(
+                member(message(1, "<p>one</p>", false, null,
                     new ForwardAttribution("First", null))),
-                member(message(2, "<p>Second</p><p>two</p>", false, null,
+                member(message(2, "<p>two</p>", false, null,
                     new ForwardAttribution("Second", null)))
             ),
             List.of()
@@ -150,7 +185,43 @@ class PublicationPayloadBuilderTest {
         PublicationPayload payload = publicationPayloadBuilder.build(context, capabilities(HTML));
 
         assertThat(payload.bodySrc().getText())
-            .isEqualTo("<p>First</p><p>one</p><hr><p>Second</p><p>two</p>");
+            .isEqualTo("<p>First</p><p>one</p><p>Second</p><p>two</p>");
+    }
+
+    @Test
+    void rendersForwardAttributionInPlainTextFallback() {
+        PublicationContext context = context(
+            config("timeline"),
+            List.of(
+                member(message(1, "<p>one</p>", false, null,
+                    new ForwardAttribution("Origin", "https://t.me/origin/10"))),
+                member(message(2, "<p>two</p>", false, null,
+                    new ForwardAttribution("Origin", "https://t.me/origin/11")))
+            ),
+            List.of()
+        );
+
+        PublicationPayload payload = publicationPayloadBuilder.build(context, capabilities(PLAIN_TEXT));
+
+        assertThat(payload.bodySrc().getText()).isEqualTo("Origin\n\none\n\ntwo");
+    }
+
+    @Test
+    void keepsFirstAttributionForAnEmptyForwardedMediaCaption() {
+        PublicationContext context = context(
+            config("timeline"),
+            List.of(
+                member(message(1, "", false, null, new ForwardAttribution("Origin", "https://t.me/origin/10"))),
+                member(message(2, "<p>caption</p>", false, null,
+                    new ForwardAttribution("Origin", "https://t.me/origin/11")))
+            ),
+            List.of()
+        );
+
+        PublicationPayload payload = publicationPayloadBuilder.build(context, capabilities(HTML));
+
+        assertThat(payload.bodySrc().getText())
+            .isEqualTo("<p><a href=\"https://t.me/origin/10\">Origin</a></p><p>caption</p>");
     }
 
     @Test

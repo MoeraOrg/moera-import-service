@@ -94,6 +94,8 @@ public class PublicationBuilder {
             message.body(),
             message.bodyFormat(),
             message.sourceBodyHash(),
+            message.externalSourceUri(),
+            message.forwardAttribution(),
             message.sourceData(),
             List.of(),
             List.of()

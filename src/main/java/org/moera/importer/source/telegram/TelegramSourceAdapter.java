@@ -125,6 +125,9 @@ public class TelegramSourceAdapter implements SourceAdapter {
 
     @Override
     public GroupingRelation groupingRelation(SourceMessage previous, SourceMessage next) {
+        if (!TelegramForwardAttribution.sameSource(previous.forwardAttribution(), next.forwardAttribution())) {
+            return GroupingRelation.MUST_SEPARATE;
+        }
         long previousAlbum = previous.sourceData().path("mediaAlbumId").asLong(0);
         long nextAlbum = next.sourceData().path("mediaAlbumId").asLong(0);
         if (previousAlbum != 0 && previousAlbum == nextAlbum) {

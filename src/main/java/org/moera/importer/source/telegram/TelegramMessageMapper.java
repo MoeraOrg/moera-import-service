@@ -84,7 +84,7 @@ public class TelegramMessageMapper {
                 return skipped(TelegramSkipReason.UNSUPPORTED_CONTENT);
             }
             Attribution attribution = attribution(message.forwardInfo);
-            String body = decorateBody(message, content.body(), attribution);
+            String body = decorateBody(message, content.body());
             ObjectNode sourceData = JsonNodeFactory.instance.objectNode();
             if (message.mediaAlbumId != 0) {
                 sourceData.put("mediaAlbumId", message.mediaAlbumId);
@@ -190,18 +190,8 @@ public class TelegramMessageMapper {
         }
     }
 
-    private String decorateBody(TdApi.Message message, String content, Attribution attribution) {
+    private String decorateBody(TdApi.Message message, String content) {
         var body = new StringBuilder();
-        if (attribution != null) {
-            body.append("<p>");
-            if (attribution.url() != null) {
-                body.append("<a href=\"").append(escape(attribution.url())).append("\">")
-                    .append(escape(attribution.name())).append("</a>");
-            } else {
-                body.append(escape(attribution.name()));
-            }
-            body.append("</p>");
-        }
         body.append(content);
         appendButtons(body, message.replyMarkup);
         if (message.factCheck != null && message.factCheck.text != null

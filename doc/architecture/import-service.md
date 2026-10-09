@@ -101,6 +101,12 @@ precedence.
 `V007` removes `destinations.credential_ref`. It does not delete or rewrite destination rows; after the migration, all
 existing and new destinations use the process-wide carte authentication configuration described in section 32.2.
 
+### 4.3 Forward-attribution rendering migration
+
+`V011` removes the exact legacy attribution prefix from stored Telegram HTML bodies, using `forward_name` and
+`forward_uri` to recognize it. It preserves those fields and the canonical source hash, increments affected message
+revisions, and schedules affected publications at a new revision. Publication membership is not changed.
+
 ## 5. Source types
 
 `source_type` is a PostgreSQL enum. The initial migration contains only:
@@ -367,6 +373,8 @@ grouping. A separate `observed_at` is unnecessary.
 `external_source_uri` is the canonical link to the source message when available. `forward_name` is required whenever
 forward attribution exists, while `forward_uri` is optional. These values are universal payload inputs and are not
 encoded in `source_data`.
+
+Forward attribution is stored separately from `body` and is rendered when the publication payload is composed.
 
 ## 12. Message body
 
@@ -1023,9 +1031,14 @@ A `Publication` can contain several source messages. Their non-empty bodies are 
 For plain text or Markdown this is conceptually a blank line. For HTML it is an appropriate HTML-level boundary rather
 than raw `\n\n` inserted into markup.
 
-Telegram forward attribution is the one source-specific addition to this rule. Attribution is part of each normalized
-message body and is repeated before every forwarded message. When a Telegram publication joins a message whose
-attribution differs from the previous message's attribution, the payload builder inserts `<hr>` before that message.
+Telegram forward attribution is the one source-specific addition to this rule. The payload builder prepends the first
+message's attribution once when joining messages forwarded from the same source. The link still points to that first
+message's original Telegram post. Source comparison ignores the trailing message ID in public Telegram URIs and uses
+the source name when both URIs are absent. Forwarded and non-forwarded messages, or forwards from different sources,
+form separate publications. No `<hr>` is inserted for forward attribution.
+
+Existing publication membership remains immutable. If an existing publication contains different forward sources,
+including after a source edit, each consecutive run receives its own attribution without an extra separator.
 
 Ordered universal link previews are collected from member messages after deleted messages are removed. They are
 deduplicated by URL; the first preview and its image win. The resulting values populate Moera `Body.linkPreviews`.
@@ -1729,8 +1742,9 @@ service message itself.
 
 #### 33.6.4 Forwarding, buttons, and message metadata
 
-A forwarded message starts with source attribution. A public channel links to the exact original message when its
-message ID is available, otherwise to the channel; a public user links to their Telegram username:
+A publication of forwarded messages starts with source attribution added by the payload builder, rather than embedded
+in normalized message bodies. A public channel links to the first message's exact original post when its message ID is
+available, otherwise to the channel; a public user links to their Telegram username:
 
 ```html
 <p><a href="source-url">Source name</a></p>
@@ -1740,8 +1754,8 @@ The adapter resolves a channel origin by its TDLib chat ID. It uses `GetChat.tit
 active username from `GetSupergroup` to build the public link.
 
 When only a source name is available, it is emitted without a link; when neither is available, attribution is omitted.
-Attribution is repeated for every forwarded message. When grouped Telegram messages change attribution, `<hr>` is
-inserted before the differently attributed message.
+Messages forwarded from the same source share one attribution at the beginning of their publication. Different
+forward sources are a grouping boundary; `<hr>` is not used to separate forward attributions.
 
 `authorSignature` is ignored because the standard Telegram client does not display it. Ordinary safe-URL inline
 buttons are appended as links; callbacks, Web Apps, login, payment, and other Telegram-only buttons are ignored. A
@@ -1813,7 +1827,13 @@ The core owns staging cleanup and retry lifecycle. The Telegram adapter owns onl
 
 ### 33.9 Telegram grouping
 
-Telegram `media_album_id` stays in source-specific message data and provides a strong grouping hint:
+Telegram grouping first compares forward sources. A change of source, including a transition between forwarded and
+non-forwarded messages, yields `MUST_SEPARATE`, even when album IDs match. Public links are compared without their
+trailing numeric message ID; names are compared only when both links are absent. A known link and an absent link are
+different sources.
+
+For matching forward sources, Telegram `media_album_id` stays in source-specific message data and provides a strong
+grouping hint:
 
 ```text
 same non-zero media_album_id      -> MUST_GROUP

@@ -193,7 +193,7 @@ class TelegramMessageMapperTest {
     }
 
     @Test
-    void decoratesBodyWithForwardAttributionButtonsAndFactCheckAndIgnoresAuthorSignature() {
+    void keepsForwardAttributionSeparateFromBodyWithButtonsAndFactCheckAndIgnoresAuthorSignature() {
         TdApi.Message telegram = message(new TdApi.MessageText(text("Content"), null, null));
         telegram.forwardInfo = new TdApi.MessageForwardInfo(new TdApi.MessageOriginHiddenUser("Source <name>"),
             0, null, "ignored");
@@ -209,7 +209,7 @@ class TelegramMessageMapperTest {
 
         var mapped = mapped(telegram);
 
-        assertThat(mapped.body()).isEqualTo("<p>Source &lt;name&gt;</p><p>Content</p>"
+        assertThat(mapped.body()).isEqualTo("<p>Content</p>"
             + "<p><a href=\"https://example.org/a?x=1&amp;y=2\">Open</a></p>"
             + "<hr><p><b>Fact check</b></p><blockquote>Verified &lt;fact&gt;</blockquote>");
         assertThat(mapped.forwardAttribution()).isEqualTo(new ForwardAttribution("Source <name>", null));
@@ -239,9 +239,7 @@ class TelegramMessageMapperTest {
 
         var mapped = ((TelegramMappingResult.Mapped) mapper.map(telegram)).message();
 
-        assertThat(mapped.body()).startsWith(
-            "<p><a href=\"https://t.me/moera_news/6660\">Moera News</a></p>"
-        );
+        assertThat(mapped.body()).isEqualTo("<p>News</p>");
         assertThat(mapped.forwardAttribution())
             .isEqualTo(new ForwardAttribution("Moera News", "https://t.me/moera_news/6660"));
         assertThat(mapped.sourceData().has("forwardAttribution")).isFalse();

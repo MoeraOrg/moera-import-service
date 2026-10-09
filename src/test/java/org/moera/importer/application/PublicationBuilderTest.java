@@ -5,6 +5,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.Objects;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -23,6 +24,7 @@ import org.moera.importer.persistence.PostgresIntegrationTest;
 import org.moera.importer.source.AccessResult;
 import org.moera.importer.source.ChannelResolution;
 import org.moera.importer.source.ChannelSnapshot;
+import org.moera.importer.source.ForwardAttribution;
 import org.moera.importer.source.GroupingRelation;
 import org.moera.importer.source.InitialImportMode;
 import org.moera.importer.source.PollResult;
@@ -77,6 +79,24 @@ class PublicationBuilderTest extends PostgresIntegrationTest {
     void clearDatabase() {
         dslContext.truncate(CHANNELS).restartIdentity().cascade().execute();
         dslContext.truncate(DESTINATIONS).restartIdentity().cascade().execute();
+    }
+
+    @Test
+    void passesPersistedForwardAttributionToTheSourceGroupingPolicy() {
+        long mirrorId = insertMirror();
+        messageRepository.ingest(1, forwardedMessage("one", 100, "Origin", "https://t.me/origin/10"));
+        messageRepository.ingest(1, forwardedMessage("two", 90, "Origin", "https://t.me/origin/11"));
+        messageRepository.ingest(1, forwardedMessage("three", 80, "Other", "https://t.me/other/12"));
+
+        publicationBuilder.build(mirrorId);
+
+        assertPublicationGroups(List.of(List.of("one", "two"), List.of("three")));
+    }
+
+    private SourceMessage forwardedMessage(String id, long secondsAgo, String name, String uri) {
+        return new SourceMessage(id, false, false, NOW.minusSeconds(secondsAgo), id, BodyFormat.HTML,
+            hash(id.hashCode()), null, new ForwardAttribution(name, uri), JsonNodeFactory.instance.objectNode(),
+            List.of(), List.of());
     }
 
     @Test
@@ -455,6 +475,11 @@ class PublicationBuilderTest extends PostgresIntegrationTest {
 
         @Override
         public GroupingRelation groupingRelation(SourceMessage previous, SourceMessage next) {
+            String previousName = previous.forwardAttribution() != null ? previous.forwardAttribution().name() : null;
+            String nextName = next.forwardAttribution() != null ? next.forwardAttribution().name() : null;
+            if (!Objects.equals(previousName, nextName)) {
+                return GroupingRelation.MUST_SEPARATE;
+            }
             if (previous.sourceId().equals("force-group-1") && next.sourceId().equals("force-group-2")) {
                 return GroupingRelation.MUST_GROUP;
             }

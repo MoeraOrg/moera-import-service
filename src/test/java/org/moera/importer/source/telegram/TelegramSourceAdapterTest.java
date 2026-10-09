@@ -4,6 +4,7 @@ import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -21,16 +22,20 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.moera.importer.config.TelegramProperties;
 import org.moera.importer.model.AccessState;
+import org.moera.importer.model.BodyFormat;
 import org.moera.importer.model.SourceType;
 import org.moera.importer.model.SubscriptionState;
 import org.moera.importer.observability.ImportMetrics;
 import org.moera.importer.source.ChannelResolution;
 import org.moera.importer.source.ChannelMetadata;
 import org.moera.importer.source.ChannelSnapshot;
+import org.moera.importer.source.ForwardAttribution;
+import org.moera.importer.source.GroupingRelation;
 import org.moera.importer.source.InitialImportMode;
 import org.moera.importer.source.SourcePermanentException;
 import org.moera.importer.source.SourceTemporaryException;
 import org.moera.importer.source.SourceEvent;
+import org.moera.importer.source.SourceMessage;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -303,6 +308,65 @@ class TelegramSourceAdapterTest {
 
         assertThatThrownBy(() -> adapter.refreshSubscription(resolvedChannel(SubscriptionState.ACTIVE)))
             .isSameAs(client.membershipFailure);
+    }
+
+    @Test
+    void comparesForwardChannelUrisWithoutMessageIdsOrDisplayNames() {
+        SourceMessage previous = groupingMessage(1, new ForwardAttribution("Origin", "https://t.me/origin/10"), 0);
+        SourceMessage next = groupingMessage(2, new ForwardAttribution("Renamed", "https://t.me/origin/11"), 0);
+
+        assertThat(adapter.groupingRelation(previous, next)).isEqualTo(GroupingRelation.UNKNOWN);
+        assertThat(adapter.groupingRelation(previous,
+            groupingMessage(3, new ForwardAttribution("Origin", "https://t.me/origin"), 0)))
+            .isEqualTo(GroupingRelation.UNKNOWN);
+    }
+
+    @Test
+    void separatesDifferentForwardSourcesEvenInTheSameAlbum() {
+        SourceMessage previous = groupingMessage(1, new ForwardAttribution("Origin", "https://t.me/origin/10"), 7);
+        SourceMessage next = groupingMessage(2, new ForwardAttribution("Origin", "https://t.me/other/11"), 7);
+
+        assertThat(adapter.groupingRelation(previous, next)).isEqualTo(GroupingRelation.MUST_SEPARATE);
+    }
+
+    @Test
+    void separatesForwardedAndNonForwardedMessagesInBothDirections() {
+        SourceMessage forwarded = groupingMessage(1, new ForwardAttribution("Origin", "https://t.me/origin/10"), 0);
+        SourceMessage original = groupingMessage(2, null, 0);
+
+        assertThat(adapter.groupingRelation(forwarded, original)).isEqualTo(GroupingRelation.MUST_SEPARATE);
+        assertThat(adapter.groupingRelation(original, forwarded)).isEqualTo(GroupingRelation.MUST_SEPARATE);
+    }
+
+    @Test
+    void comparesNamesOnlyWhenBothForwardUrisAreAbsent() {
+        SourceMessage previous = groupingMessage(1, new ForwardAttribution("Origin", null), 0);
+
+        assertThat(adapter.groupingRelation(previous, groupingMessage(2, new ForwardAttribution("Origin", null), 0)))
+            .isEqualTo(GroupingRelation.UNKNOWN);
+        assertThat(adapter.groupingRelation(previous, groupingMessage(3, new ForwardAttribution("Other", null), 0)))
+            .isEqualTo(GroupingRelation.MUST_SEPARATE);
+        assertThat(adapter.groupingRelation(previous,
+            groupingMessage(4, new ForwardAttribution("Origin", "https://t.me/origin/10"), 0)))
+            .isEqualTo(GroupingRelation.MUST_SEPARATE);
+    }
+
+    @Test
+    void retainsAlbumGroupingForMatchingForwardSourcesAndOriginalMessages() {
+        assertThat(adapter.groupingRelation(groupingMessage(1, null, 7), groupingMessage(2, null, 7)))
+            .isEqualTo(GroupingRelation.MUST_GROUP);
+        assertThat(adapter.groupingRelation(groupingMessage(1, null, 7), groupingMessage(2, null, 8)))
+            .isEqualTo(GroupingRelation.MUST_SEPARATE);
+        assertThat(adapter.groupingRelation(
+            groupingMessage(1, new ForwardAttribution("Origin", "https://t.me/origin/10"), 7),
+            groupingMessage(2, new ForwardAttribution("Origin", "https://t.me/origin/11"), 7)))
+            .isEqualTo(GroupingRelation.MUST_GROUP);
+    }
+
+    private SourceMessage groupingMessage(long id, ForwardAttribution attribution, long albumId) {
+        return new SourceMessage(Long.toString(id), false, false, Instant.EPOCH, "body", BodyFormat.HTML,
+            new byte[32], null, attribution, JsonNodeFactory.instance.objectNode().put("mediaAlbumId", albumId),
+            List.of(), List.of());
     }
 
     @Test

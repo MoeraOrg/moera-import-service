@@ -21,6 +21,84 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class SchemaMigrationTest extends PostgresIntegrationTest {
 
     @Test
+    void v011MovesForwardAttributionOutOfBodiesAndReschedulesExistingPublications() throws SQLException {
+        String schema = "forward_" + UUID.randomUUID().toString().replace("-", "");
+        try {
+            flyway(schema, MigrationVersion.fromVersion("10")).migrate();
+            try (Connection connection = openConnection(); var statement = connection.createStatement()) {
+                statement.execute("SET search_path TO " + schema);
+                statement.execute("""
+                    INSERT INTO channels (source_type, source_id, source_uri, access_state, subscription_state)
+                    VALUES ('TELEGRAM', 'channel', 'https://t.me/channel', 'GRANTED', 'ACTIVE');
+                    INSERT INTO destinations (node_name) VALUES ('node.moera.org');
+                    INSERT INTO mirrors (channel_id, destination_id, feeds) VALUES (1, 1, ARRAY['timeline']);
+                    INSERT INTO publications (mirror_id, revision, published_revision, destination_post_id)
+                    VALUES (1, 3, 3, 'post-1'), (1, 0, 0, 'post-2');
+                    INSERT INTO messages (channel_id, source_id, published_at, body, body_format,
+                                          source_body_hash, forward_name, forward_uri)
+                    VALUES
+                        (1, 'one', now(), '<p><a href="https://t.me/origin/10">Origin</a></p><p>A</p>',
+                         'HTML', decode(repeat('01', 32), 'hex'), 'Origin', 'https://t.me/origin/10'),
+                        (1, 'two', now(), '<p>Origin &lt;&amp;&gt;&quot;&#39;</p><p>B</p>',
+                         'HTML', decode(repeat('02', 32), 'hex'), 'Origin <&>"''', NULL),
+                        (1, 'three', now(), '<p>Unrelated body</p>',
+                         'HTML', decode(repeat('03', 32), 'hex'), 'Origin', NULL),
+                        (1, 'four', now(), '<p>Origin</p><p>Original</p>',
+                         'HTML', decode(repeat('04', 32), 'hex'), NULL, NULL);
+                    INSERT INTO publication_messages (publication_id, message_id, position)
+                    VALUES (1, 1, 0), (1, 2, 1), (2, 3, 0), (2, 4, 1);
+                    """);
+            }
+
+            flyway(schema, null).migrate();
+
+            try (Connection connection = openConnection(); var statement = connection.createStatement()) {
+                statement.execute("SET search_path TO " + schema);
+                try (ResultSet rows = statement.executeQuery("""
+                    SELECT body, revision, encode(source_body_hash, 'hex'), forward_name, forward_uri
+                    FROM messages ORDER BY id
+                    """)) {
+                    assertThat(rows.next()).isTrue();
+                    assertThat(rows.getString(1)).isEqualTo("<p>A</p>");
+                    assertThat(rows.getInt(2)).isEqualTo(1);
+                    assertThat(rows.getString(3)).isEqualTo("01".repeat(32));
+                    assertThat(rows.getString(4)).isEqualTo("Origin");
+                    assertThat(rows.getString(5)).isEqualTo("https://t.me/origin/10");
+                    assertThat(rows.next()).isTrue();
+                    assertThat(rows.getString(1)).isEqualTo("<p>B</p>");
+                    assertThat(rows.getInt(2)).isEqualTo(1);
+                    assertThat(rows.next()).isTrue();
+                    assertThat(rows.getString(1)).isEqualTo("<p>Unrelated body</p>");
+                    assertThat(rows.getInt(2)).isZero();
+                    assertThat(rows.next()).isTrue();
+                    assertThat(rows.getString(1)).isEqualTo("<p>Origin</p><p>Original</p>");
+                    assertThat(rows.getInt(2)).isZero();
+                }
+                try (ResultSet rows = statement.executeQuery("""
+                    SELECT revision, published_revision, next_attempt_at, destination_post_id,
+                           (SELECT count(*) FROM publication_messages pm WHERE pm.publication_id = p.id)
+                    FROM publications p ORDER BY id
+                    """)) {
+                    assertThat(rows.next()).isTrue();
+                    assertThat(rows.getInt(1)).isEqualTo(4);
+                    assertThat(rows.getInt(2)).isEqualTo(3);
+                    assertThat(rows.getTimestamp(3)).isNotNull();
+                    assertThat(rows.getString(4)).isEqualTo("post-1");
+                    assertThat(rows.getInt(5)).isEqualTo(2);
+                    assertThat(rows.next()).isTrue();
+                    assertThat(rows.getInt(1)).isZero();
+                    assertThat(rows.getTimestamp(3)).isNull();
+                    assertThat(rows.getInt(5)).isEqualTo(2);
+                }
+            }
+        } finally {
+            try (Connection connection = openConnection(); var statement = connection.createStatement()) {
+                statement.execute("DROP SCHEMA IF EXISTS " + schema + " CASCADE");
+            }
+        }
+    }
+
+    @Test
     void springBootAppliesMigrationAndCreatesAllInitialRelations() throws SQLException {
         Set<String> tableNames = queryStrings("""
             SELECT table_name

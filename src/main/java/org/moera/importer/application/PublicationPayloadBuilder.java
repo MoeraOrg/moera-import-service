@@ -22,6 +22,7 @@ import org.moera.importer.moera.DestinationCapabilities;
 import org.moera.importer.persistence.MessageLinkPreview;
 import org.moera.importer.persistence.PublicationContext;
 import org.moera.importer.source.ForwardAttribution;
+import org.moera.importer.source.telegram.TelegramForwardAttribution;
 import org.moera.lib.node.types.MediaToAttach;
 import org.moera.lib.node.types.SourceFormat;
 import org.moera.lib.node.types.StoryAttributes;
@@ -88,32 +89,32 @@ public class PublicationPayloadBuilder {
     private String joinBodies(List<PublicationContext.Member> members, SourceFormat format) {
         var result = new StringBuilder();
         ForwardAttribution previousAttribution = null;
-        boolean first = true;
         for (PublicationContext.Member member : members) {
             Message message = member.message();
-            if (message.body().isBlank()) {
-                continue;
+            ForwardAttribution attribution = message.forwardAttribution();
+            if (attribution != null && !TelegramForwardAttribution.sameSource(previousAttribution, attribution)) {
+                appendBody(result, convert(attributionHtml(attribution), BodyFormat.HTML, format), format);
             }
-            String converted = convert(message.body(), message.bodyFormat(), format);
-            if (!first) {
-                if (format == SourceFormat.HTML) {
-                    ForwardAttribution attribution = attribution(message);
-                    if (!Objects.equals(previousAttribution, attribution)) {
-                        result.append("<hr>");
-                    }
-                } else {
-                    result.append("\n\n");
-                }
+            if (!message.body().isBlank()) {
+                appendBody(result, convert(message.body(), message.bodyFormat(), format), format);
             }
-            result.append(converted);
-            previousAttribution = attribution(message);
-            first = false;
+            previousAttribution = attribution;
         }
         return result.toString();
     }
 
-    private ForwardAttribution attribution(Message message) {
-        return message.forwardAttribution();
+    private void appendBody(StringBuilder result, String body, SourceFormat format) {
+        if (!result.isEmpty() && format != SourceFormat.HTML) {
+            result.append("\n\n");
+        }
+        result.append(body);
+    }
+
+    private String attributionHtml(ForwardAttribution attribution) {
+        String name = Entities.escape(attribution.name());
+        return attribution.uri() != null
+            ? "<p><a href=\"" + Entities.escape(attribution.uri()) + "\">" + name + "</a></p>"
+            : "<p>" + name + "</p>";
     }
 
     private String convert(String body, BodyFormat from, SourceFormat to) {
