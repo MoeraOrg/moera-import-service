@@ -107,6 +107,13 @@ existing and new destinations use the process-wide carte authentication configur
 `forward_uri` to recognize it. It preserves those fields and the canonical source hash, increments affected message
 revisions, and schedules affected publications at a new revision. Publication membership is not changed.
 
+### 4.4 Expanded destination names
+
+`V012` expands existing destination names to include an explicit numeric generation suffix, defaulting to `_0` when
+omitted. It preserves destination IDs, configuration, delivery state, and references. If two existing names expand to
+the same identity, the migration fails atomically under the existing unique constraint; it does not merge or delete
+destinations.
+
 ## 5. Source types
 
 `source_type` is a PostgreSQL enum. The initial migration contains only:
@@ -592,7 +599,9 @@ created_at
 updated_at
 ```
 
-`node_name` is unique.
+`node_name` is unique and stored in expanded Moera form (`name_generation`, for example `destination_0`). Repository
+creation normalizes names with `NodeName.expand(...)`, so a short name and its expanded form identify the same
+destination. The 135-character limit applies to the expanded value.
 
 `next_create_at` is nullable durable rate state for new Moera postings. `NULL` means a create slot is available
 immediately. It does not limit updates, deletes, story changes, or media uploads.
@@ -2366,7 +2375,8 @@ transaction is held across Telegram or another external source call.
 Newly created channels are scheduled immediately for every operation applicable to their resolved states. The initial
 API accepts only `TELEGRAM`, because it is the only implemented source type.
 
-Destination creation accepts a registered Moera `nodeName`. Mirror listing returns mirrors ordered by ID. Mirror
+Destination creation accepts a registered Moera `nodeName` in short or expanded form and returns the stored expanded
+name. Destination listing also returns expanded names. Mirror listing returns mirrors ordered by ID. Mirror
 creation accepts `channelId`, `destinationId`, and an ordered set of target feed names. Repository code stores these
 values in typed columns; jOOQ remains confined to persistence classes.
 

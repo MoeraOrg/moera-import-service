@@ -23,6 +23,7 @@ import org.moera.importer.source.SourceAdapter;
 import org.moera.importer.source.SourceAdapterRegistry;
 import org.moera.importer.source.SourcePermanentException;
 import org.moera.importer.source.SourceTemporaryException;
+import org.moera.lib.naming.NodeName;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -202,7 +203,16 @@ public class AdministrationService {
 
     private void validateDestination(DestinationCreate request) {
         if (request == null || request.nodeName() == null || request.nodeName().isBlank()
-            || request.nodeName().length() > 135 || !request.nodeName().equals(request.nodeName().strip())) {
+            || !request.nodeName().equals(request.nodeName().strip())) {
+            throw badRequest("Node name is invalid");
+        }
+        String expandedName;
+        try {
+            expandedName = NodeName.expand(request.nodeName());
+        } catch (RuntimeException e) {
+            throw badRequest("Node name is invalid");
+        }
+        if (expandedName.length() > 135) {
             throw badRequest("Node name is invalid");
         }
     }

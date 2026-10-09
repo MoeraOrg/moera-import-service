@@ -127,7 +127,7 @@ class AdministrationApiTest extends PostgresIntegrationTest {
         assertThat(destinationCreated.statusCode()).isEqualTo(201);
         JsonNode destination = json(destinationCreated);
         assertThat(destination.path("id").asLong()).isEqualTo(1);
-        assertThat(destination.path("nodeName").asText()).isEqualTo("destination-node");
+        assertThat(destination.path("nodeName").asText()).isEqualTo("destination-node_0");
         assertThat(destination.has("credentialRef")).isFalse();
         assertThat(destination.path("profileSync").asBoolean()).isTrue();
 
@@ -242,6 +242,51 @@ class AdministrationApiTest extends PostgresIntegrationTest {
             .isInstanceOf(DataIntegrityViolationException.class);
         assertThatThrownBy(() -> insertChannel(InitialImportMode.RECENT, Instant.parse("2026-09-01T11:30:00Z")))
             .isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    @Test
+    void destinationNamesAreExpandedInStorageAndResponses() throws Exception {
+        HttpResponse<String> response = request("POST", "/api/destinations", objectNode()
+            .put("nodeName", "destination-node"));
+
+        assertThat(response.statusCode()).isEqualTo(201);
+        assertThat(json(response).path("nodeName").asText()).isEqualTo("destination-node_0");
+        assertThat(dslContext.select(DESTINATIONS.NODE_NAME).from(DESTINATIONS).fetchSingle().value1())
+            .isEqualTo("destination-node_0");
+        assertThat(json(request("GET", "/api/destinations", null)).path(0).path("nodeName").asText())
+            .isEqualTo("destination-node_0");
+        assertThat(request("POST", "/api/destinations", objectNode()
+            .put("nodeName", "destination-node_0")).statusCode()).isEqualTo(409);
+    }
+
+    @Test
+    void destinationRejectsInvalidGeneration() throws Exception {
+        assertThat(request("POST", "/api/destinations", objectNode()
+            .put("nodeName", "destination_invalid")).statusCode()).isEqualTo(400);
+        assertThat(dslContext.fetchCount(DESTINATIONS)).isZero();
+    }
+
+    @Test
+    void destinationLengthLimitAppliesToExpandedName() throws Exception {
+        assertThat(request("POST", "/api/destinations", objectNode()
+            .put("nodeName", "n".repeat(134))).statusCode()).isEqualTo(400);
+        assertThat(dslContext.fetchCount(DESTINATIONS)).isZero();
+
+        HttpResponse<String> response = request("POST", "/api/destinations", objectNode()
+            .put("nodeName", "n".repeat(133)));
+        assertThat(response.statusCode()).isEqualTo(201);
+        assertThat(json(response).path("nodeName").asText()).isEqualTo("n".repeat(133) + "_0");
+    }
+
+    @Test
+    void destinationAcceptsLongPaddedGenerationWhenExpandedNameFits() throws Exception {
+        HttpResponse<String> response = request("POST", "/api/destinations", objectNode()
+            .put("nodeName", "destination_" + "0".repeat(135) + "7"));
+
+        assertThat(response.statusCode()).isEqualTo(201);
+        assertThat(json(response).path("nodeName").asText()).isEqualTo("destination_7");
+        assertThat(dslContext.select(DESTINATIONS.NODE_NAME).from(DESTINATIONS).fetchSingle().value1())
+            .isEqualTo("destination_7");
     }
 
     @Test

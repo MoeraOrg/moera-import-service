@@ -4,6 +4,8 @@ import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.time.Instant;
+import java.time.OffsetDateTime;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -19,6 +21,73 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 @SpringBootTest
 class SchemaMigrationTest extends PostgresIntegrationTest {
+
+    @Test
+    void v012ExpandsExistingDestinationNamesWithoutChangingTheirIdentity() throws SQLException {
+        String schema = "expanded_names_" + UUID.randomUUID().toString().replace("-", "");
+        try {
+            flyway(schema, MigrationVersion.fromVersion("11")).migrate();
+            try (Connection connection = openConnection(); var statement = connection.createStatement()) {
+                statement.execute("SET search_path TO " + schema);
+                statement.execute("""
+                    INSERT INTO destinations (node_name, profile_sync, next_create_at)
+                    VALUES ('short-node', false, '2026-09-01T12:00:00Z'),
+                           ('expanded-node_0', true, NULL),
+                           ('generation-node_7', true, NULL),
+                           ('padded-node_007', true, NULL);
+                    INSERT INTO channels (source_type, source_id, source_uri, access_state, subscription_state)
+                    VALUES ('TELEGRAM', 'channel', 'https://t.me/channel', 'GRANTED', 'ACTIVE');
+                    INSERT INTO mirrors (channel_id, destination_id, feeds)
+                    VALUES (1, 1, ARRAY['timeline']);
+                    INSERT INTO publications (mirror_id, destination_post_id)
+                    VALUES (1, 'existing-post');
+                    """);
+            }
+
+            flyway(schema, null).migrate();
+
+            assertThat(queryStrings("SELECT node_name FROM " + schema + ".destinations"))
+                .containsExactlyInAnyOrder("short-node_0", "expanded-node_0", "generation-node_7", "padded-node_7");
+            try (Connection connection = openConnection(); var statement = connection.createStatement();
+                 ResultSet rows = statement.executeQuery("""
+                     SELECT d.id, d.profile_sync, d.next_create_at, m.destination_id, p.destination_post_id
+                     FROM %1$s.destinations d
+                     JOIN %1$s.mirrors m ON m.destination_id = d.id
+                     JOIN %1$s.publications p ON p.mirror_id = m.id
+                     """.formatted(schema))) {
+                assertThat(rows.next()).isTrue();
+                assertThat(rows.getLong(1)).isEqualTo(1);
+                assertThat(rows.getBoolean(2)).isFalse();
+                assertThat(rows.getObject(3, OffsetDateTime.class).toInstant())
+                    .isEqualTo(Instant.parse("2026-09-01T12:00:00Z"));
+                assertThat(rows.getLong(4)).isEqualTo(1);
+                assertThat(rows.getString(5)).isEqualTo("existing-post");
+                assertThat(rows.next()).isFalse();
+            }
+        } finally {
+            dropSchema(schema);
+        }
+    }
+
+    @Test
+    void v012RejectsDuplicateExpandedIdentitiesWithoutRemovingDestinations() throws SQLException {
+        String schema = "duplicate_names_" + UUID.randomUUID().toString().replace("-", "");
+        try {
+            flyway(schema, MigrationVersion.fromVersion("11")).migrate();
+            try (Connection connection = openConnection(); var statement = connection.createStatement()) {
+                statement.executeUpdate("""
+                    INSERT INTO %s.destinations (node_name)
+                    VALUES ('duplicate-node'), ('duplicate-node_0')
+                    """.formatted(schema));
+            }
+
+            assertThatThrownBy(() -> flyway(schema, null).migrate()).hasMessageContaining("V012");
+            assertThat(queryStrings("SELECT node_name FROM " + schema + ".destinations"))
+                .containsExactlyInAnyOrder("duplicate-node", "duplicate-node_0");
+        } finally {
+            dropSchema(schema);
+        }
+    }
 
     @Test
     void v011MovesForwardAttributionOutOfBodiesAndReschedulesExistingPublications() throws SQLException {

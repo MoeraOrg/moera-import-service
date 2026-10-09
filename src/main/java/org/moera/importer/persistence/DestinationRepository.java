@@ -10,6 +10,7 @@ import org.jooq.DSLContext;
 import org.moera.importer.model.Destination;
 import org.moera.importer.model.DestinationProfileState;
 import org.moera.importer.persistence.jooq.tables.records.DestinationsRecord;
+import org.moera.lib.naming.NodeName;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -40,7 +41,7 @@ public class DestinationRepository {
 
     public Destination create(String nodeName, boolean profileSync) {
         DestinationsRecord record = dslContext.insertInto(DESTINATIONS)
-            .set(DESTINATIONS.NODE_NAME, nodeName)
+            .set(DESTINATIONS.NODE_NAME, NodeName.expand(nodeName))
             .set(DESTINATIONS.PROFILE_SYNC, profileSync)
             .returning()
             .fetchSingle();
