@@ -73,6 +73,9 @@ class PublicationProcessorTest {
             publicationProcessor, "publicationPayloadBuilder", new PublicationPayloadBuilder()
         );
         ReflectionTestUtils.setField(
+            publicationProcessor, "publicationLinkRewriter", new PublicationLinkRewriter()
+        );
+        ReflectionTestUtils.setField(
             publicationProcessor, "publicationRepository", publicationRepository
         );
         ReflectionTestUtils.setField(

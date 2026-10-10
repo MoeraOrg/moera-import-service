@@ -46,6 +46,9 @@ public class PublicationProcessor {
     private ImportMetrics importMetrics;
 
     @Inject
+    private PublicationLinkRewriter publicationLinkRewriter;
+
+    @Inject
     private PublicationPayloadBuilder publicationPayloadBuilder;
 
     @Inject
@@ -62,6 +65,7 @@ public class PublicationProcessor {
             PublicationPayload payload = publicationPayloadBuilder.build(
                 context, moeraService.capabilities(context.destination())
             );
+            payload = publicationLinkRewriter.rewrite(payload, context.destination());
             if (context.destinationPostId() == null) {
                 createOrCompleteEmpty(claim, context, payload);
             } else {

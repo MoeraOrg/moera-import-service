@@ -114,6 +114,11 @@ omitted. It preserves destination IDs, configuration, delivery state, and refere
 the same identity, the migration fails atomically under the existing unique constraint; it does not merge or delete
 destinations.
 
+### 4.5 Publication link lookup indexes
+
+`V013` adds indexes on lowercase message source URIs and channel public usernames for local Telegram-to-Moera link
+lookup. It does not rewrite source content or schedule existing publications for delivery.
+
 ## 5. Source types
 
 `source_type` is a PostgreSQL enum. The initial migration contains only:
@@ -1041,8 +1046,9 @@ For plain text or Markdown this is conceptually a blank line. For HTML it is an 
 than raw `\n\n` inserted into markup.
 
 Telegram forward attribution is the one source-specific addition to this rule. The payload builder prepends the first
-message's attribution once when joining messages forwarded from the same source. The link still points to that first
-message's original Telegram post. Source comparison ignores the trailing message ID in public Telegram URIs and uses
+message's attribution once when joining messages forwarded from the same source. The attribution link initially uses
+that first message's original Telegram URI and is subject to the outgoing replacement described below. Source
+comparison ignores the trailing message ID in public Telegram URIs and uses
 the source name when both URIs are absent. Forwarded and non-forwarded messages, or forwards from different sources,
 form separate publications. No `<hr>` is inserted for forward attribution.
 
@@ -1051,6 +1057,34 @@ including after a source edit, each consecutive run receives its own attribution
 
 Ordered universal link previews are collected from member messages after deleted messages are removed. They are
 deduplicated by URL; the first preview and its image win. The resulting values populate Moera `Body.linkPreviews`.
+
+Before creating or updating a Moera posting, the delivery processor replaces Telegram message links in the outgoing
+body with Universal Moera URLs when a corresponding delivered publication exists in the importer database. This
+includes HTML link destinations, visible URLs, Markdown links, forward attribution, and link-preview `url` fields.
+`Body.subject` and preview `title`, `description`, and `siteName` do not contain URLs and are not searched or rewritten.
+When a preview URL is replaced, its `siteName` is cleared to `null`; the remaining preview metadata is preserved.
+Stored message bodies, attribution, previews, hashes, and `PostingText.externalSourceUri` retain their source values.
+
+Telegram message URLs are normalized locally, including HTTP/HTTPS, bare links, `telegram.me`, `telegram.dog`, username
+subdomains of `t.me`, `/s/` public links, `/c/` private links, and `tg:resolve`/`tg:privatepost` message links. Channel
+links and invitation links have no message identity and are left unchanged. Message links containing a thread path use
+their final message ID. Links targeting Telegram comments retain their original URL because the discussion-group
+message identity cannot be established locally. Lookup uses saved canonical links or the channel identity and TDLib
+message identity; it does not make Telegram calls or require node resolution. Postings with no recorded destination
+post ID are not targets.
+
+When a source message has several delivered destinations, prefer its posting on the destination of the current
+publication. Otherwise use a single unambiguous posting on another destination. If no target exists or the remaining
+targets are ambiguous, preserve the original link. Several messages grouped into one publication resolve to that same
+posting. If a URL matches distinct stored source messages, for example after username reassignment, it also remains
+unchanged. Universal URLs are constructed by moeralib from the destination node name and `/post/{postingId}`.
+Source identity conflicts include stored messages that have not yet been grouped or delivered. URL parameters belonging
+to an unrelated outer URL are not rewritten. Markdown escapes and reference associations are preserved.
+
+Replacement is evaluated at ordinary delivery attempts. Discovering a new target later does not schedule updates of
+previously delivered publications. An ordinary source edit can therefore resolve a link that was previously unknown.
+The lookup is a short database read completed before the Moera call; it does not guarantee that the target remains
+available after that read.
 
 ### 24.3 Publication time and feeds
 

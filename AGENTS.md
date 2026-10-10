@@ -66,6 +66,16 @@ design specification.
 - Real Telegram and real Moera tests are opt-in smoke/integration tests, not default CI tests.
 - For implementation work, follow test-driven development: failing test first, verify failure, implement minimal
   behavior, verify pass, then commit.
+- The local container runtime is rootless Podman. Testcontainers uses its Docker-compatible API; do not assume
+  Docker Engine is installed or try to start it.
+- Run Maven tests that use Mockito or Testcontainers outside the agent sandbox from the first attempt. With
+  `exec_command`, use `sandbox_permissions="require_escalated"` for `./mvnw -o test` (or the needed test selection).
+  The sandbox blocks Mockito's Java-agent attachment and access to the Podman API socket. Do not first run the suite
+  inside the sandbox and rediscover these known environment failures.
+- Reuse the existing Podman/Testcontainers configuration. This workstation's `~/.testcontainers.properties` points
+  to `unix:///run/user/1000/podman/podman.sock`, and `TESTCONTAINERS_RYUK_DISABLED=true` is already configured.
+  Preserve an existing `DOCKER_HOST` override. If configuration is missing, use the rootless Podman setup in
+  `doc/operations.md`; do not replace Podman with Docker or change project dependencies to fix sandbox restrictions.
 
 ## Security and observability
 
