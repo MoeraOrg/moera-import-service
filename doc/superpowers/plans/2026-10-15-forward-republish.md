@@ -81,8 +81,9 @@ Files: `PublicationRepublishProcessor.java`, `PublicationProcessor.java`, `Publi
   feeds/lookup failures, retry backoff across the deadline, and rearming known rejected requests, RED to GREEN.
 - The deadline regression uses a one-millisecond remaining interval so configured retry jitter cannot invalidate
   its expected clamp.
-- Final verification: `./mvnw -o test` passed, 565 tests, 0 failures, 0 errors, 0 skipped. Checkstyle and jOOQ generation
-  ran in that build; integration tests applied the production Flyway migrations to PostgreSQL through rootless Podman.
+- Final verification: `./mvnw -o test` passed, 565 tests, 0 failures, 0 errors, 0 skipped.
+  Checkstyle and jOOQ generation ran in that build; integration tests applied the production Flyway migrations to
+  PostgreSQL through rootless Podman.
 - `git diff --check` passed. Documentation line lengths were checked against 120 characters.
 - Live Telegram/Moera smoke tests remain opt-in and were not run; API behavior was checked against local library and
   server sources. No production-scale benchmark was run.

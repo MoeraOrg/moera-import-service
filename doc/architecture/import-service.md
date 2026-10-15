@@ -1205,9 +1205,9 @@ Before the external request, conditionally persist the request timestamp and an 
 the current processing token. After an accepted or outcome-unknown request, discover stories through
 `getStoriesByExternalSource` every 15 seconds, for at most 30 minutes from that timestamp. Persist partial feed/story
 results under the lease token and keep polling until every requested feed is found. Lookup uses the saved request
-URIs even after source deletion; filter results by feed and original posting identity. Discovery retries before the deadline are capped at that timestamp.
-After it passes, no further lookup calls are made. Updates and cleanup of known stories use ordinary
-retry backoff after that deadline, without further discovery calls. A missing story at the deadline is a permanent
+URIs even after source deletion; filter results by feed and original posting identity. Discovery retries before the
+deadline are capped at that timestamp. After it passes, no further lookup calls are made. Updates and cleanup of known
+stories use ordinary retry backoff after that deadline. A missing story at the deadline is a permanent
 diagnostic failure, not a new republish.
 
 An ambiguous republish is not blindly repeated: a restarted worker resumes discovery, including when the process
