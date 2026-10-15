@@ -54,7 +54,8 @@ consecutive messages may form one `Publication`. A `Mirror` connects a channel t
 is the delivery object for one immutable group of source messages through one mirror.
 
 Source-specific properties that do not belong to the universal model are stored in adapter-owned JSONB fields. Core
-code may persist, copy, and compare those values as a whole, but only the owning `SourceAdapter` interprets their keys.
+code may persist, copy, and compare those values as a whole, but only the owning `SourceAdapter` and its source-package
+helpers interpret their keys.
 
 ## 4. Database naming and schema ownership
 
@@ -70,6 +71,8 @@ mirrors
 publications
 publication_messages
 publication_media
+publication_stories
+publication_original_messages
 ```
 
 `media` is already a plural noun and is not renamed to `medias`.
@@ -345,7 +348,8 @@ configured look-behind.
 A `Message` belongs to exactly one `Channel`.
 
 A repost/forward is still a separate message in each channel where it appears. Universal forward attribution is stored
-in `forward_name` and `forward_uri`; it does not create identity links between messages.
+in `forward_name` and `forward_uri`. Telegram channel-origin identity stays in `source_data`; publication building
+may use it to republish an already imported original posting as described in section 25.1.
 
 External identity is unique inside the channel:
 
@@ -689,7 +693,8 @@ regrouping/reconciliation.
 
 A late message forms part of a new publication even if hindsight suggests it could have belonged to an old one.
 
-Edits/deletions of existing members change the publication revision but not membership.
+Edits/deletions of existing members change the publication revision but not membership. Republished forwards ignore
+content and pin edits; only deletion-state and source-URL changes revise their republish owner.
 
 ## 20. Publication
 
@@ -702,6 +707,12 @@ revision
 published_revision
 destination_post_id
 destination_pinned
+republish_owner_id
+republish_node_name
+republish_post_id
+republish_requested_at
+republish_lookup_uris
+republish_deleting
 attempts
 next_attempt_at
 last_error
@@ -734,7 +745,13 @@ A worker captures the target revision before external work. If the publication c
 successful worker records only its captured target revision; the newer revision remains pending.
 
 `destination_pinned` is the last pin state delivered to the destination. It is nullable until the first successful
-creation and is cleared when the destination post is deleted.
+creation and is cleared when the destination post or republished stories are deleted.
+
+`republish_node_name` and `republish_post_id` identify the original Moera posting for a republish owner. Its own
+`destination_post_id` remains null. `republish_owner_id` links later publications to that owner, preserving each
+publication's immutable membership. Only the owner is scheduled for delivery. Request time and lookup URIs retain
+the in-progress story discovery state across restarts and source deletions. `republish_deleting` durably records story
+cleanup before its first external deletion, including cleanup that must finish before handling a later forward.
 
 ## 21. PublicationMessage
 
@@ -760,7 +777,11 @@ story_id
 ```
 
 The primary key is `(publication_id, feed_name)`. The rows preserve the Moera story identities returned when the post
-is first published to its configured feeds.
+is first published to its configured feeds, or discovered after republishing.
+
+`publication_original_messages(publication_id, message_id)` snapshots all members of the original publication when a
+republish owner is created. Both columns are foreign keys, and their pair is the primary key. This snapshot lets a
+later forward of any member reuse the same stories, even if it was not among the initially forwarded messages.
 
 ## 22. PublicationMedia
 
@@ -967,6 +988,16 @@ public class MoeraService {
         String storyId,
         boolean pinned
     );
+
+    void republish(Destination destination, String nodeName, String postingId, List<StoryAttributes> publications);
+
+    Map<String, String> findRepublishedStories(
+        Destination destination, String nodeName, String postingId, List<String> externalSourceUris, List<String> feeds
+    );
+
+    void updateStorySources(Destination destination, String storyId, List<String> externalSourceUris);
+
+    void deleteStory(Destination destination, String storyId);
 }
 
 public sealed interface MediaUpload {
@@ -1045,7 +1076,8 @@ A `Publication` can contain several source messages. Their non-empty bodies are 
 For plain text or Markdown this is conceptually a blank line. For HTML it is an appropriate HTML-level boundary rather
 than raw `\n\n` inserted into markup.
 
-Telegram forward attribution is the one source-specific addition to this rule. The payload builder prepends the first
+For forwards without a usable already imported original, Telegram attribution is the source-specific addition to
+this rule. The payload builder prepends the first
 message's attribution once when joining messages forwarded from the same source. The attribution link initially uses
 that first message's original Telegram URI and is subject to the outgoing replacement described below. Source
 comparison ignores the trailing message ID in public Telegram URIs and uses
@@ -1143,6 +1175,64 @@ established at create time are left unchanged. Story updates are repeatable by s
 completed only after all required posting and story operations succeed.
 
 For delete, a Moera "posting not found" result is treated as the desired final state and therefore as success.
+
+### 25.1 Republishing known Telegram originals
+
+The Telegram mapper retains `forwardOriginChatId` and `forwardOriginMessageId` in message `source_data` for channel
+forwards, including private channels and unavailable attribution names. These are TDLib identities, decoded by a
+Telegram-owned helper. Existing stored
+forwards without these fields can be resolved by their exact original-message `forward_uri`.
+
+Publication building resolves forwards to known source messages and already delivered Moera postings. Prefer an
+original delivered to the forwarding mirror's destination; otherwise select the lowest destination ID. Ambiguous
+source identities are not republished. An unresolved or not-yet-delivered original keeps the existing attributed-copy
+behavior. A source group is split at a change of resolved original posting, so one republish never drops content from
+another original posting or an unresolved forward.
+
+The first forward of an original posting creates a republish owner with the original node name, posting ID, and full
+original message membership. Later groups forwarding any of those messages create immutable publications linked to
+that owner and revise the owner. All owner and linked-publication messages contribute their non-deleted
+`external_source_uri`, in publication/member order with duplicates removed, to the same feed stories. No source media
+is uploaded for these publications. A mirror-row lock serializes building; an owner-row lock serializes membership
+attachment with delivery snapshots. Republish identity is unique per mirror and original node/posting pair.
+
+`MoeraService` republishes the local posting when the original node equals the destination, and otherwise uses
+`republishRemotePosting`. Each requested feed publication carries the forwarding messages' URLs in
+`StoryAttributes.externalSourceUri`, the earliest forwarding timestamp, and initial pin state. The original posting's
+`externalSourceUri` remains the original channel's URLs. Republish does not create a new importer-owned posting ID.
+
+Before the external request, conditionally persist the request timestamp and an immutable lookup-URI snapshot under
+the current processing token. After an accepted or outcome-unknown request, discover stories through
+`getStoriesByExternalSource` every 15 seconds, for at most 30 minutes from that timestamp. Persist partial feed/story
+results under the lease token and keep polling until every requested feed is found. Lookup uses the saved request
+URIs even after source deletion; filter results by feed and original posting identity. Discovery retries before the deadline are capped at that timestamp.
+After it passes, no further lookup calls are made. Updates and cleanup of known stories use ordinary
+retry backoff after that deadline, without further discovery calls. A missing story at the deadline is a permanent
+diagnostic failure, not a new republish.
+
+An ambiguous republish is not blindly repeated: a restarted worker resumes discovery, including when the process
+stopped between persisting the intent and sending it. Such an unsent intent eventually requires operator recovery
+after the same timeout. Known rejected requests clear the intent: temporary failures retry normally, while permanent
+failures retain their diagnostic and can be re-armed by new inputs. This trades a
+diagnosable timeout in that narrow crash window for avoiding duplicate stories after accepted requests.
+
+Each known story receives the current forwarding-message URL set even while other feeds are still being discovered.
+Update previously discovered stories before another lookup, so lookup failures cannot block URL additions/removals.
+Once all story IDs are known, complete only the claimed owner revision. Later forwards update those stories; they do
+not issue another republish. Telegram
+body/media/pin edits to a republished forward require no delivery because Moera maintains the original content.
+Changes to deletion state or source URL revise the owner. Deleting one forward removes only its URL; when no URLs
+remain, persist deletion intent and delete all known owned feed stories, treating missing stories as success. Cleanup
+starts before another discovery call, so unavailable discovery cannot block deletion of known stories. Retain the
+missing feeds' discovery intent and the known IDs, continue discovery, and
+delete any newly discovered stories until all feeds are accounted for or the original deadline is reached. At timeout,
+known stories are cleaned before recording the missing-feed diagnostic.
+
+An interrupted deletion always resumes cleanup, even if a later forward adds a URL meanwhile. Once cleanup finishes,
+atomically clear story identities and request/deletion state. If live URLs remain, release the lease and schedule a
+fresh republish without completing that revision; otherwise complete deletion of the claimed revision. If missing
+feeds have timed out and new forwards are present, diagnose the expired discovery and start a fresh republish after
+cleaning known stories. Retain original membership and owner identity. Never delete or update the original posting.
 
 ## 26. Moera create idempotency limitation
 
@@ -1785,7 +1875,8 @@ service message itself.
 
 #### 33.6.4 Forwarding, buttons, and message metadata
 
-A publication of forwarded messages starts with source attribution added by the payload builder, rather than embedded
+A publication of forwarded messages whose original is not already imported starts with source attribution added by
+the payload builder, rather than embedded
 in normalized message bodies. A public channel links to the first message's exact original post when its message ID is
 available, otherwise to the channel; a public user links to their Telegram username:
 
@@ -1951,9 +2042,9 @@ profile full name is the Telegram channel title, and the profile bio is the chan
 uses the channel address and includes the configured contact e-mail address in its `via_email` parameter.
 
 Until a profile-enabled destination has completed at least one profile reconciliation (`profile_fingerprint IS NOT
-NULL`), the publication scheduler does not claim publications that have no `destination_post_id`. This gate applies
-only to initial posting delivery: media processing continues, and existing postings remain available for update or
-deletion.
+NULL`), the publication scheduler does not claim ordinary posting publications that have no `destination_post_id`.
+This gate applies only to initial posting delivery: media processing continues, and existing postings and republish
+owners remain available for delivery.
 
 When the Telegram emblem changes, the service reacquires and downloads the large JPEG through TDLib, uploads it as
 public Moera media, creates a circular 200-pixel avatar, and sets it as the global profile avatar. It stores the source
@@ -2123,6 +2214,9 @@ publication dirty so that a later worker publishes N+1.
 is non-empty, updates feed stories by story ID when effective pinning changes, deletes the post when the new payload is
 empty, and performs no external call when both the payload and `destination_post_id` are absent. In the latter case it
 simply marks `targetRevision` as published.
+
+Republish owners are dispatched to `PublicationRepublishProcessor` before payload construction or capability lookup;
+their story-only delivery and deletion lifecycle follows section 25.1.
 
 Immediately before a non-empty first create, the processor atomically acquires the destination's durable create slot.
 The default rate is ten creates per minute per destination, represented as a six-second minimum interval. A future

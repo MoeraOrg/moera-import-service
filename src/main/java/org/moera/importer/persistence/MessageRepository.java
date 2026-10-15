@@ -80,7 +80,9 @@ public class MessageRepository {
                 refreshMediaMetadata(mediaRecords, message.media());
             }
             insertLinkPreviews(existing.getId(), message.linkPreviews());
-            publicationRepository.reviseForMessage(existing.getId());
+            publicationRepository.reviseForMessage(existing.getId(),
+                existing.getDeleted() != message.deleted()
+                    || !Objects.equals(existing.getExternalSourceUri(), message.externalSourceUri()));
             publicationMediaRepository.synchronizeForMessage(existing.getId(), mediaWithChangedSourceHash);
             return new IngestResult(existing.getId(), revision, false, true);
         }

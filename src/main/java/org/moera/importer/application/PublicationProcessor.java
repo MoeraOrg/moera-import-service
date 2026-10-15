@@ -55,6 +55,9 @@ public class PublicationProcessor {
     private PublicationRepository publicationRepository;
 
     @Inject
+    private PublicationRepublishProcessor publicationRepublishProcessor;
+
+    @Inject
     private RetryPolicy retryPolicy;
 
     public void process(PublicationClaim claim) {
@@ -62,6 +65,10 @@ public class PublicationProcessor {
             PublicationContext context = publicationRepository.loadContext(
                 claim.publicationId(), claim.targetRevision()
             );
+            if (context.republish() != null) {
+                publicationRepublishProcessor.process(claim, context);
+                return;
+            }
             PublicationPayload payload = publicationPayloadBuilder.build(
                 context, moeraService.capabilities(context.destination())
             );

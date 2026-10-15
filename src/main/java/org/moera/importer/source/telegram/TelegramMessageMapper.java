@@ -89,6 +89,11 @@ public class TelegramMessageMapper {
             if (message.mediaAlbumId != 0) {
                 sourceData.put("mediaAlbumId", message.mediaAlbumId);
             }
+            if (message.forwardInfo != null
+                && message.forwardInfo.origin instanceof TdApi.MessageOriginChannel origin) {
+                sourceData.put("forwardOriginChatId", Long.toString(origin.chatId));
+                sourceData.put("forwardOriginMessageId", Long.toString(origin.messageId));
+            }
             String externalSourceUri = metadataResolver.messageLink(message.chatId, message.id);
             externalSourceUri = emptyToNull(externalSourceUri);
             ForwardAttribution forwardAttribution = attribution != null

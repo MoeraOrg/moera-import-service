@@ -27,6 +27,7 @@ import static org.moera.importer.persistence.jooq.tables.MessageLinkPreviews.MES
 import static org.moera.importer.persistence.jooq.tables.Messages.MESSAGES;
 import static org.moera.importer.persistence.jooq.tables.Mirrors.MIRRORS;
 import static org.jooq.impl.DSL.notExists;
+import static org.jooq.impl.DSL.coalesce;
 import static org.jooq.impl.DSL.selectOne;
 import static org.jooq.impl.DSL.when;
 import static org.moera.importer.persistence.jooq.enums.PublicationMediaStatus.PENDING;
@@ -50,6 +51,9 @@ public class PublicationRepository {
     @Inject
     private PublicationMediaRepository publicationMediaRepository;
 
+    @Inject
+    private PublicationRepublishRepository publicationRepublishRepository;
+
     @Transactional
     public List<PublicationClaim> claimReady(int limit, Duration lease) {
         Instant now = clock.instant();
@@ -63,10 +67,12 @@ public class PublicationRepository {
             )
             .from(PUBLICATIONS)
             .where(PUBLICATIONS.REVISION.isDistinctFrom(PUBLICATIONS.PUBLISHED_REVISION))
+            .and(PUBLICATIONS.REPUBLISH_OWNER_ID.isNull())
             .and(PUBLICATIONS.NEXT_ATTEMPT_AT.le(jooqMappings.offsetDateTime(now)))
             .and(PUBLICATIONS.PROCESSING_UNTIL.isNull()
                 .or(PUBLICATIONS.PROCESSING_UNTIL.le(jooqMappings.offsetDateTime(now))))
-            .and(PUBLICATIONS.DESTINATION_POST_ID.isNotNull().or(notExists(selectOne()
+            .and(PUBLICATIONS.DESTINATION_POST_ID.isNotNull()
+                .or(PUBLICATIONS.REPUBLISH_NODE_NAME.isNotNull()).or(notExists(selectOne()
                 .from(MIRRORS)
                 .join(DESTINATIONS).on(DESTINATIONS.ID.eq(MIRRORS.DESTINATION_ID))
                 .where(MIRRORS.ID.eq(PUBLICATIONS.MIRROR_ID))
@@ -129,8 +135,9 @@ public class PublicationRepository {
         List<Message> messages = dslContext.select(MESSAGES.fields())
             .from(PUBLICATION_MESSAGES)
             .join(MESSAGES).on(MESSAGES.ID.eq(PUBLICATION_MESSAGES.MESSAGE_ID))
-            .where(PUBLICATION_MESSAGES.PUBLICATION_ID.eq(publicationId))
-            .orderBy(PUBLICATION_MESSAGES.POSITION)
+            .where(PUBLICATION_MESSAGES.PUBLICATION_ID.in(dslContext.select(PUBLICATIONS.ID).from(PUBLICATIONS)
+                .where(PUBLICATIONS.ID.eq(publicationId)).or(PUBLICATIONS.REPUBLISH_OWNER_ID.eq(publicationId))))
+            .orderBy(PUBLICATION_MESSAGES.PUBLICATION_ID, PUBLICATION_MESSAGES.POSITION)
             .fetch(record -> jooqMappings.message(record.into(MESSAGES)));
         Map<Long, List<MessageLinkPreview>> previewsByMessage = loadPreviews(messages);
         List<PublicationContext.Member> members = messages.stream()
@@ -163,7 +170,12 @@ public class PublicationRepository {
             publication.getDestinationPinned(),
             destinationStories(publicationId),
             members,
-            media
+            media,
+            publication.getRepublishNodeName() != null ? new RepublishState(
+                publication.getRepublishNodeName(), publication.getRepublishPostId(),
+                jooqMappings.instant(publication.getRepublishRequestedAt()),
+                List.of(publication.getRepublishLookupUris()), publication.getRepublishDeleting()
+            ) : null
         );
     }
 
@@ -209,7 +221,9 @@ public class PublicationRepository {
     ) {
         Instant now = clock.instant();
         return dslContext.update(PUBLICATIONS)
-            .set(PUBLICATIONS.NEXT_ATTEMPT_AT, jooqMappings.offsetDateTime(nextAttemptAt))
+            .set(PUBLICATIONS.NEXT_ATTEMPT_AT, jooqMappings.offsetDateTime(
+                publicationRepublishRepository.limitRetry(publicationId, nextAttemptAt)
+            ))
             .set(PUBLICATIONS.LAST_ERROR, error)
             .set(PUBLICATIONS.FAILURE_TYPE, failureSeries != null ? failureSeries.type() : null)
             .set(
@@ -272,6 +286,13 @@ public class PublicationRepository {
         if (orderedMessages.isEmpty()) {
             throw new IllegalArgumentException("A publication requires at least one message");
         }
+        for (var group : publicationRepublishRepository.groups(mirrorId, orderedMessages)) {
+            createGroup(mirrorId, group);
+        }
+    }
+
+    private void createGroup(long mirrorId, PublicationRepublishRepository.Group group) {
+        List<Message> orderedMessages = group.messages();
         Instant now = clock.instant();
         long publicationId = dslContext.insertInto(PUBLICATIONS)
             .set(PUBLICATIONS.MIRROR_ID, mirrorId)
@@ -287,23 +308,26 @@ public class PublicationRepository {
                 .set(PUBLICATION_MESSAGES.POSITION, position)
                 .execute();
         }
-        publicationMediaRepository.synchronizeForPublication(publicationId);
+        if (group.target() != null) {
+            publicationRepublishRepository.initialize(publicationId, mirrorId, group.target());
+        } else {
+            publicationMediaRepository.synchronizeForPublication(publicationId);
+        }
     }
 
     public void reviseForMessage(long messageId) {
-        Instant now = clock.instant();
-        dslContext.update(PUBLICATIONS)
-            .set(PUBLICATIONS.REVISION, PUBLICATIONS.REVISION.plus(1))
-            .set(PUBLICATIONS.ATTEMPTS, 0)
-            .setNull(PUBLICATIONS.LAST_ERROR)
-            .setNull(PUBLICATIONS.FAILURE_TYPE)
-            .setNull(PUBLICATIONS.FAILURE_STARTED_AT)
-            .set(PUBLICATIONS.NEXT_ATTEMPT_AT, jooqMappings.offsetDateTime(now))
-            .set(PUBLICATIONS.UPDATED_AT, jooqMappings.offsetDateTime(now))
-            .where(PUBLICATIONS.ID.in(dslContext.select(PUBLICATION_MESSAGES.PUBLICATION_ID)
-                .from(PUBLICATION_MESSAGES)
-                .where(PUBLICATION_MESSAGES.MESSAGE_ID.eq(messageId))))
-            .execute();
+        reviseForMessage(messageId, true);
+    }
+
+    public void reviseForMessage(long messageId, boolean republishChanged) {
+        var affected = dslContext.select(coalesce(PUBLICATIONS.REPUBLISH_OWNER_ID, PUBLICATIONS.ID))
+            .from(PUBLICATION_MESSAGES)
+            .join(PUBLICATIONS).on(PUBLICATIONS.ID.eq(PUBLICATION_MESSAGES.PUBLICATION_ID))
+            .where(PUBLICATION_MESSAGES.MESSAGE_ID.eq(messageId))
+            .and(republishChanged ? org.jooq.impl.DSL.trueCondition()
+                : PUBLICATIONS.REPUBLISH_OWNER_ID.isNull().and(PUBLICATIONS.REPUBLISH_NODE_NAME.isNull()))
+            .fetch(0, Long.class);
+        publicationRepublishRepository.revise(affected.stream().distinct().toList());
     }
 
     private Map<Long, List<MessageLinkPreview>> loadPreviews(List<Message> messages) {
@@ -387,6 +411,11 @@ public class PublicationRepository {
             .set(PUBLICATIONS.UPDATED_AT, jooqMappings.offsetDateTime(now));
         if (replaceDestinationPostId) {
             update.set(PUBLICATIONS.DESTINATION_POST_ID, destinationPostId);
+            if (destinationPostId == null) {
+                update.setNull(PUBLICATIONS.REPUBLISH_REQUESTED_AT)
+                    .set(PUBLICATIONS.REPUBLISH_LOOKUP_URIS, new String[0])
+                    .set(PUBLICATIONS.REPUBLISH_DELETING, false);
+            }
         }
         boolean completed = update.where(PUBLICATIONS.ID.eq(publicationId))
             .and(PUBLICATIONS.PROCESSING_TOKEN.eq(token))

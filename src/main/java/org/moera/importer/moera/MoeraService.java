@@ -13,6 +13,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -37,12 +38,17 @@ import org.moera.lib.node.types.MediaUploadAttributes;
 import org.moera.lib.node.types.MediaUploadInfo;
 import org.moera.lib.node.types.PostingText;
 import org.moera.lib.node.types.PostingOperations;
+import org.moera.lib.node.types.PostingInfo;
+import org.moera.lib.node.types.PostingRepublishAttributes;
 import org.moera.lib.node.types.PrivateMediaFileInfo;
 import org.moera.lib.node.types.ProfileAttributes;
 import org.moera.lib.node.types.PublicMediaFileInfo;
 import org.moera.lib.node.types.RejectedReactions;
+import org.moera.lib.node.types.RemotePostingRepublishAttributes;
 import org.moera.lib.node.types.SettingInfo;
 import org.moera.lib.node.types.StoryAttributes;
+import org.moera.lib.node.types.StoryInfo;
+import org.moera.lib.node.types.StoryType;
 import org.moera.lib.node.types.principal.Principal;
 import org.springframework.stereotype.Service;
 import org.springframework.util.ObjectUtils;
@@ -370,6 +376,92 @@ public class MoeraService {
             moeraNode.updateStory(storyId, attributes);
         } catch (MoeraNodeException e) {
             throw mutatingFailure("Moera story update outcome is unknown", e);
+        }
+    }
+
+    public void republish(
+        Destination destination,
+        String nodeName,
+        String postingId,
+        List<StoryAttributes> publications
+    ) {
+        MoeraNode moeraNode = moeraClientFactory.create(destination);
+        try {
+            if (destination.nodeName().equals(nodeName)) {
+                PostingRepublishAttributes attributes = new PostingRepublishAttributes();
+                attributes.setPublications(publications);
+                moeraNode.republishPosting(postingId, attributes);
+            } else {
+                RemotePostingRepublishAttributes attributes = new RemotePostingRepublishAttributes();
+                attributes.setPublications(publications);
+                moeraNode.republishRemotePosting(nodeName, postingId, attributes);
+            }
+        } catch (MoeraNodeException e) {
+            throw mutatingFailure("Moera republish outcome is unknown", e);
+        }
+    }
+
+    public Map<String, String> findRepublishedStories(
+        Destination destination,
+        String nodeName,
+        String postingId,
+        List<String> externalSourceUris,
+        List<String> feeds
+    ) {
+        MoeraNode moeraNode = moeraClientFactory.create(destination);
+        Map<String, String> stories = new LinkedHashMap<>();
+        try {
+            for (String uri : externalSourceUris) {
+                StoryInfo[] found = moeraNode.getStoriesByExternalSource(uri);
+                if (found == null) {
+                    continue;
+                }
+                for (StoryInfo story : found) {
+                    if (story == null || ObjectUtils.isEmpty(story.getId())
+                        || story.getStoryType() != StoryType.POSTING_ADDED || !feeds.contains(story.getFeedName())
+                        || !matchesOriginal(story.getPosting(), destination, nodeName, postingId)) {
+                        continue;
+                    }
+                    String previous = stories.putIfAbsent(story.getFeedName(), story.getId());
+                    if (previous != null && !previous.equals(story.getId())) {
+                        throw new MoeraPermanentException("Multiple republished stories match the same feed", null);
+                    }
+                }
+            }
+            return Map.copyOf(stories);
+        } catch (MoeraNodeException e) {
+            throw externalFailure("Cannot find republished Moera stories", e);
+        }
+    }
+
+    private boolean matchesOriginal(PostingInfo posting, Destination destination, String nodeName, String postingId) {
+        if (posting == null) {
+            return false;
+        }
+        return nodeName.equals(posting.getReceiverName()) && postingId.equals(posting.getReceiverPostingId())
+            || posting.getReceiverName() == null && destination.nodeName().equals(nodeName)
+                && postingId.equals(posting.getId());
+    }
+
+    public void updateStorySources(Destination destination, String storyId, List<String> externalSourceUris) {
+        MoeraNode moeraNode = moeraClientFactory.create(destination);
+        StoryAttributes attributes = new StoryAttributes();
+        attributes.setExternalSourceUri(externalSourceUris);
+        try {
+            moeraNode.updateStory(storyId, attributes);
+        } catch (MoeraNodeException e) {
+            throw mutatingFailure("Moera story source update outcome is unknown", e);
+        }
+    }
+
+    public void deleteStory(Destination destination, String storyId) {
+        MoeraNode moeraNode = moeraClientFactory.create(destination);
+        try {
+            moeraNode.deleteStory(storyId);
+        } catch (MoeraNodeApiNotFoundException e) {
+            // Already deleted.
+        } catch (MoeraNodeException e) {
+            throw mutatingFailure("Moera story deletion outcome is unknown", e);
         }
     }
 

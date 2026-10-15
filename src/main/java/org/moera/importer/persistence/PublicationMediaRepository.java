@@ -365,6 +365,11 @@ public class PublicationMediaRepository {
     }
 
     public void synchronizeForPublication(long publicationId) {
+        if (dslContext.fetchExists(dslContext.selectOne().from(PUBLICATIONS)
+            .where(PUBLICATIONS.ID.eq(publicationId))
+            .and(PUBLICATIONS.REPUBLISH_NODE_NAME.isNotNull().or(PUBLICATIONS.REPUBLISH_OWNER_ID.isNotNull())))) {
+            return;
+        }
         Set<Long> effectiveMediaIds = effectiveMediaIds(publicationId);
         Set<Long> existingMediaIds = new HashSet<>(dslContext.select(PUBLICATION_MEDIA.MEDIA_ID)
             .from(PUBLICATION_MEDIA)

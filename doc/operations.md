@@ -456,6 +456,11 @@ SELECT
     p.published_revision,
     p.destination_post_id,
     p.destination_pinned,
+    p.republish_owner_id,
+    p.republish_node_name,
+    p.republish_post_id,
+    p.republish_requested_at,
+    p.republish_deleting,
     s.feed_name,
     s.story_id,
     pm.destination_media_id,
@@ -468,6 +473,24 @@ LEFT JOIN publication_media pm ON pm.publication_id = p.id
 ORDER BY p.id DESC, s.feed_name, pm.media_id;
 ```
 
-The smoke succeeds when `destination_post_id` is non-null, `published_revision = revision`, `last_error` is null, and
+For an ordinary imported posting, the smoke succeeds when `destination_post_id` is non-null,
+`published_revision = revision`, `last_error` is null, and
 the posting (including media and requested feed story) is visible on the test Moera node. Edit/pin and then delete the
 Telegram message to smoke-test update, story pinning, and deletion.
+
+To smoke-test forwarding, first import an original channel into Moera, then forward one of its messages to another
+mirrored channel. Its republish owner keeps `destination_post_id = NULL`; `republish_node_name` and
+`republish_post_id` identify the original posting. Story IDs appear in `publication_stories` after discovery, normally
+within the 15-second polling interval. The stories' external source URLs belong to the forwarding channel; the original
+posting retains the original channel's URLs.
+
+Forward another message belonging to the same original grouped posting. A new publication links to the existing
+`republish_owner_id`, and that owner's stories acquire the new URL without another republish. Editing forwarded
+content does not issue a posting update. Deleting a forward removes its URL; deleting the last URL deletes the stories.
+`republish_deleting = true` indicates cleanup that will resume after failure or restart before handling a later forward.
+
+Discovery stops after 30 minutes with a diagnostic in `last_error` and automatic scheduling disabled after pending
+updates/deletions of known stories succeed. Those mutations keep ordinary retry backoff without more lookups. An unknown
+republish outcome resumes discovery rather than repeating the request. Request time and lookup URLs survive restart,
+including the narrow window where intent was committed but the request was not sent. Such an unsent intent reaches
+the same timeout and needs operator investigation. See architecture section 25.1 for recovery semantics.

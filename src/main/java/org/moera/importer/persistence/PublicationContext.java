@@ -19,8 +19,24 @@ public record PublicationContext(
     Boolean destinationPinned,
     Map<String, String> destinationStoryIds,
     List<Member> members,
-    List<DeliveredMedia> media
+    List<DeliveredMedia> media,
+    RepublishState republish
 ) {
+
+    public PublicationContext(
+        long publicationId,
+        int targetRevision,
+        Destination destination,
+        List<String> mirrorFeeds,
+        String destinationPostId,
+        Boolean destinationPinned,
+        Map<String, String> destinationStoryIds,
+        List<Member> members,
+        List<DeliveredMedia> media
+    ) {
+        this(publicationId, targetRevision, destination, mirrorFeeds, destinationPostId, destinationPinned,
+            destinationStoryIds, members, media, null);
+    }
 
     public PublicationContext {
         Objects.requireNonNull(destination, "destination");

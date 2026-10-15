@@ -217,6 +217,28 @@ class TelegramMessageMapperTest {
     }
 
     @Test
+    void storesChannelForwardIdentityWithoutResolvedAttribution() {
+        TdApi.Message telegram = message(new TdApi.MessageText(text("Forward"), null, null));
+        telegram.forwardInfo = new TdApi.MessageForwardInfo(
+            new TdApi.MessageOriginChannel(-1001234567890L, 42L << 20, ""), 0, null, ""
+        );
+
+        var mapped = mapped(telegram);
+
+        assertThat(mapped.sourceData().path("forwardOriginChatId").asText()).isEqualTo("-1001234567890");
+        assertThat(mapped.sourceData().path("forwardOriginMessageId").asText()).isEqualTo(Long.toString(42L << 20));
+        assertThat(mapped.forwardAttribution()).isNull();
+    }
+
+    @Test
+    void doesNotTreatAUserForwardAsAnOriginalChannelMessage() {
+        TdApi.Message telegram = message(new TdApi.MessageText(text("Forward"), null, null));
+        telegram.forwardInfo = new TdApi.MessageForwardInfo(new TdApi.MessageOriginUser(7), 0, null, "");
+
+        assertThat(mapped(telegram).sourceData().has("forwardOriginChatId")).isFalse();
+    }
+
+    @Test
     void resolvesPublicChannelForwardToExactPost() {
         TelegramMessageMapper mapper = new TelegramMessageMapper(new TelegramForwardMetadataResolver() {
 
@@ -243,6 +265,9 @@ class TelegramMessageMapperTest {
         assertThat(mapped.forwardAttribution())
             .isEqualTo(new ForwardAttribution("Moera News", "https://t.me/moera_news/6660"));
         assertThat(mapped.sourceData().has("forwardAttribution")).isFalse();
+        assertThat(mapped.sourceData().path("forwardOriginChatId").asText()).isEqualTo("-1001");
+        assertThat(mapped.sourceData().path("forwardOriginMessageId").asText())
+            .isEqualTo(Long.toString(tdlibMessageId));
     }
 
     @Test
