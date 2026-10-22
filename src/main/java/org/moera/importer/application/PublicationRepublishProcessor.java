@@ -72,6 +72,8 @@ public class PublicationRepublishProcessor {
                 publicationRepublishRepository.clearRequest(claim.publicationId(), claim.processingToken());
                 throw e;
             } catch (MoeraOutcomeUnknownException e) {
+                logger.warn("Moera republish outcome is unknown: publication_id={}, attempt={}, error={}",
+                    claim.publicationId(), claim.attempts(), e.getMessage());
                 boolean accepted = await(claim, requestedAt.plus(RepublishState.MAX_WAIT), "outcome_unknown");
                 if (accepted) {
                     importMetrics.publicationUnknownOutcome();

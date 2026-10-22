@@ -393,6 +393,8 @@ public class MoeraService {
                 moeraNode.republishPosting(postingId, attributes);
             } else {
                 RemotePostingRepublishAttributes attributes = new RemotePostingRepublishAttributes();
+                attributes.setRemoteFeedName("timeline");
+                attributes.setPostingView(Principal.PUBLIC);
                 attributes.setPublications(publications);
                 moeraNode.republishRemotePosting(nodeName, postingId, attributes);
             }
@@ -575,12 +577,14 @@ public class MoeraService {
             return new MoeraTemporaryException(message, exception);
         }
         if (exception instanceof MoeraNodeApiException apiException) {
+            String detailedMessage = apiFailureMessage(message, apiException);
             if (apiException.getStatus() == 429) {
-                return new MoeraTemporaryException(message, exception);
+                return new MoeraTemporaryException(detailedMessage, exception);
             }
             if (apiException.getStatus() < 500) {
-                return new MoeraPermanentException(message, exception);
+                return new MoeraPermanentException(detailedMessage, exception);
             }
+            return new MoeraOutcomeUnknownException(detailedMessage, exception);
         }
         return new MoeraOutcomeUnknownException(message, exception);
     }

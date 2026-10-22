@@ -8,13 +8,19 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.mockito.ArgumentCaptor;
 import org.moera.importer.model.BodyFormat;
 import org.moera.importer.model.Destination;
 import org.moera.importer.model.Message;
+import org.moera.importer.moera.MoeraClientFactory;
 import org.moera.importer.moera.MoeraOutcomeUnknownException;
 import org.moera.importer.moera.MoeraPermanentException;
 import org.moera.importer.moera.MoeraService;
@@ -26,7 +32,10 @@ import org.moera.importer.persistence.PublicationDestinationState;
 import org.moera.importer.persistence.PublicationRepublishRepository;
 import org.moera.importer.persistence.PublicationRepository;
 import org.moera.importer.persistence.RepublishState;
+import org.moera.lib.node.MoeraNode;
+import org.moera.lib.node.exception.MoeraNodeApiException;
 import org.moera.lib.node.types.StoryAttributes;
+import org.slf4j.LoggerFactory;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -117,6 +126,41 @@ class PublicationRepublishProcessorTest {
         verify(moeraService, never()).capabilities(any());
         verify(moeraService, never()).createPost(any(), any());
         verify(publicationRepository, never()).updated(anyLong(), any(), anyInt(), any());
+    }
+
+    @ParameterizedTest
+    @CsvSource({
+        "400, posting.remote-feed-name.blank",
+        "429, too-many-requests",
+        "503, node.unavailable"
+    })
+    void logsServerErrorCodeWhenRepublishFails(int status, String errorCode) throws Exception {
+        useContext(null, Map.of(), false);
+        MoeraNode moeraNode = mock(MoeraNode.class);
+        MoeraClientFactory moeraClientFactory = mock(MoeraClientFactory.class);
+        when(moeraClientFactory.create(destination)).thenReturn(moeraNode);
+        when(moeraNode.republishRemotePosting(any(), any(), any()))
+            .thenThrow(new MoeraNodeApiException(status, errorCode, "Republish failed"));
+        MoeraService realMoeraService = new MoeraService();
+        ReflectionTestUtils.setField(realMoeraService, "moeraClientFactory", moeraClientFactory);
+        Object republishProcessor = ReflectionTestUtils.getField(publicationProcessor, "publicationRepublishProcessor");
+        ReflectionTestUtils.setField(republishProcessor, "moeraService", realMoeraService);
+        when(publicationRepository.fail(anyLong(), any(), anyInt(), anyString(), isNull())).thenReturn(true);
+        Logger logger = (Logger) LoggerFactory.getLogger(PublicationProcessor.class.getPackageName());
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+
+        try {
+            publicationProcessor.process(claim);
+        } finally {
+            logger.detachAppender(appender);
+            appender.stop();
+        }
+
+        assertThat(appender.list).anySatisfy(event -> assertThat(event.getFormattedMessage()).contains(
+            "publication_id=17", "status=" + status, "error_code=" + errorCode
+        ));
     }
 
     @Test

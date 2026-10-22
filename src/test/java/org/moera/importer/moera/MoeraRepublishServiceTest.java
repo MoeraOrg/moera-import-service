@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.moera.importer.model.Destination;
 import org.moera.lib.node.MoeraNode;
+import org.moera.lib.node.exception.MoeraNodeApiException;
 import org.moera.lib.node.exception.MoeraNodeApiNotFoundException;
 import org.moera.lib.node.exception.MoeraNodeConnectionException;
 import org.moera.lib.node.types.PostingInfo;
@@ -16,9 +17,11 @@ import org.moera.lib.node.types.RemotePostingRepublishAttributes;
 import org.moera.lib.node.types.StoryAttributes;
 import org.moera.lib.node.types.StoryInfo;
 import org.moera.lib.node.types.StoryType;
+import org.moera.lib.node.types.principal.Principal;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
@@ -53,6 +56,9 @@ class MoeraRepublishServiceTest {
 
         var attributes = ArgumentCaptor.forClass(RemotePostingRepublishAttributes.class);
         verify(moeraNode).republishRemotePosting(eq("original_0"), eq("original-post"), attributes.capture());
+        assertThatCode(attributes.getValue()::validate).doesNotThrowAnyException();
+        assertThat(attributes.getValue().getRemoteFeedName()).isEqualTo("timeline");
+        assertThat(attributes.getValue().getPostingView()).isEqualTo(Principal.PUBLIC);
         assertThat(attributes.getValue().getPublications()).containsExactly(publication);
         assertThat(attributes.getValue().getPublications().getFirst().getExternalSourceUri()).containsExactly(URI);
         verify(moeraNode, never()).createPosting(any());
@@ -140,6 +146,30 @@ class MoeraRepublishServiceTest {
             List.of(publication()))).isInstanceOf(MoeraOutcomeUnknownException.class);
         assertThatThrownBy(() -> moeraService.findRepublishedStories(destination, "original_0", "original-post",
             List.of(URI), List.of("timeline"))).isInstanceOf(MoeraTemporaryException.class);
+    }
+
+    @Test
+    void preservesServerErrorCodeWhenRepublishIsRateLimited() throws Exception {
+        var failure = new MoeraNodeApiException(429, "too-many-requests", "slow down");
+        when(moeraNode.republishRemotePosting(any(), any(), any())).thenThrow(failure);
+
+        assertThatThrownBy(() -> moeraService.republish(destination, "original_0", "original-post",
+            List.of(publication())))
+            .isInstanceOf(MoeraTemporaryException.class)
+            .hasMessageContainingAll("status=429", "error_code=too-many-requests")
+            .hasCause(failure);
+    }
+
+    @Test
+    void preservesServerErrorCodeWhenRepublishOutcomeIsUnknown() throws Exception {
+        var failure = new MoeraNodeApiException(503, "node.unavailable", "maintenance");
+        when(moeraNode.republishRemotePosting(any(), any(), any())).thenThrow(failure);
+
+        assertThatThrownBy(() -> moeraService.republish(destination, "original_0", "original-post",
+            List.of(publication())))
+            .isInstanceOf(MoeraOutcomeUnknownException.class)
+            .hasMessageContainingAll("status=503", "error_code=node.unavailable")
+            .hasCause(failure);
     }
 
     private StoryAttributes publication() {
